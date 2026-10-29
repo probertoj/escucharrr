@@ -33,7 +33,22 @@ const Q = {
   credits: db.prepare(`SELECT role, group_concat(DISTINCT artist_name) artists FROM v_album_credits WHERE release_group_id=? GROUP BY role ORDER BY role`),
   search: db.prepare(`SELECT name, kind, subject_type, subject_id FROM search_fts WHERE search_fts MATCH ? ORDER BY bm25(search_fts) LIMIT ?`),
   recAlbum: db.prepare(`SELECT rel.release_group_id id FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE tr.recording_id=? LIMIT 1`),
+  cArtists: db.prepare('SELECT count(*) n FROM artist'),
+  cAlbums: db.prepare('SELECT count(*) n FROM release_group'),
+  cTracks: db.prepare('SELECT count(*) n FROM track'),
+  cGenres: db.prepare('SELECT count(*) n FROM genre'),
+  recent: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.tier_key FROM v_album a JOIN release_group rg ON rg.id=a.id ORDER BY rg.created_at DESC, rg.id DESC LIMIT 10`),
+  tiers: db.prepare(`SELECT key, label, (SELECT count(*) FROM rating_tier rt WHERE rt.subject_type='release_group' AND rt.tier_key=tier.key) n FROM tier ORDER BY rank DESC`),
+  topGenres: db.prepare(`SELECT g.name, count(*) n FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id GROUP BY g.id ORDER BY n DESC, g.name LIMIT 8`),
 };
+function home() {
+  return {
+    counts: { artists: Q.cArtists.get().n, albums: Q.cAlbums.get().n, tracks: Q.cTracks.get().n, genres: Q.cGenres.get().n },
+    recent: Q.recent.all(),
+    tiers: Q.tiers.all(),
+    genres: Q.topGenres.all(),
+  };
+}
 
 // Búsqueda FTS5: prefijo por token (instantánea) + ranking bm25 (completa).
 function search(q, n) {
@@ -79,6 +94,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/library') return sendJSON(res, libraryList());
     if (u.pathname === '/api/album') { const a = album(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/search') return sendJSON(res, search(u.searchParams.get('q'), Math.min(parseInt(u.searchParams.get('n') || '20', 10) || 20, 100)));
+    if (u.pathname === '/api/home') return sendJSON(res, home());
     if (u.pathname === '/' || u.pathname === '') return sendFile(res, 'index.html');
     return sendFile(res, u.pathname.replace(/^\//, ''));
   } catch (e) { res.writeHead(500); res.end(String(e.message)); }

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — inicio</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+nav.top{display:flex;gap:16px;font-size:14px;margin-bottom:16px}
+nav.top a{color:var(--text-2)} nav.top a.on{color:var(--text);font-weight:600}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin:14px 0 24px}
+.metric{background:var(--surface-2);border-radius:12px;padding:14px 16px}
+.metric .v{font-size:26px;font-weight:600;line-height:1.1}
+.metric .l{font-size:12px;color:var(--text-2)}
+.row{display:flex;gap:12px;overflow-x:auto;padding-bottom:6px}
+.row .card{flex:none;width:130px}
+.tierbar{display:flex;align-items:center;gap:10px;margin:7px 0}
+.tierbar .lab{width:48px;font-size:13px}
+.tierbar .track{flex:1;height:10px;background:var(--surface-2);border-radius:999px;overflow:hidden}
+.tierbar .n{width:28px;text-align:right;color:var(--text-2);font-size:13px}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px;align-items:start}
+.note{background:var(--surface-2);border-radius:12px;padding:14px 16px;color:var(--text-2);font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="top"><a href="home.html" class="on">Inicio</a><a href="/">Biblioteca</a><a href="search.html">Buscar</a></nav>
+  <h1 id="greet" style="font-size:30px">Hola</h1>
+  <div class="metrics" id="metrics"></div>
+
+  <div class="sec">Añadido recientemente</div>
+  <div class="row" id="recent"></div>
+
+  <div class="two" style="margin-top:22px">
+    <div>
+      <div class="sec">Por tier</div>
+      <div id="tiers"></div>
+    </div>
+    <div>
+      <div class="sec">Géneros de tu biblioteca</div>
+      <div style="display:flex;gap:16px;align-items:center"><div id="donut"></div><div id="glegend" style="font-size:13px;line-height:1.9"></div></div>
+    </div>
+  </div>
+
+  <div class="sec" style="margin-top:24px">Escucha reciente</div>
+  <div class="note">Tu tiempo de escucha y lo más reproducido aparecerán aquí cuando empieces a reproducir (todavía no se registran reproducciones).</div>
+</div>
+
+<script>
+const TC={excel:['#0F6E56','#E1F5EE'],si:['#639922','#EAF3DE'],ok:['#BA7517','#FAEEDA'],meh:['#5F5E5A','#F1EFE8'],no:['#A32D2D','#FCEBEB']},TN={excel:'Excel',si:'Sí',ok:'Ok',meh:'Meh',no:'No'};
+const PAIRS=[['#0F6E56','#1D9E75'],['#534AB7','#7F77DD'],['#185FA5','#378ADD'],['#854F0B','#BA7517'],['#72243E','#D4537E'],['#5F5E5A','#888780'],['#3B6D11','#639922'],['#993C1D','#D85A30']];
+const GCOL=['#534AB7','#0F6E56','#BA7517','#185FA5','#993C1D','#D4537E','#639922','#5F5E5A'];
+const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function cover(id){const p=PAIRS[id%PAIRS.length];return `<svg viewBox="0 0 130 130" width="100%" height="100%"><rect width="130" height="130" fill="${p[0]}"/><rect y="82" width="130" height="48" fill="${p[1]}"/><circle cx="90" cy="48" r="22" fill="#FAC775"/><rect x="22" y="22" width="8" height="54" fill="#FAECE7"/></svg>`;}
+function donut(genres){const tot=genres.reduce((s,g)=>s+g.n,0)||1;const C=2*Math.PI*40;let off=0;
+  const arcs=genres.map((g,i)=>{const len=C*g.n/tot;const el=`<circle cx="52" cy="52" r="40" fill="none" stroke="${GCOL[i%GCOL.length]}" stroke-width="12" stroke-dasharray="${len.toFixed(2)} ${(C-len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}"/>`;off+=len;return el;}).join('');
+  return `<svg width="104" height="104" viewBox="0 0 104 104"><g transform="rotate(-90 52 52)">${arcs}</g></svg>`;}
+
+fetch('/api/home').then(r=>r.json()).then(d=>{
+  document.getElementById('greet').textContent='Hola, probertoj';
+  const c=d.counts;
+  metrics.innerHTML=[['Artistas',c.artists],['Álbumes',c.albums],['Pistas',c.tracks],['Géneros',c.genres]]
+    .map(([l,v])=>`<div class="metric"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
+  recent.innerHTML=d.recent.map(a=>`<a class="card" href="album.html?id=${a.id}"><div class="cov" style="position:relative;border-radius:10px;overflow:hidden;aspect-ratio:1">${cover(a.id)}${a.tier_key?`<span class="badge" style="background:${TC[a.tier_key][0]};color:${TC[a.tier_key][1]}">${TN[a.tier_key]}</span>`:''}</div><div class="t">${esc(a.title)}</div><div class="s">${esc(a.artist)} · ${a.year||'—'}</div></a>`).join('');
+  const maxT=Math.max(1,...d.tiers.map(t=>t.n));
+  tiers.innerHTML=d.tiers.map(t=>`<div class="tierbar"><span class="lab">${t.label}</span><div class="track"><div style="width:${Math.round(t.n/maxT*100)}%;height:100%;background:${(TC[t.key]||['#888'])[0]}"></div></div><span class="n">${t.n}</span></div>`).join('');
+  document.getElementById('donut').innerHTML=donut(d.genres);
+  const tot=d.genres.reduce((s,g)=>s+g.n,0)||1;
+  glegend.innerHTML=d.genres.map((g,i)=>`<div><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${GCOL[i%GCOL.length]};margin-right:6px"></span>${esc(g.name)} <span style="color:var(--text-2)">${Math.round(g.n/tot*100)}%</span></div>`).join('');
+}).catch(e=>greet.textContent='error: '+e.message);
+</script>
+</body>
+</html>
