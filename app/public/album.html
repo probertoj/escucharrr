@@ -28,7 +28,7 @@ fetch('/api/album?id='+id).then(r=>r.json()).then(a=>{
   const genres=(a.genres||[]).map(g=>`<span class="gchip">${esc(g)}</span>`).join(' ');
   const about=a.about?`<div class="about"><div class="prov">${a.about_source?('desde '+esc(a.about_source.source)+(a.about_source.source_ref?' · '+esc(a.about_source.source_ref):'')):''}</div>${esc(a.about)}</div>`:'';
   const editions=(a.editions||[]).map(e=>`${esc(e.format||'?')}${e.date?' · '+esc(e.date):''}`).join(' &nbsp;·&nbsp; ');
-  const tracks=(a.tracks||[]).length?`<div class="sec">Pistas</div>`+a.tracks.map(t=>`<div class="track"><span class="pos">${t.pos}</span><span style="flex:1">${esc(t.title)}</span><span class="dur">${mmss(t.length_ms)}</span></div>`).join(''):'';
+  const tracks=(a.tracks||[]).length?`<div class="sec">Pistas</div>`+a.tracks.map(t=>`<div class="track"><button class="play" data-track="${t.trackId}" aria-label="Reproducir" title="Reproducir" style="border:none;background:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0 4px">▶</button><span class="pos">${t.pos}</span><span style="flex:1">${esc(t.title)}</span><span class="dur">${mmss(t.length_ms)}</span></div>`).join(''):'';
   const credits=(a.credits||[]).length?`<div class="sec">Créditos</div><div class="credits">`+a.credits.map(c=>`<div class="c"><div class="role">${esc(c.role)}</div>${c.artists.map(esc).join(', ')}</div>`).join('')+`</div>`:'';
   app.innerHTML=`
     <div class="hero">
@@ -50,6 +50,13 @@ fetch('/api/album?id='+id).then(r=>r.json()).then(a=>{
     ${tracks}
     ${credits}`;
 }).catch(e=>app.innerHTML='error: '+e.message);
+
+// Registrar escucha al pulsar ▶ (sin motor de audio aún: marca la reproducción)
+document.addEventListener('click',e=>{
+  const b=e.target.closest('.play'); if(!b)return;
+  fetch('/api/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({track_id:+b.dataset.track})})
+    .then(r=>r.json()).then(()=>{b.textContent='✓';b.style.color='var(--text-2)';setTimeout(()=>{b.textContent='▶';b.style.color='var(--accent)';},900);});
+});
 </script>
 </body>
 </html>

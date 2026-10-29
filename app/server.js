@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 7733;
 const DB_PATH = path.join(__dirname, 'escucharrr.db');
 const PUB = path.join(__dirname, 'public');
 if (!fs.existsSync(DB_PATH)) { console.error('No existe', DB_PATH, '\nGenera la BD con las herramientas de ../data-layer.'); process.exit(1); }
-const db = new DatabaseSync(DB_PATH, { readOnly: true });
+const db = new DatabaseSync(DB_PATH);
 
 const genresOf = db.prepare(`SELECT group_concat(g.name,'|') gs FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id WHERE rgg.release_group_id=?`);
 const formatOf = db.prepare(`SELECT rel.format f FROM "release" rel WHERE rel.release_group_id=? LIMIT 1`);
@@ -26,7 +26,7 @@ const Q = {
   about: db.prepare(`SELECT value v FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='about'`),
   prov: db.prepare(`SELECT field,source,source_ref FROM provenance WHERE subject_type='release_group' AND subject_id=?`),
   editions: db.prepare(`SELECT format,date,country FROM "release" WHERE release_group_id=? ORDER BY date`),
-  tracks: db.prepare(`SELECT m.position disc, tr.position pos, tr.title, tr.length_ms,
+  tracks: db.prepare(`SELECT tr.id trackId, m.position disc, tr.position pos, tr.title, tr.length_ms,
       (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=tr.artist_credit_id ORDER BY acn.position LIMIT 1) artist
      FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
      WHERE rel.release_group_id=? ORDER BY m.position,tr.position`),
@@ -40,13 +40,32 @@ const Q = {
   recent: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.tier_key FROM v_album a JOIN release_group rg ON rg.id=a.id ORDER BY rg.created_at DESC, rg.id DESC LIMIT 10`),
   tiers: db.prepare(`SELECT key, label, (SELECT count(*) FROM rating_tier rt WHERE rt.subject_type='release_group' AND rt.tier_key=tier.key) n FROM tier ORDER BY rank DESC`),
   topGenres: db.prepare(`SELECT g.name, count(*) n FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id GROUP BY g.id ORDER BY n DESC, g.name LIMIT 8`),
+  trackInfo: db.prepare('SELECT recording_id, length_ms FROM track WHERE id=?'),
+  insPlay: db.prepare('INSERT INTO play(recording_id,track_id,local_file_id,ms_played,source) VALUES(?,?,?,?,?)'),
+  totalPlays: db.prepare('SELECT COUNT(*) n, COALESCE(SUM(ms_played),0) ms FROM play'),
+  daily: db.prepare(`SELECT date(played_at) d, SUM(ms_played) ms, COUNT(*) c FROM play WHERE played_at>=date('now','-27 days') GROUP BY d ORDER BY d`),
+  topArtists: db.prepare(`SELECT acn.name artist, SUM(p.ms_played) ms, COUNT(*) plays FROM play p JOIN recording r ON r.id=p.recording_id JOIN artist_credit_name acn ON acn.artist_credit_id=r.artist_credit_id AND acn.position=1 GROUP BY acn.name ORDER BY ms DESC, plays DESC LIMIT 5`),
+  topReleases: db.prepare(`SELECT rg.id, rg.title, (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) artist, SUM(p.ms_played) ms, COUNT(*) plays FROM play p JOIN track tr ON tr.id=p.track_id JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id GROUP BY rg.id ORDER BY ms DESC LIMIT 5`),
 };
+function logPlay(j) {
+  let recId = j.recording_id || null, trackId = j.track_id || null, ms = j.ms_played;
+  if (trackId) { const t = Q.trackInfo.get(trackId); if (t) { recId = recId || t.recording_id; if (ms == null) ms = t.length_ms; } }
+  if (!recId && !trackId) return { ok: false, error: 'falta track_id o recording_id' };
+  Q.insPlay.run(recId, trackId, null, ms || 0, j.source || 'ui');
+  return { ok: true };
+}
 function home() {
   return {
     counts: { artists: Q.cArtists.get().n, albums: Q.cAlbums.get().n, tracks: Q.cTracks.get().n, genres: Q.cGenres.get().n },
     recent: Q.recent.all(),
     tiers: Q.tiers.all(),
     genres: Q.topGenres.all(),
+    listening: {
+      total: Q.totalPlays.get(),
+      daily: Q.daily.all(),
+      topArtists: Q.topArtists.all(),
+      topReleases: Q.topReleases.all(),
+    },
   };
 }
 
@@ -89,8 +108,13 @@ function sendFile(res, file) {
 }
 
 http.createServer((req, res) => {
+  const u = new URL(req.url, 'http://x');
+  if (req.method === 'POST' && u.pathname === '/api/play') {
+    let body = ''; req.on('data', c => { body += c; if (body.length > 1e5) req.destroy(); });
+    req.on('end', () => { try { sendJSON(res, logPlay(JSON.parse(body || '{}'))); } catch (e) { res.writeHead(400); res.end(String(e.message)); } });
+    return;
+  }
   try {
-    const u = new URL(req.url, 'http://x');
     if (u.pathname === '/api/library') return sendJSON(res, libraryList());
     if (u.pathname === '/api/album') { const a = album(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/search') return sendJSON(res, search(u.searchParams.get('q'), Math.min(parseInt(u.searchParams.get('n') || '20', 10) || 20, 100)));
