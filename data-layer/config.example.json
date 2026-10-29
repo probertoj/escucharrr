@@ -1,0 +1,20 @@
+{
+  "vault": "./sample-vault",
+  "albumsFolder": "Discos",
+  "filenamePattern": "{artist} - {album}",
+  "fields": {
+    "artist": ["artist", "artista"],
+    "album":  ["album", "título", "title"],
+    "year":   ["year", "año"],
+    "tier":   ["tier", "nivel"],
+    "rating": ["rating", "estrellas", "nota"],
+    "genre":  ["genre", "género", "generos", "géneros"]
+  },
+  "tierMap": {
+    "excel": "excel", "excelente": "excel",
+    "sí": "si", "si": "si",
+    "ok": "ok",
+    "meh": "meh",
+    "no": "no"
+  }
+}

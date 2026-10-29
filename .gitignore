@@ -1,0 +1,6 @@
+# bases de datos generadas
+*.db
+*.db-wal
+*.db-shm
+# node
+node_modules/
