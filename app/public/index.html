@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — biblioteca</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>Mi biblioteca</h1>
+  <div class="count" id="count">cargando…</div>
+
+  <div class="toolbar">
+    <button class="btn-accent">▶ Reproducir</button>
+    <button id="focusbtn">▸ Focus</button>
+    <div class="spacer"></div>
+    <label style="color:var(--text-2);font-size:13px">Ordenar</label>
+    <select id="sort">
+      <option value="title">Por título</option>
+      <option value="year">Por año</option>
+      <option value="artist">Por artista</option>
+      <option value="tier">Por tier</option>
+      <option value="rating">Por valoración</option>
+    </select>
+    <input id="filter" type="search" placeholder="Filtrar">
+  </div>
+
+  <div class="focus" id="focus" hidden><div class="facets" id="facets"></div></div>
+  <div class="chips" id="chips"></div>
+  <div class="grid" id="grid"></div>
+</div>
+
+<script>
+const TC={excel:['#0F6E56','#E1F5EE'],si:['#639922','#EAF3DE'],ok:['#BA7517','#FAEEDA'],meh:['#5F5E5A','#F1EFE8'],no:['#A32D2D','#FCEBEB']};
+const TN={excel:'Excel',si:'Sí',ok:'Ok',meh:'Meh',no:'No'}, TR={excel:5,si:4,ok:3,meh:2,no:1};
+const PAIRS=[['#0F6E56','#1D9E75'],['#534AB7','#7F77DD'],['#185FA5','#378ADD'],['#854F0B','#BA7517'],['#72243E','#D4537E'],['#5F5E5A','#888780'],['#3B6D11','#639922'],['#993C1D','#D85A30']];
+function cover(id){const p=PAIRS[id%PAIRS.length];return `<svg viewBox="0 0 150 150" width="100%" height="100%"><rect width="150" height="150" fill="${p[0]}"/><rect y="94" width="150" height="56" fill="${p[1]}"/><circle cx="104" cy="54" r="26" fill="#FAC775"/><rect x="24" y="24" width="9" height="62" fill="#FAECE7"/></svg>`;}
+function stars(s){return s?`<span class="stars">★</span> ${(+s).toFixed(1)}`:'<span style="color:var(--muted)">—</span>';}
+
+let ALBUMS=[];
+const active={tier:[],genre:[],decade:[],type:[],format:[]}; let minR=null, txt='';
+const facetDefs=[['tier','Tier'],['genre','Género'],['decade','Década'],['type','Tipo'],['format','Formato']];
+function valsOf(key){const m={};ALBUMS.forEach(a=>{let vs=[];
+  if(key==='tier')vs=a.tier_key?[a.tier_key]:[];
+  else if(key==='genre')vs=a.genres||[];
+  else if(key==='decade')vs=a.year?[String(Math.floor(a.year/10)*10)+'s']:[];
+  else if(key==='type')vs=a.primary_type?[a.primary_type.toLowerCase()]:[];
+  else if(key==='format')vs=a.format?[a.format]:[];
+  vs.forEach(v=>m[v]=(m[v]||0)+1);});return m;}
+function matchFacet(a,key,sel){if(!sel.length)return true;let vs=[];
+  if(key==='tier')vs=a.tier_key?[a.tier_key]:[];
+  else if(key==='genre')vs=a.genres||[];
+  else if(key==='decade')vs=a.year?[String(Math.floor(a.year/10)*10)+'s']:[];
+  else if(key==='type')vs=a.primary_type?[a.primary_type.toLowerCase()]:[];
+  else if(key==='format')vs=a.format?[a.format]:[];
+  return vs.some(v=>sel.includes(v));}
+function passes(a){
+  for(const[k]of facetDefs)if(!matchFacet(a,k,active[k]))return false;
+  if(minR!=null&&!(a.album_stars>=minR))return false;
+  if(txt&&!((a.title+' '+a.artist).toLowerCase().includes(txt)))return false;
+  return true;}
+
+function renderFacets(){
+  let h=facetDefs.map(([k,label])=>{const m=valsOf(k);
+    const vs=Object.keys(m).sort((x,y)=>k==='tier'?TR[y]-TR[x]:(k==='decade'?x.localeCompare(y):m[y]-m[x]));
+    return `<div class="fcol"><h4>${label}</h4>`+vs.map(v=>{const on=active[k].includes(v);const lab=k==='tier'?TN[v]:v;
+      return `<div class="fv ${on?'on':''}" data-k="${k}" data-v="${v}"><span>${lab}</span><span class="n">${m[v]}</span></div>`;}).join('')+`</div>`;}).join('');
+  const rm=[[5,'5★'],[4,'4★ o más'],[3,'3★ o más'],[2,'2★ o más'],[1,'1★ o más']];
+  h+=`<div class="fcol"><h4>Valoración</h4>`+rm.map(([v,l])=>{const n=ALBUMS.filter(a=>a.album_stars>=v).length;const on=minR===v;
+    return `<div class="fv ${on?'on':''}" data-rat="${v}"><span>${l}</span><span class="n">${n}</span></div>`;}).join('')+`</div>`;
+  facets.innerHTML=h;}
+function renderChips(){
+  const c=[];facetDefs.forEach(([k])=>active[k].forEach(v=>c.push([k,v,k==='tier'?TN[v]:v])));
+  if(minR!=null)c.push(['rat',minR,minR+'★ o más']);
+  chips.innerHTML=c.length?c.map(x=>`<span class="chip" data-ck="${x[0]}" data-cv="${x[1]}">${x[2]} ✕</span>`).join('')+`<span class="chip" data-clear="1" style="background:var(--surface-2);color:var(--text-2)">Limpiar</span>`:'';}
+function render(){
+  let l=ALBUMS.filter(passes);const s=sort.value;
+  l.sort((a,b)=>s==='year'?(b.year||0)-(a.year||0):s==='artist'?a.artist.localeCompare(b.artist):s==='tier'?(TR[b.tier_key]||0)-(TR[a.tier_key]||0):s==='rating'?(b.album_stars||0)-(a.album_stars||0):a.title.localeCompare(b.title));
+  count.textContent=l.length===ALBUMS.length?`${ALBUMS.length} álbumes`:`${l.length} de ${ALBUMS.length} álbumes`;
+  grid.innerHTML=l.map(a=>`<a class="card" href="album.html?id=${a.id}">
+    <div class="cov">${cover(a.id)}
+      ${a.tier_key?`<span class="badge" style="background:${TC[a.tier_key][0]};color:${TC[a.tier_key][1]}">${TN[a.tier_key]}</span>`:''}
+      ${a.is_favorite?'<span class="fav">♥</span>':''}</div>
+    <div class="t">${a.title}</div><div class="s">${a.artist} · ${a.year||'—'}</div></a>`).join('');
+  renderFacets();renderChips();}
+
+document.addEventListener('click',e=>{
+  const fv=e.target.closest('.fv');
+  if(fv){if(fv.dataset.rat!==undefined){const v=+fv.dataset.rat;minR=minR===v?null:v;}
+    else{const a=active[fv.dataset.k],v=fv.dataset.v,i=a.indexOf(v);i<0?a.push(v):a.splice(i,1);}render();return;}
+  const ch=e.target.closest('.chip');
+  if(ch){if(ch.dataset.clear){for(const k in active)active[k]=[];minR=null;}
+    else if(ch.dataset.ck==='rat')minR=null;
+    else{const a=active[ch.dataset.ck],i=a.indexOf(ch.dataset.cv);if(i>=0)a.splice(i,1);}render();return;}
+});
+focusbtn.onclick=()=>{focus.hidden=!focus.hidden;focusbtn.textContent=(focus.hidden?'▸':'▾')+' Focus';};
+sort.onchange=render; filter.oninput=()=>{txt=filter.value.toLowerCase().trim();render();};
+
+fetch('/api/library').then(r=>r.json()).then(d=>{ALBUMS=d;render();}).catch(e=>count.textContent='error: '+e.message);
+</script>
+</body>
+</html>

@@ -13,29 +13,33 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
   - `schema.sql` — esquema SQLite (grafo estilo MusicBrainz; `tier` y `rating` de primera
     clase e indexados; créditos tipados; mapeo de ficheros; procedencia; FTS5; vistas).
   - `obsidian-sync.js` — sincroniza un vault de Obsidian al grafo (bio/tier/rating; tus notas mandan).
-  - `scan.js` — escanea ficheros locales (FLAC/WAV) → `local_file` (formato, SR, bits, duración)
-    y mapea por tags al grafo.
-  - `enrich.js` — enriquece desde MusicBrainz: mbid, tipo, fecha, géneros y **créditos por rol**
-    (intérpretes/producción/ingeniería) a nivel de grabación.
+  - `scan.js` — escanea ficheros locales (FLAC/WAV) → `local_file` + mapeo por tags al grafo.
+  - `enrich.js` — enriquece desde MusicBrainz: mbid, tipo, fecha, géneros y **créditos por rol**.
   - `config.example.json`, `obsidian-mapping.md`, `sample-vault/` — configuración, spec y ejemplo.
+- `app/` — vista web mínima que lee de la BD (**funcionando**): servidor + biblioteca + página de álbum.
+  - `server.js` — API JSON (`/api/library`, `/api/album?id=`) desde SQLite (node:http + node:sqlite).
+  - `public/` — biblioteca (Focus por tier/género/década/tipo/formato/valoración, orden, filtro)
+    y página de álbum (tier, valoración, créditos por rol, bio con procedencia).
 
 Todo usa `node:sqlite` (Node ≥ 22.5 / 24), **sin paquetes externos**.
 
-## Probar el data-layer
+## Construir la BD y arrancar la app
 
 ```bash
+# 1. generar la base de datos (data-layer/)
 cd data-layer
-# 1. tu vault de Obsidian -> grafo (tier / rating / "acerca de")
-node obsidian-sync.js --db escucharrr.db --config config.example.json --demo
-# 2. escanear ficheros locales -> local_file + grafo (por tags)
-node scan.js --db escucharrr.db --root "/ruta/a/tu/musica" --demo
-# 3. enriquecer con MusicBrainz (mbid, géneros, créditos por rol)
-node enrich.js --db escucharrr.db --demo
+node obsidian-sync.js --db ../app/escucharrr.db --config config.example.json
+node scan.js         --db ../app/escucharrr.db --root "/ruta/a/tu/musica"
+node enrich.js       --db ../app/escucharrr.db --limit 50
+
+# 2. arrancar la vista web
+cd ..
+node app/server.js            # http://localhost:7733
 ```
 
-Probado de punta a punta con datos reales: FLAC/WAV escaneados con sus propiedades,
-álbum resuelto en MusicBrainz con géneros y 33 créditos por rol, y consultas como
-"Excel sin valorar" o "4★ o más" resueltas sobre `tier`/`rating`.
+Probado de punta a punta con datos reales: FLAC/WAV escaneados con sus propiedades, álbum
+resuelto en MusicBrainz con géneros y créditos por rol, consultas "Excel sin valorar" /
+"4★ o más" sobre `tier`/`rating`, y la biblioteca + página de álbum renderizando desde SQLite.
 
 Principios: la biblioteca es una proyección sobre un grafo canónico (no un reflejo de los
 tags); **tus notas de Obsidian mandan** sobre las fuentes externas; `tier`/`rating` son

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — álbum</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+  <div style="margin-bottom:14px"><a href="/" style="color:var(--accent)">‹ Biblioteca</a></div>
+  <div id="app">cargando…</div>
+</div>
+
+<script>
+const TC={excel:['#0F6E56','#E1F5EE'],si:['#639922','#EAF3DE'],ok:['#BA7517','#FAEEDA'],meh:['#5F5E5A','#F1EFE8'],no:['#A32D2D','#FCEBEB']};
+const TN={excel:'Excel',si:'Sí',ok:'Ok',meh:'Meh',no:'No'};
+const PAIRS=[['#0F6E56','#1D9E75'],['#534AB7','#7F77DD'],['#185FA5','#378ADD'],['#854F0B','#BA7517'],['#72243E','#D4537E'],['#5F5E5A','#888780'],['#3B6D11','#639922'],['#993C1D','#D85A30']];
+function cover(id){const p=PAIRS[id%PAIRS.length];return `<svg viewBox="0 0 200 200" width="100%" height="100%"><rect width="200" height="200" fill="${p[0]}"/><rect y="124" width="200" height="76" fill="${p[1]}"/><circle cx="140" cy="72" r="34" fill="#FAC775"/><rect x="30" y="30" width="12" height="84" fill="#FAECE7"/></svg>`;}
+const mmss=ms=>ms?`${Math.floor(ms/60000)}:${String(Math.round(ms%60000/1000)).padStart(2,'0')}`:'';
+const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+const id=+new URLSearchParams(location.search).get('id');
+fetch('/api/album?id='+id).then(r=>r.json()).then(a=>{
+  if(!a||!a.id){app.innerHTML='No encontrado';return;}
+  const tier=a.tier_key?`<span class="badge" style="position:static;display:inline-block;background:${TC[a.tier_key][0]};color:${TC[a.tier_key][1]}">${TN[a.tier_key]}</span>`:'';
+  const stars=a.album_stars?`<span class="stars">★</span> ${(+a.album_stars).toFixed(1)}`:'—';
+  const genres=(a.genres||[]).map(g=>`<span class="gchip">${esc(g)}</span>`).join(' ');
+  const about=a.about?`<div class="about"><div class="prov">${a.about_source?('desde '+esc(a.about_source.source)+(a.about_source.source_ref?' · '+esc(a.about_source.source_ref):'')):''}</div>${esc(a.about)}</div>`:'';
+  const editions=(a.editions||[]).map(e=>`${esc(e.format||'?')}${e.date?' · '+esc(e.date):''}`).join(' &nbsp;·&nbsp; ');
+  const tracks=(a.tracks||[]).length?`<div class="sec">Pistas</div>`+a.tracks.map(t=>`<div class="track"><span class="pos">${t.pos}</span><span style="flex:1">${esc(t.title)}</span><span class="dur">${mmss(t.length_ms)}</span></div>`).join(''):'';
+  const credits=(a.credits||[]).length?`<div class="sec">Créditos</div><div class="credits">`+a.credits.map(c=>`<div class="c"><div class="role">${esc(c.role)}</div>${c.artists.map(esc).join(', ')}</div>`).join('')+`</div>`:'';
+  app.innerHTML=`
+    <div class="hero">
+      <div class="cov">${cover(a.id)}</div>
+      <div style="flex:1;min-width:240px">
+        <div style="color:var(--text-2);font-size:13px">${esc(a.primary_type||'álbum')} · ${a.year||'—'}</div>
+        <h1>${esc(a.title)}</h1>
+        <div style="font-size:15px;color:var(--accent)">${esc(a.artist)}</div>
+        <div class="meta">
+          <span>${tier}</span>
+          <span><span class="k">Valoración</span> ${stars}</span>
+          ${a.format?`<span><span class="k">Formato</span> ${esc(a.format)}</span>`:''}
+          ${editions?`<span><span class="k">Ediciones</span> ${editions}</span>`:''}
+        </div>
+        <div>${genres}</div>
+      </div>
+    </div>
+    ${about}
+    ${tracks}
+    ${credits}`;
+}).catch(e=>app.innerHTML='error: '+e.message);
+</script>
+</body>
+</html>
