@@ -162,6 +162,8 @@ db.exec(`INSERT INTO search_fts(name,kind,subject_type,subject_id)
   SELECT name,'artist','artist',id FROM artist`);
 db.exec(`INSERT INTO search_fts(name,kind,subject_type,subject_id)
   SELECT title,'album','release_group',id FROM release_group`);
+db.exec(`INSERT INTO search_fts(name,kind,subject_type,subject_id)
+  SELECT title,'track','recording',id FROM recording`);
 
 console.log(`Sincronizadas ${n} notas -> ${DB_PATH}`);
 

@@ -8,6 +8,7 @@
 </head>
 <body>
 <div class="wrap">
+  <div class="search"><input id="q" type="search" placeholder="Buscar artistas, álbumes, pistas…" autocomplete="off"><div id="sdrop" class="sdrop" hidden></div></div>
   <h1>Mi biblioteca</h1>
   <div class="count" id="count">cargando…</div>
 
@@ -98,6 +99,34 @@ focusbtn.onclick=()=>{focus.hidden=!focus.hidden;focusbtn.textContent=(focus.hid
 sort.onchange=render; filter.oninput=()=>{txt=filter.value.toLowerCase().trim();render();};
 
 fetch('/api/library').then(r=>r.json()).then(d=>{ALBUMS=d;render();}).catch(e=>count.textContent='error: '+e.message);
+
+// Buscador instantáneo (FTS5 por prefijo)
+(function(){
+  const q=document.getElementById('q'), drop=document.getElementById('sdrop');
+  const KINDS=[['artist','Artistas'],['album','Álbumes'],['track','Pistas']];
+  const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  function avatar(r){
+    if(r.kind==='artist'){const c=['#534AB7','#0F6E56','#993C1D','#185FA5'][r.subject_id%4];return `<div class="savatar" style="border-radius:50%;background:${c}">${esc((r.name||'?').slice(0,2).toUpperCase())}</div>`;}
+    const p=PAIRS[((r.album_id||r.subject_id))%PAIRS.length];return `<div class="savatar"><svg viewBox="0 0 34 34" width="34" height="34"><rect width="34" height="34" fill="${p[0]}"/><circle cx="24" cy="12" r="7" fill="#FAC775"/></svg></div>`;
+  }
+  const href=r=>r.album_id?`album.html?id=${r.album_id}`:null;
+  let t; const run=()=>{
+    const v=q.value.trim(); if(!v){drop.hidden=true;return;}
+    fetch('/api/search?q='+encodeURIComponent(v)+'&n=15').then(r=>r.json()).then(res=>{
+      if(!res.length){drop.innerHTML='<div class="shdr">Sin resultados para «'+esc(v)+'»</div>';drop.hidden=false;return;}
+      let h='<div class="shdr">INSTANTÁNEA · índice por prefijo</div>';
+      KINDS.forEach(([k,label])=>{const g=res.filter(r=>r.kind===k).slice(0,4);if(!g.length)return;
+        h+='<div class="skind">'+label+'</div>'+g.map(r=>{const u=href(r);const inner=avatar(r)+'<div><div class="nm">'+esc(r.name)+'</div><div class="sub">'+label.slice(0,-1)+'</div></div>';
+          return u?`<a class="sr" href="${u}">${inner}</a>`:`<div class="sr">${inner}</div>`;}).join('');});
+      h+='<div class="seeall" data-q="'+esc(v)+'">Ver todos los resultados</div>';
+      drop.innerHTML=h;drop.hidden=false;
+    });
+  };
+  q.addEventListener('input',()=>{clearTimeout(t);t=setTimeout(run,120);});
+  q.addEventListener('focus',()=>{if(q.value.trim())run();});
+  drop.addEventListener('click',e=>{const s=e.target.closest('.seeall');if(s)location.href='search.html?q='+encodeURIComponent(s.dataset.q);});
+  document.addEventListener('click',e=>{if(!e.target.closest('.search'))drop.hidden=true;});
+})();
 </script>
 </body>
 </html>

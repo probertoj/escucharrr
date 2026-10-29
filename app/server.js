@@ -31,7 +31,22 @@ const Q = {
      FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
      WHERE rel.release_group_id=? ORDER BY m.position,tr.position`),
   credits: db.prepare(`SELECT role, group_concat(DISTINCT artist_name) artists FROM v_album_credits WHERE release_group_id=? GROUP BY role ORDER BY role`),
+  search: db.prepare(`SELECT name, kind, subject_type, subject_id FROM search_fts WHERE search_fts MATCH ? ORDER BY bm25(search_fts) LIMIT ?`),
+  recAlbum: db.prepare(`SELECT rel.release_group_id id FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE tr.recording_id=? LIMIT 1`),
 };
+
+// Búsqueda FTS5: prefijo por token (instantánea) + ranking bm25 (completa).
+function search(q, n) {
+  const toks = String(q || '').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  if (!toks.length) return [];
+  const match = toks.map(t => t.replace(/"/g, '') + '*').join(' ');
+  let rows; try { rows = Q.search.all(match, n); } catch (e) { return []; }
+  return rows.map(r => ({
+    kind: r.kind, name: r.name, subject_type: r.subject_type, subject_id: r.subject_id,
+    album_id: r.subject_type === 'release_group' ? r.subject_id
+      : (r.subject_type === 'recording' ? ((Q.recAlbum.get(r.subject_id) || {}).id || null) : null),
+  }));
+}
 
 function album(id) {
   const a = Q.album.get(id); if (!a) return null;
@@ -63,6 +78,7 @@ http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     if (u.pathname === '/api/library') return sendJSON(res, libraryList());
     if (u.pathname === '/api/album') { const a = album(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
+    if (u.pathname === '/api/search') return sendJSON(res, search(u.searchParams.get('q'), Math.min(parseInt(u.searchParams.get('n') || '20', 10) || 20, 100)));
     if (u.pathname === '/' || u.pathname === '') return sendFile(res, 'index.html');
     return sendFile(res, u.pathname.replace(/^\//, ''));
   } catch (e) { res.writeHead(500); res.end(String(e.message)); }

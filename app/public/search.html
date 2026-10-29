@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — búsqueda</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+  <div style="margin-bottom:14px"><a href="/" style="color:var(--accent)">‹ Biblioteca</a></div>
+  <div class="search"><input id="q" type="search" placeholder="Buscar…" autocomplete="off"></div>
+  <div style="font-size:12px;color:var(--text-2);margin:-8px 0 14px">COMPLETA · índice invertido con ranking (bm25)</div>
+  <div id="out"></div>
+</div>
+
+<script>
+const PAIRS=[['#0F6E56','#1D9E75'],['#534AB7','#7F77DD'],['#185FA5','#378ADD'],['#854F0B','#BA7517'],['#72243E','#D4537E'],['#5F5E5A','#888780'],['#3B6D11','#639922'],['#993C1D','#D85A30']];
+const KINDS=[['artist','Artistas'],['album','Álbumes'],['track','Pistas']];
+const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function avatar(r){
+  if(r.kind==='artist'){const c=['#534AB7','#0F6E56','#993C1D','#185FA5'][r.subject_id%4];return `<div class="savatar" style="border-radius:50%;background:${c}">${esc((r.name||'?').slice(0,2).toUpperCase())}</div>`;}
+  const p=PAIRS[((r.album_id||r.subject_id))%PAIRS.length];return `<div class="savatar"><svg viewBox="0 0 34 34" width="34" height="34"><rect width="34" height="34" fill="${p[0]}"/><circle cx="24" cy="12" r="7" fill="#FAC775"/></svg></div>`;
+}
+const href=r=>r.album_id?`album.html?id=${r.album_id}`:null;
+const out=document.getElementById('out'), q=document.getElementById('q');
+
+function run(v){
+  if(!v){out.innerHTML='';return;}
+  fetch('/api/search?q='+encodeURIComponent(v)+'&n=80').then(r=>r.json()).then(res=>{
+    if(!res.length){out.innerHTML='<p style="color:var(--text-2)">Sin resultados para «'+esc(v)+'».</p>';return;}
+    let h='';
+    KINDS.forEach(([k,label])=>{const g=res.filter(r=>r.kind===k);if(!g.length)return;
+      h+='<div class="sec">'+label+' ('+g.length+')</div>'+g.map((r,i)=>{const u=href(r);
+        const inner=avatar(r)+'<div style="flex:1"><div class="nm">'+esc(r.name)+'</div><div class="sub">'+label.slice(0,-1)+'</div></div><span style="font-size:11px;color:var(--muted)">#'+(i+1)+'</span>';
+        return u?`<a class="sr" style="border-bottom:1px solid var(--border)" href="${u}">${inner}</a>`:`<div class="sr" style="border-bottom:1px solid var(--border)">${inner}</div>`;}).join('');});
+    out.innerHTML=h;
+  });
+}
+let t; q.addEventListener('input',()=>{clearTimeout(t);t=setTimeout(()=>{const v=q.value.trim();history.replaceState(0,'','search.html?q='+encodeURIComponent(v));run(v);},150);});
+const q0=new URLSearchParams(location.search).get('q')||''; q.value=q0; run(q0); q.focus();
+</script>
+</body>
+</html>

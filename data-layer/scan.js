@@ -138,6 +138,7 @@ try {
 db.exec('DELETE FROM search_fts');
 db.exec("INSERT INTO search_fts(name,kind,subject_type,subject_id) SELECT name,'artist','artist',id FROM artist");
 db.exec("INSERT INTO search_fts(name,kind,subject_type,subject_id) SELECT title,'album','release_group',id FROM release_group");
+db.exec("INSERT INTO search_fts(name,kind,subject_type,subject_id) SELECT title,'track','recording',id FROM recording");
 
 console.log(`Escaneados ${ok} ficheros (${ident} identificados por tags) -> ${DB_PATH}`);
 
