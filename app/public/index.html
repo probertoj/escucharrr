@@ -129,5 +129,6 @@ fetch('/api/library').then(r=>r.json()).then(d=>{ALBUMS=d;render();}).catch(e=>c
   document.addEventListener('click',e=>{if(!e.target.closest('.search'))drop.hidden=true;});
 })();
 </script>
+<script src="player.js" defer></script>
 </body>
 </html>

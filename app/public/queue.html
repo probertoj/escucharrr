@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — cola</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+  <nav style="display:flex;gap:16px;font-size:14px;margin-bottom:16px"><a href="home.html" style="color:var(--text-2)">Inicio</a><a href="/" style="color:var(--text-2)">Biblioteca</a><a href="search.html" style="color:var(--text-2)">Buscar</a></nav>
+  <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:12px">
+    <h1 style="font-size:26px">Cola</h1><span id="count" style="font-size:13px;color:var(--text-2)"></span>
+    <button id="clear" style="margin-left:auto">Vaciar lo próximo</button>
+  </div>
+  <div id="list"></div>
+</div>
+
+<script>
+const PAIRS=[['#0F6E56','#1D9E75'],['#534AB7','#7F77DD'],['#185FA5','#378ADD'],['#854F0B','#BA7517'],['#72243E','#D4537E'],['#5F5E5A','#888780'],['#3B6D11','#639922'],['#993C1D','#D85A30']];
+const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const mmss=ms=>{ms=ms||0;return Math.floor(ms/60000)+':'+String(Math.floor(ms%60000/1000)).padStart(2,'0');};
+function mini(id){const p=PAIRS[(id||0)%PAIRS.length];return `<svg width="40" height="40" viewBox="0 0 40 40" style="border-radius:5px;flex:none"><rect width="40" height="40" fill="${p[0]}"/><circle cx="28" cy="14" r="8" fill="#FAC775"/></svg>`;}
+const list=document.getElementById('list');
+function render(){
+  const st=player.getState(); const q=st.q, idx=st.idx;
+  document.getElementById('count').textContent=q.length+' pistas';
+  if(!q.length){list.innerHTML='<div style="color:var(--text-2);padding:20px 0">La cola está vacía. Reproduce un álbum para empezar.</div>';return;}
+  let h='';
+  q.forEach((t,i)=>{
+    if(idx>=0 && i===idx+1) h+='<div style="font-size:11px;color:var(--text-2);margin:14px 0 4px;letter-spacing:.04em">PRÓXIMAMENTE</div>';
+    const cur=i===idx;
+    h+=`<div class="track" style="${cur?'background:var(--accent-bg);border-radius:8px;':''}${i<idx?'opacity:.55;':''}padding:9px 10px">
+      <span data-jump="${i}" title="Reproducir" style="cursor:pointer;color:var(--accent)">▶</span>
+      ${mini(t.albumId)}
+      <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:14px;${cur?'color:var(--accent)':''}">${esc(t.title)}</div><div style="font-size:12px;color:var(--text-2)">${esc(t.artist)}</div></div>
+      <span class="dur">${mmss(t.length_ms)}</span>
+      <span data-remove="${i}" title="Quitar" style="cursor:pointer;color:var(--muted)">✕</span></div>`;
+  });
+  list.innerHTML=h;
+}
+document.addEventListener('click',e=>{
+  const j=e.target.closest('[data-jump]'); if(j){player.jumpTo(+j.dataset.jump);return;}
+  const r=e.target.closest('[data-remove]'); if(r){player.removeAt(+r.dataset.remove);return;}
+  if(e.target.closest('#clear'))player.clearUpcoming();
+});
+document.addEventListener('player:change',render);
+window.addEventListener('DOMContentLoaded',render);
+</script>
+<script src="player.js" defer></script>
+</body>
+</html>
