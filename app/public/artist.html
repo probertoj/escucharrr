@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — artista</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.ahero{display:flex;gap:22px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+.ahero .ava{width:120px;height:120px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;color:#fff;font-size:40px;font-weight:600}
+.ahero h1{font-size:32px;margin:2px 0}
+.appears{list-style:none;padding:0;margin:0}
+.appears li{display:flex;gap:12px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--border)}
+.appears .yr{color:var(--muted);width:46px;flex:none}
+.appears .roles{color:var(--text-2);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div style="margin-bottom:14px"><a href="/" style="color:var(--accent)">‹ Biblioteca</a></div>
+  <div id="app">cargando…</div>
+</div>
+
+<script>
+const TC={excel:['#0F6E56','#E1F5EE'],si:['#639922','#EAF3DE'],ok:['#BA7517','#FAEEDA'],meh:['#5F5E5A','#F1EFE8'],no:['#A32D2D','#FCEBEB']},TN={excel:'Excel',si:'Sí',ok:'Ok',meh:'Meh',no:'No'};
+const PAIRS=[['#0F6E56','#1D9E75'],['#534AB7','#7F77DD'],['#185FA5','#378ADD'],['#854F0B','#BA7517'],['#72243E','#D4537E'],['#5F5E5A','#888780'],['#3B6D11','#639922'],['#993C1D','#D85A30']];
+const AVA=['#534AB7','#0F6E56','#993C1D','#185FA5','#72243E','#3B6D11'];
+const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function cover(id){const p=PAIRS[id%PAIRS.length];return `<svg viewBox="0 0 150 150" width="100%" height="100%"><rect width="150" height="150" fill="${p[0]}"/><rect y="94" width="150" height="56" fill="${p[1]}"/><circle cx="104" cy="54" r="26" fill="#FAC775"/><rect x="24" y="24" width="9" height="62" fill="#FAECE7"/></svg>`;}
+function albumCard(a){return `<a class="card" href="album.html?id=${a.id}">
+  <div class="cov">${cover(a.id)}
+    ${a.tier_key?`<span class="badge" style="background:${TC[a.tier_key][0]};color:${TC[a.tier_key][1]}">${TN[a.tier_key]}</span>`:''}
+    ${a.is_favorite?'<span class="fav">♥</span>':''}</div>
+  <div class="t">${esc(a.title)}</div><div class="s">${esc(a.primary_type||'álbum')} · ${a.year||'—'}</div></a>`;}
+
+const id=+new URLSearchParams(location.search).get('id');
+fetch('/api/artist?id='+id).then(r=>r.json()).then(a=>{
+  if(!a||!a.id){app.innerHTML='No encontrado';return;}
+  document.title='escucharrr — '+a.name;
+  const ava=AVA[a.id%AVA.length];
+  const sub=[a.type,a.country,a.founded&&('desde '+a.founded)].filter(Boolean).join(' · ');
+  const genres=(a.genres||[]).map(g=>`<a class="gchip" href="genre.html?name=${encodeURIComponent(g.name)}">${esc(g.name)}</a>`).join(' ');
+  const bio=a.bio?`<div class="about"><div class="prov">${a.bio_source?('desde '+esc(a.bio_source.source)+(a.bio_source.source_ref?' · '+esc(a.bio_source.source_ref):'')):''}</div>${esc(a.bio)}</div>`:'';
+  const albums=(a.albums||[]).length?`<div class="sec">Álbumes <span style="color:var(--muted);font-size:14px;font-weight:400">${a.albums.length}</span></div><div class="grid">${a.albums.map(albumCard).join('')}</div>`:'<div class="count">Sin álbumes en tu biblioteca todavía.</div>';
+  const appears=(a.appears||[]).length?`<div class="sec">Aparece en</div><ul class="appears">`+a.appears.map(x=>`<li><span class="yr">${x.year||'—'}</span><span style="flex:1"><a href="album.html?id=${x.id}" style="color:var(--accent)">${esc(x.title)}</a> <span style="color:var(--text-2)">· ${esc(x.artist||'')}</span>${x.roles.length?`<div class="roles">${x.roles.map(esc).join(' · ')}</div>`:''}</span></li>`).join('')+`</ul>`:'';
+  app.innerHTML=`
+    <div class="ahero">
+      <div class="ava" style="background:${ava}">${esc((a.name||'?').slice(0,2).toUpperCase())}</div>
+      <div style="flex:1;min-width:220px">
+        <div style="color:var(--text-2);font-size:13px">${esc(sub||'artista')}</div>
+        <h1>${esc(a.name)}</h1>
+        ${a.disambiguation?`<div style="color:var(--text-2);font-size:14px">${esc(a.disambiguation)}</div>`:''}
+        <div style="margin-top:8px">${genres}</div>
+      </div>
+    </div>
+    ${bio}
+    ${albums}
+    ${appears}`;
+}).catch(e=>app.innerHTML='error: '+e.message);
+</script>
+<script src="player.js" defer></script>
+</body>
+</html>

@@ -23,7 +23,9 @@ const Q = {
       (SELECT label FROM tier WHERE key=a.tier_key) tier_label, a.album_stars, a.is_favorite
      FROM v_album a ORDER BY a.title`),
   album: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.tier_rank,
-      (SELECT label FROM tier WHERE key=a.tier_key) tier_label, a.album_stars, a.is_favorite
+      (SELECT label FROM tier WHERE key=a.tier_key) tier_label, a.album_stars, a.is_favorite,
+      (SELECT acn.artist_id FROM artist_credit_name acn JOIN release_group rg ON rg.artist_credit_id=acn.artist_credit_id
+         WHERE rg.id=a.id ORDER BY acn.position LIMIT 1) artist_id
      FROM v_album a WHERE a.id=?`),
   about: db.prepare(`SELECT value v FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='about'`),
   prov: db.prepare(`SELECT field,source,source_ref FROM provenance WHERE subject_type='release_group' AND subject_id=?`),
@@ -51,8 +53,40 @@ const Q = {
   insPlay: db.prepare('INSERT INTO play(recording_id,track_id,local_file_id,ms_played,source) VALUES(?,?,?,?,?)'),
   totalPlays: db.prepare('SELECT COUNT(*) n, COALESCE(SUM(ms_played),0) ms FROM play'),
   daily: db.prepare(`SELECT date(played_at) d, SUM(ms_played) ms, COUNT(*) c FROM play WHERE played_at>=date('now','-27 days') GROUP BY d ORDER BY d`),
-  topArtists: db.prepare(`SELECT acn.name artist, SUM(p.ms_played) ms, COUNT(*) plays FROM play p JOIN recording r ON r.id=p.recording_id JOIN artist_credit_name acn ON acn.artist_credit_id=r.artist_credit_id AND acn.position=1 GROUP BY acn.name ORDER BY ms DESC, plays DESC LIMIT 5`),
+  topArtists: db.prepare(`SELECT acn.artist_id aid, acn.name artist, SUM(p.ms_played) ms, COUNT(*) plays FROM play p JOIN recording r ON r.id=p.recording_id JOIN artist_credit_name acn ON acn.artist_credit_id=r.artist_credit_id AND acn.position=1 GROUP BY acn.artist_id ORDER BY ms DESC, plays DESC LIMIT 5`),
   topReleases: db.prepare(`SELECT rg.id, rg.title, (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) artist, SUM(p.ms_played) ms, COUNT(*) plays FROM play p JOIN track tr ON tr.id=p.track_id JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id GROUP BY rg.id ORDER BY ms DESC LIMIT 5`),
+  // ── artista ──
+  artist: db.prepare(`SELECT id,name,sort_name,type,country,founded,bio,disambiguation FROM artist WHERE id=?`),
+  artistBioProv: db.prepare(`SELECT source,source_ref FROM provenance WHERE subject_type='artist' AND subject_id=? AND field='bio'`),
+  artistBioEdit: db.prepare(`SELECT value v FROM user_edit WHERE subject_type='artist' AND subject_id=? AND field='bio'`),
+  artistTier: db.prepare(`SELECT tier_key FROM rating_tier WHERE subject_type='artist' AND subject_id=?`),
+  artistAlbums: db.prepare(`SELECT DISTINCT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
+     FROM v_album a JOIN release_group rg ON rg.id=a.id
+     JOIN artist_credit_name acn ON acn.artist_credit_id=rg.artist_credit_id
+     WHERE acn.artist_id=? ORDER BY a.first_release DESC, a.title`),
+  artistAppears: db.prepare(`SELECT rg.id, rg.title, substr(rg.first_release,1,4) year,
+       (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) artist,
+       group_concat(DISTINCT c.role) roles
+     FROM credit c
+     JOIN track tr ON tr.recording_id=c.entity_id AND c.entity_type='recording'
+     JOIN medium m ON m.id=tr.medium_id
+     JOIN "release" rel ON rel.id=m.release_id
+     JOIN release_group rg ON rg.id=rel.release_group_id
+     WHERE c.artist_id=? GROUP BY rg.id ORDER BY year DESC, rg.title`),
+  artistGenres: db.prepare(`SELECT g.name, count(*) n FROM release_group rg
+     JOIN artist_credit_name acn ON acn.artist_credit_id=rg.artist_credit_id
+     JOIN release_group_genre rgg ON rgg.release_group_id=rg.id
+     JOIN genre g ON g.id=rgg.genre_id
+     WHERE acn.artist_id=? GROUP BY g.id ORDER BY n DESC, g.name LIMIT 8`),
+  // ── género ──
+  genreAlbums: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
+     FROM v_album a JOIN release_group_genre rgg ON rgg.release_group_id=a.id
+     JOIN genre g ON g.id=rgg.genre_id WHERE g.name=? ORDER BY a.first_release DESC, a.title`),
+  genreRelated: db.prepare(`SELECT g2.name, count(*) n FROM release_group_genre x
+     JOIN release_group_genre y ON y.release_group_id=x.release_group_id AND y.genre_id!=x.genre_id
+     JOIN genre g1 ON g1.id=x.genre_id JOIN genre g2 ON g2.id=y.genre_id
+     WHERE g1.name=? GROUP BY g2.id ORDER BY n DESC, g2.name LIMIT 10`),
+  allGenres: db.prepare(`SELECT g.name, count(*) n FROM genre g JOIN release_group_genre rgg ON rgg.genre_id=g.id GROUP BY g.id ORDER BY n DESC, g.name`),
 };
 function logPlay(j) {
   let recId = j.recording_id || null, trackId = j.track_id || null, ms = j.ms_played;
@@ -103,6 +137,25 @@ function album(id) {
 }
 function libraryList() {
   return Q.library.all().map(a => { a.genres = (genresOf.get(a.id).gs || '').split('|').filter(Boolean); a.format = (formatOf.get(a.id) || {}).f || null; return a; });
+}
+function artist(id) {
+  const a = Q.artist.get(id); if (!a) return null;
+  const edit = Q.artistBioEdit.get(id);
+  a.bio = edit ? edit.v : a.bio;
+  a.bio_source = edit ? { source: 'user' } : (Q.artistBioProv.get(id) || null);
+  a.tier_key = (Q.artistTier.get(id) || {}).tier_key || null;
+  a.genres = Q.artistGenres.all(id);
+  a.albums = Q.artistAlbums.all(id);
+  const own = new Set(a.albums.map(x => x.id));
+  a.appears = Q.artistAppears.all(id)
+    .filter(x => !own.has(x.id))
+    .map(x => ({ id: x.id, title: x.title, year: x.year, artist: x.artist, roles: (x.roles || '').split(',').filter(Boolean) }));
+  return a;
+}
+function genre(name) {
+  const albums = Q.genreAlbums.all(name);
+  if (!albums.length) return null;
+  return { name, albums, related: Q.genreRelated.all(name) };
 }
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
@@ -192,6 +245,9 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/library') return sendJSON(res, libraryList());
     if (u.pathname === '/api/album') { const a = album(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/search') return sendJSON(res, search(u.searchParams.get('q'), Math.min(parseInt(u.searchParams.get('n') || '20', 10) || 20, 100)));
+    if (u.pathname === '/api/artist') { const a = artist(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
+    if (u.pathname === '/api/genre') { const g = genre(u.searchParams.get('name')); return g ? sendJSON(res, g) : (res.writeHead(404), res.end('{}')); }
+    if (u.pathname === '/api/genres') return sendJSON(res, Q.allGenres.all());
     if (u.pathname === '/api/home') return sendJSON(res, home());
     if (u.pathname === '/' || u.pathname === '') return sendFile(res, 'index.html');
     return sendFile(res, u.pathname.replace(/^\//, ''));

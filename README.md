@@ -30,8 +30,11 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     DSP, con ReplayGain), cola persistente, barra de "ahora suena" con progreso/seek/volumen y auto-avance.
   - **Biblioteca en vivo**: con `app/watch.json` (copia de `watch.example.json`), el servidor vigila
     tus carpetas de música y el vault de Obsidian, reescanea/sincroniza al vuelo y refresca la UI por SSE.
-  - `public/` — biblioteca (Focus por tier/género/década/tipo/formato/valoración, orden, filtro)
-    y página de álbum (tier, valoración, créditos por rol, bio con procedencia).
+  - `public/` — biblioteca (Focus por tier/género/década/tipo/formato/valoración, orden, filtro),
+    página de álbum (tier, valoración, créditos por rol, bio con procedencia), **página de artista**
+    (avatar, géneros, discografía propia y "aparece en" con sus roles), **página de género**
+    (álbumes del género + géneros relacionados) e **índice de géneros**. Todo internavegable:
+    álbum → artista → género, y los artistas del buscador abren su página.
 
 Todo usa `node:sqlite` (Node ≥ 22.5 / 24), **sin paquetes externos**.
 

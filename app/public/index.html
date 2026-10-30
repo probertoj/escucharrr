@@ -8,7 +8,7 @@
 </head>
 <body>
 <div class="wrap">
-  <nav style="display:flex;gap:16px;font-size:14px;margin-bottom:16px"><a href="home.html" style="color:var(--text-2)">Inicio</a><a href="/" style="color:var(--text);font-weight:600">Biblioteca</a><a href="search.html" style="color:var(--text-2)">Buscar</a></nav>
+  <nav style="display:flex;gap:16px;font-size:14px;margin-bottom:16px"><a href="home.html" style="color:var(--text-2)">Inicio</a><a href="/" style="color:var(--text);font-weight:600">Biblioteca</a><a href="genres.html" style="color:var(--text-2)">Géneros</a><a href="search.html" style="color:var(--text-2)">Buscar</a></nav>
   <div class="search"><input id="q" type="search" placeholder="Buscar artistas, álbumes, pistas…" autocomplete="off"><div id="sdrop" class="sdrop" hidden></div></div>
   <h1>Mi biblioteca</h1>
   <div class="count" id="count">cargando…</div>
@@ -112,7 +112,7 @@ document.addEventListener('escucharrr:changed',load);   // biblioteca en vivo
     if(r.kind==='artist'){const c=['#534AB7','#0F6E56','#993C1D','#185FA5'][r.subject_id%4];return `<div class="savatar" style="border-radius:50%;background:${c}">${esc((r.name||'?').slice(0,2).toUpperCase())}</div>`;}
     const p=PAIRS[((r.album_id||r.subject_id))%PAIRS.length];return `<div class="savatar"><svg viewBox="0 0 34 34" width="34" height="34"><rect width="34" height="34" fill="${p[0]}"/><circle cx="24" cy="12" r="7" fill="#FAC775"/></svg></div>`;
   }
-  const href=r=>r.album_id?`album.html?id=${r.album_id}`:null;
+  const href=r=>r.kind==='artist'?`artist.html?id=${r.subject_id}`:(r.album_id?`album.html?id=${r.album_id}`:null);
   let t; const run=()=>{
     const v=q.value.trim(); if(!v){drop.hidden=true;return;}
     fetch('/api/search?q='+encodeURIComponent(v)+'&n=15').then(r=>r.json()).then(res=>{

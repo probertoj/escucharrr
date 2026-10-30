@@ -24,7 +24,7 @@ nav.top a{color:var(--text-2)} nav.top a.on{color:var(--text);font-weight:600}
 </head>
 <body>
 <div class="wrap">
-  <nav class="top"><a href="home.html" class="on">Inicio</a><a href="/">Biblioteca</a><a href="search.html">Buscar</a></nav>
+  <nav class="top"><a href="home.html" class="on">Inicio</a><a href="/">Biblioteca</a><a href="genres.html">Géneros</a><a href="search.html">Buscar</a></nav>
   <h1 id="greet" style="font-size:30px">Hola</h1>
   <div class="metrics" id="metrics"></div>
 
@@ -54,8 +54,8 @@ function cover(id){const p=PAIRS[id%PAIRS.length];return `<svg viewBox="0 0 130 
 function donut(genres){const tot=genres.reduce((s,g)=>s+g.n,0)||1;const C=2*Math.PI*40;let off=0;
   const arcs=genres.map((g,i)=>{const len=C*g.n/tot;const el=`<circle cx="52" cy="52" r="40" fill="none" stroke="${GCOL[i%GCOL.length]}" stroke-width="12" stroke-dasharray="${len.toFixed(2)} ${(C-len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}"/>`;off+=len;return el;}).join('');
   return `<svg width="104" height="104" viewBox="0 0 104 104"><g transform="rotate(-90 52 52)">${arcs}</g></svg>`;}
-function bars(list, ids){ if(!list.length)return '<div class="note">—</div>'; const max=Math.max(1,...list.map(x=>x[1]));
-  return list.map((x,i)=>{const w=Math.round(x[1]/max*100);const label=ids?`<a href="album.html?id=${ids[i]}" style="color:inherit">${esc(x[0])}</a>`:esc(x[0]);
+function bars(list, ids, base='album.html?id='){ if(!list.length)return '<div class="note">—</div>'; const max=Math.max(1,...list.map(x=>x[1]));
+  return list.map((x,i)=>{const w=Math.round(x[1]/max*100);const label=ids&&ids[i]!=null?`<a href="${base}${ids[i]}" style="color:inherit">${esc(x[0])}</a>`:esc(x[0]);
     return `<div style="margin:8px 0"><div style="display:flex;justify-content:space-between;font-size:13px"><span>${label}</span><span style="color:var(--text-2)">${x[1]}m</span></div><div style="height:6px;background:var(--surface-2);border-radius:999px;margin-top:4px;overflow:hidden"><div style="width:${w}%;height:100%;background:var(--accent)"></div></div></div>`;}).join('');}
 
 function load(){fetch('/api/home').then(r=>r.json()).then(d=>{
@@ -80,7 +80,7 @@ function load(){fetch('/api/home').then(r=>r.json()).then(d=>{
     lh+='<div style="display:flex;gap:28px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><div style="text-align:center"><div style="font-size:28px;font-weight:600;line-height:1.1">'+Math.round(L.total.ms/60000)+' min</div><div style="font-size:12px;color:var(--text-2)">últimas 4 semanas · '+L.total.n+' reproducciones</div></div><div style="flex:1;min-width:220px">'
       +weeks.map(w=>'<div style="display:flex;align-items:center;gap:10px;margin:5px 0"><div style="flex:1;height:8px;background:var(--surface-2);border-radius:999px;overflow:hidden"><div style="width:'+Math.round(w/maxW*100)+'%;height:100%;background:var(--accent)"></div></div><span style="font-size:12px;color:var(--text-2);width:40px">'+Math.round(w/60000)+'m</span></div>').join('')+'</div></div>';
     lh+='<div class="sec" style="margin-top:22px">Lo que has estado escuchando</div><div class="two">'
-      +'<div><div style="font-size:14px;font-weight:600;margin-bottom:8px">Tus artistas top</div>'+bars((L.topArtists||[]).map(a=>[a.artist,Math.round(a.ms/60000)]))+'</div>'
+      +'<div><div style="font-size:14px;font-weight:600;margin-bottom:8px">Tus artistas top</div>'+bars((L.topArtists||[]).map(a=>[a.artist,Math.round(a.ms/60000)]),(L.topArtists||[]).map(a=>a.aid),'artist.html?id=')+'</div>'
       +'<div><div style="font-size:14px;font-weight:600;margin-bottom:8px">Tus discos top</div>'+bars((L.topReleases||[]).map(r=>[r.title,Math.round(r.ms/60000)]),(L.topReleases||[]).map(r=>r.id))+'</div></div>';
   }
   document.getElementById('listening').innerHTML=lh;

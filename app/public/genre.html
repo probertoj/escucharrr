@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — género</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+  <div style="margin-bottom:14px"><a href="genres.html" style="color:var(--accent)">‹ Géneros</a></div>
+  <div id="app">cargando…</div>
+</div>
+
+<script>
+const TC={excel:['#0F6E56','#E1F5EE'],si:['#639922','#EAF3DE'],ok:['#BA7517','#FAEEDA'],meh:['#5F5E5A','#F1EFE8'],no:['#A32D2D','#FCEBEB']},TN={excel:'Excel',si:'Sí',ok:'Ok',meh:'Meh',no:'No'};
+const PAIRS=[['#0F6E56','#1D9E75'],['#534AB7','#7F77DD'],['#185FA5','#378ADD'],['#854F0B','#BA7517'],['#72243E','#D4537E'],['#5F5E5A','#888780'],['#3B6D11','#639922'],['#993C1D','#D85A30']];
+const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function cover(id){const p=PAIRS[id%PAIRS.length];return `<svg viewBox="0 0 150 150" width="100%" height="100%"><rect width="150" height="150" fill="${p[0]}"/><rect y="94" width="150" height="56" fill="${p[1]}"/><circle cx="104" cy="54" r="26" fill="#FAC775"/><rect x="24" y="24" width="9" height="62" fill="#FAECE7"/></svg>`;}
+function albumCard(a){return `<a class="card" href="album.html?id=${a.id}">
+  <div class="cov">${cover(a.id)}
+    ${a.tier_key?`<span class="badge" style="background:${TC[a.tier_key][0]};color:${TC[a.tier_key][1]}">${TN[a.tier_key]}</span>`:''}
+    ${a.is_favorite?'<span class="fav">♥</span>':''}</div>
+  <div class="t">${esc(a.title)}</div><div class="s">${esc(a.artist)} · ${a.year||'—'}</div></a>`;}
+
+const name=new URLSearchParams(location.search).get('name')||'';
+fetch('/api/genre?name='+encodeURIComponent(name)).then(r=>r.json()).then(g=>{
+  if(!g||!g.name){app.innerHTML='Género sin álbumes.';return;}
+  document.title='escucharrr — '+g.name;
+  const related=(g.related||[]).length?`<div class="chips" style="margin:6px 0 2px">${g.related.map(r=>`<a class="chip" href="genre.html?name=${encodeURIComponent(r.name)}">${esc(r.name)} <span style="color:var(--text-2)">${r.n}</span></a>`).join('')}</div>`:'';
+  app.innerHTML=`
+    <h1 style="text-transform:capitalize">${esc(g.name)}</h1>
+    <div class="count">${g.albums.length} ${g.albums.length===1?'álbum':'álbumes'}</div>
+    ${related}
+    <div class="grid" style="margin-top:16px">${g.albums.map(albumCard).join('')}</div>`;
+}).catch(e=>app.innerHTML='error: '+e.message);
+</script>
+<script src="player.js" defer></script>
+</body>
+</html>

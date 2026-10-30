@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — géneros</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+nav.top{display:flex;gap:16px;font-size:14px;margin-bottom:16px}
+nav.top a{color:var(--text-2)} nav.top a.on{color:var(--text);font-weight:600}
+.gcloud{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+.gtile{display:flex;align-items:baseline;gap:8px;background:var(--surface-2);border-radius:999px;padding:7px 14px}
+.gtile .nm{text-transform:capitalize}
+.gtile .n{color:var(--text-2);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="top"><a href="home.html">Inicio</a><a href="/">Biblioteca</a><a href="genres.html" class="on">Géneros</a><a href="search.html">Buscar</a></nav>
+  <h1>Géneros</h1>
+  <div class="count" id="count">cargando…</div>
+  <div class="gcloud" id="cloud"></div>
+</div>
+
+<script>
+const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function load(){fetch('/api/genres').then(r=>r.json()).then(gs=>{
+  count.textContent=gs.length+' géneros en tu biblioteca';
+  const max=Math.max(1,...gs.map(g=>g.n));
+  cloud.innerHTML=gs.map(g=>{const sz=13+Math.round(g.n/max*9);
+    return `<a class="gtile" href="genre.html?name=${encodeURIComponent(g.name)}"><span class="nm" style="font-size:${sz}px">${esc(g.name)}</span><span class="n">${g.n}</span></a>`;}).join('');
+}).catch(e=>count.textContent='error: '+e.message);}
+load();
+document.addEventListener('escucharrr:changed',load);   // biblioteca en vivo
+</script>
+<script src="player.js" defer></script>
+</body>
+</html>
