@@ -22,7 +22,10 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     cubre en sellos pequeños); mapea por posición a nuestras grabaciones. Funciona sin token.
   - `config.example.json`, `obsidian-mapping.md`, `sample-vault/` — configuración, spec y ejemplo.
 - `app/` — vista web mínima que lee de la BD (**funcionando**): servidor + biblioteca + página de álbum.
-  - `server.js` — API JSON (`/api/library`, `/api/album?id=`) desde SQLite (node:http + node:sqlite).
+  - `server.js` — API JSON (`/api/library`, `/api/album?id=`, …) desde SQLite y **streaming de
+    audio** (`/api/stream?track=` con soporte de `Range` para seek) (node:http + node:sqlite).
+  - `public/player.js` — **reproductor real**: `<audio>` + grafo Web Audio (ganancia = punto de
+    DSP), cola persistente, barra de "ahora suena" con progreso/seek/volumen y auto-avance.
   - `public/` — biblioteca (Focus por tier/género/década/tipo/formato/valoración, orden, filtro)
     y página de álbum (tier, valoración, créditos por rol, bio con procedencia).
 
