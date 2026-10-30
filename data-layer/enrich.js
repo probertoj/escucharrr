@@ -12,6 +12,7 @@ const path = require('path');
 function arg(n, d) { const i = process.argv.indexOf('--' + n); return i >= 0 ? (process.argv[i + 1] || true) : d; }
 const DB_PATH = arg('db', 'escucharrr.db');
 const LIMIT = parseInt(arg('limit', '1'), 10);
+const RG_ID = arg('rg') ? parseInt(arg('rg'), 10) : null;   // enriquecer SOLO este release_group (aunque ya tenga mbid)
 const DEMO = process.argv.includes('--demo');
 const UA = 'escucharrr/0.1 (https://github.com/probertoj/escucharrr)';
 const MB = 'https://musicbrainz.org/ws/2/';
@@ -32,9 +33,12 @@ const esc = (s) => String(s).replace(/["\\]/g, '\\$&');
 
 // ── helpers de grafo ──────────────────────────────────────────────────────────
 const S = {
-  rgsNoMbid: db.prepare(`SELECT rg.id, rg.title,
+  rgsNoMbid: db.prepare(`SELECT rg.id, rg.title, rg.mbid,
       (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) AS artist
      FROM release_group rg WHERE rg.mbid IS NULL ORDER BY rg.id LIMIT ?`),
+  rgById: db.prepare(`SELECT rg.id, rg.title, rg.mbid,
+      (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) AS artist
+     FROM release_group rg WHERE rg.id=?`),
   setRgMbid: db.prepare('UPDATE release_group SET mbid=?, primary_type=COALESCE(?,primary_type), first_release=COALESCE(?,first_release), updated_at=datetime(\'now\') WHERE id=?'),
   artistByMbid: db.prepare('SELECT id FROM artist WHERE mbid=?'),
   artistByName: db.prepare('SELECT id, mbid FROM artist WHERE name=?'),
@@ -63,13 +67,18 @@ const ROLE = { instrument: 'instrumento', vocal: 'voz', performer: 'interpretaci
 const mapRole = (t) => ROLE[t] || t;
 
 async function enrichRg(rg) {
-  // 1) resolver release-group
-  const q = `release-group?query=artist:"${esc(rg.artist)}" AND releasegroup:"${esc(rg.title)}"&fmt=json&limit=5`;
-  const sr = await mb(q);
-  const cand = (sr['release-groups'] || [])[0];
-  if (!cand) { console.log(`  · ${rg.artist} — ${rg.title}: sin match en MB`); return { credits: 0 }; }
-  S.setRgMbid.run(cand.id, cand['primary-type'] || null, cand['first-release-date'] || null, rg.id);
-  S.prov.run('release_group', rg.id, 'mbid', 'musicbrainz', cand.id);
+  // 1) resolver release-group (si ya tiene mbid —p. ej. fijado por identify.js— lo reutilizamos)
+  let cand;
+  if (rg.mbid) {
+    cand = { id: rg.mbid };
+  } else {
+    const q = `release-group?query=artist:"${esc(rg.artist)}" AND releasegroup:"${esc(rg.title)}"&fmt=json&limit=5`;
+    const sr = await mb(q);
+    cand = (sr['release-groups'] || [])[0];
+    if (!cand) { console.log(`  · ${rg.artist} — ${rg.title}: sin match en MB`); return { credits: 0 }; }
+    S.setRgMbid.run(cand.id, cand['primary-type'] || null, cand['first-release-date'] || null, rg.id);
+    S.prov.run('release_group', rg.id, 'mbid', 'musicbrainz', cand.id);
+  }
 
   // 2) géneros + una edición
   const rgf = await mb(`release-group/${cand.id}?inc=genres+releases&fmt=json`);
@@ -102,8 +111,8 @@ async function enrichRg(rg) {
 }
 
 (async () => {
-  const rgs = S.rgsNoMbid.all(LIMIT);
-  if (!rgs.length) { console.log('Nada que enriquecer (todos los álbumes ya tienen mbid).'); db.close(); return; }
+  const rgs = RG_ID ? [S.rgById.get(RG_ID)].filter(Boolean) : S.rgsNoMbid.all(LIMIT);
+  if (!rgs.length) { console.log(RG_ID ? `No existe el release_group ${RG_ID}.` : 'Nada que enriquecer (todos los álbumes ya tienen mbid).'); db.close(); return; }
   console.log(`Enriqueciendo ${rgs.length} álbum(es) desde MusicBrainz…`);
   for (const rg of rgs) {
     try {
