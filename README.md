@@ -26,10 +26,12 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
 - `app/` — vista web mínima que lee de la BD (**funcionando**): servidor + biblioteca + página de álbum.
   - `server.js` — API JSON (`/api/library`, `/api/album?id=`, …) desde SQLite y **streaming de
     audio** (`/api/stream?track=` con soporte de `Range` para seek) (node:http + node:sqlite).
-  - `public/player.js` — **reproductor real**: `<audio>` + grafo Web Audio (ganancia = punto de
-    DSP, con ReplayGain), cola persistente, barra de "ahora suena" con progreso/seek/volumen y auto-avance,
-    y **selector de salida/zona** (`AudioContext.setSinkId` para elegir el dispositivo de salida; la
-    "zona" es nombrable y persistente, base para el multi-sala futuro; cada reproducción se registra con su zona).
+  - `public/player.js` — **reproductor real**: doble "deck" `<audio>` → grafo Web Audio
+    (ganancia por pista con ReplayGain → **EQ** de 7 bandas `BiquadFilter` → ganancia maestra → salida),
+    **crossfade** real entre pistas al auto-avanzar (solapa los dos decks con rampas de ganancia),
+    cola persistente, barra de "ahora suena" con progreso/seek/volumen y auto-avance, panel de
+    ecualizador (presets) + crossfade, y **selector de salida/zona** (`AudioContext.setSinkId`;
+    la "zona" es nombrable y persistente, base para el multi-sala futuro; cada reproducción se registra con su zona).
   - **Biblioteca en vivo**: con `app/watch.json` (copia de `watch.example.json`), el servidor vigila
     tus carpetas de música y el vault de Obsidian, reescanea/sincroniza al vuelo y refresca la UI por SSE.
   - `public/` — biblioteca (Focus por tier/género/década/tipo/formato/valoración, orden, filtro),
