@@ -20,6 +20,8 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
   - `enrich.js` — enriquece desde MusicBrainz: mbid, tipo, fecha, géneros y **créditos por rol**.
   - `discogs.js` — **créditos por pista desde Discogs** (intérpretes/roles/instrumentos que MB no
     cubre en sellos pequeños); mapea por posición a nuestras grabaciones. Funciona sin token.
+  - `analyze.js` — **loudness EBU R128 / ReplayGain** con ffmpeg (`ebur128`): mide LUFS integrado y
+    pico, guarda `gain_db` (ref −18 LUFS) + `peak_dbfs`; el player normaliza el volumen con ello.
   - `config.example.json`, `obsidian-mapping.md`, `sample-vault/` — configuración, spec y ejemplo.
 - `app/` — vista web mínima que lee de la BD (**funcionando**): servidor + biblioteca + página de álbum.
   - `server.js` — API JSON (`/api/library`, `/api/album?id=`, …) desde SQLite y **streaming de
@@ -43,6 +45,7 @@ node identify.js     --db ../app/escucharrr.db --isrc            # ISRC -> Music
 node identify.js     --db ../app/escucharrr.db --acoustid --acoustid-key TU_KEY
 node enrich.js       --db ../app/escucharrr.db --limit 50
 node discogs.js      --db ../app/escucharrr.db --rg 1   # créditos por pista (donde MB no llega)
+node analyze.js      --db ../app/escucharrr.db          # loudness R128/ReplayGain (necesita ffmpeg)
 
 # 2. arrancar la vista web
 cd ..

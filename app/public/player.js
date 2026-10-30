@@ -23,7 +23,9 @@ window.player = (function () {
       audio.volume = 1;                                                              // el volumen pasa ahora por la ganancia
     } catch (e) { ctx = null; }
   }
-  function applyVol() { if (gainNode) gainNode.gain.value = vol; else audio.volume = vol; try { localStorage.setItem(VKEY, String(vol)); } catch (e) {} }
+  // ReplayGain: ganancia lineal de la pista actual, limitada por el pico para no saturar
+  function rgLinear(c) { if (!c || c.gain_db == null) return 1; let g = c.gain_db; if (c.peak_dbfs != null) { const ceil = -1 - c.peak_dbfs; if (g > ceil) g = ceil; } return Math.pow(10, g / 20); }
+  function applyVol() { const g = vol * rgLinear(cur()); if (gainNode) gainNode.gain.value = g; else audio.volume = Math.min(1, g); try { localStorage.setItem(VKEY, String(vol)); } catch (e) {} }
 
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify({ q, idx })); } catch (e) {} };
   const cur = () => q[idx] || null;
@@ -70,6 +72,7 @@ window.player = (function () {
     ensureGraph(); if (ctx && ctx.state === 'suspended') ctx.resume();
     loadedIdx = idx; loggedIdx = -1;
     audio.src = '/api/stream?track=' + c.trackId;
+    applyVol();                                  // aplica ReplayGain de esta pista
     audio.play().catch(() => {});
     render();
   }
@@ -80,7 +83,7 @@ window.player = (function () {
   function setVol(v) { vol = Math.max(0, Math.min(1, v)); applyVol(); render(); }
 
   function playTracks(tracks, i) { if (!tracks || !tracks.length) return; q = tracks; start(i || 0); }
-  function playAlbum(id, i) { fetch('/api/album?id=' + id).then(r => r.json()).then(a => { const tr = (a.tracks || []).map(t => ({ trackId: t.trackId, title: t.title, artist: a.artist, albumId: a.id, length_ms: t.length_ms, playable: t.playable !== 0 })); if (!tr.length) { alert('Este álbum aún no tiene pistas en tu biblioteca.'); return; } playTracks(tr, i || 0); }); }
+  function playAlbum(id, i) { fetch('/api/album?id=' + id).then(r => r.json()).then(a => { const tr = (a.tracks || []).map(t => ({ trackId: t.trackId, title: t.title, artist: a.artist, albumId: a.id, length_ms: t.length_ms, playable: t.playable !== 0, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs })); if (!tr.length) { alert('Este álbum aún no tiene pistas en tu biblioteca.'); return; } playTracks(tr, i || 0); }); }
   function jumpTo(i) { if (i >= 0 && i < q.length) start(i); }
   function removeAt(i) { const wasCur = i === idx; q.splice(i, 1); if (i < idx) idx--; if (idx >= q.length) idx = q.length - 1; save(); if (wasCur) { if (q.length) start(idx); else { idx = -1; audio.pause(); audio.removeAttribute('src'); loadedIdx = -1; render(); } } else render(); }
   function clearUpcoming() { q = q.slice(0, idx + 1); save(); render(); }
@@ -107,5 +110,6 @@ window.player = (function () {
   document.addEventListener('input', e => { const a = e.target.closest('#nowbar [data-act="vol"]'); if (a) setVol(parseFloat(a.value)); });
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', render); else render();
-  return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol };
+  const getGain = () => (gainNode ? gainNode.gain.value : audio.volume);   // ganancia efectiva (vol × ReplayGain)
+  return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain };
 })();
