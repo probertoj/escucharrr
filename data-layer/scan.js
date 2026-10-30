@@ -87,7 +87,10 @@ const S = {
   linkGenre: db.prepare('INSERT OR IGNORE INTO release_group_genre(release_group_id,genre_id) VALUES(?,?)'),
   insFile: db.prepare(`INSERT INTO local_file(path,format,sample_rate,bit_depth,channels,duration_ms,size_bytes,mtime,isrc,acoustid,fingerprint,track_id,recording_id,match_by,match_conf)
      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-     ON CONFLICT(path) DO UPDATE SET format=excluded.format,sample_rate=excluded.sample_rate,bit_depth=excluded.bit_depth,channels=excluded.channels,duration_ms=excluded.duration_ms,size_bytes=excluded.size_bytes,mtime=excluded.mtime,isrc=excluded.isrc,acoustid=excluded.acoustid,fingerprint=excluded.fingerprint,track_id=excluded.track_id,recording_id=excluded.recording_id,match_by=excluded.match_by,match_conf=excluded.match_conf`),
+     ON CONFLICT(path) DO UPDATE SET format=excluded.format,sample_rate=excluded.sample_rate,bit_depth=excluded.bit_depth,channels=excluded.channels,duration_ms=excluded.duration_ms,size_bytes=excluded.size_bytes,mtime=excluded.mtime,isrc=excluded.isrc,acoustid=excluded.acoustid,fingerprint=excluded.fingerprint,track_id=excluded.track_id,recording_id=excluded.recording_id,
+       -- no degradar: conserva el match si el existente es más fuerte (p. ej. 'acoustid'/'isrc' de identify.js frente a 'tags' de un reescaneo)
+       match_by=CASE WHEN COALESCE(excluded.match_conf,0)>=COALESCE(local_file.match_conf,0) THEN excluded.match_by ELSE local_file.match_by END,
+       match_conf=CASE WHEN COALESCE(excluded.match_conf,0)>=COALESCE(local_file.match_conf,0) THEN excluded.match_conf ELSE local_file.match_conf END`),
   setRgMbid: db.prepare('UPDATE release_group SET mbid=? WHERE id=? AND mbid IS NULL'),
   setRelMbid: db.prepare('UPDATE "release" SET mbid=? WHERE id=? AND mbid IS NULL'),
   setRecMbid: db.prepare('UPDATE recording SET mbid=? WHERE id=? AND mbid IS NULL'),

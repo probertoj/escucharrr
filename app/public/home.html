@@ -58,7 +58,7 @@ function bars(list, ids){ if(!list.length)return '<div class="note">—</div>'; 
   return list.map((x,i)=>{const w=Math.round(x[1]/max*100);const label=ids?`<a href="album.html?id=${ids[i]}" style="color:inherit">${esc(x[0])}</a>`:esc(x[0]);
     return `<div style="margin:8px 0"><div style="display:flex;justify-content:space-between;font-size:13px"><span>${label}</span><span style="color:var(--text-2)">${x[1]}m</span></div><div style="height:6px;background:var(--surface-2);border-radius:999px;margin-top:4px;overflow:hidden"><div style="width:${w}%;height:100%;background:var(--accent)"></div></div></div>`;}).join('');}
 
-fetch('/api/home').then(r=>r.json()).then(d=>{
+function load(){fetch('/api/home').then(r=>r.json()).then(d=>{
   document.getElementById('greet').textContent='Hola, probertoj';
   const c=d.counts;
   metrics.innerHTML=[['Artistas',c.artists],['Álbumes',c.albums],['Pistas',c.tracks],['Géneros',c.genres]]
@@ -84,7 +84,9 @@ fetch('/api/home').then(r=>r.json()).then(d=>{
       +'<div><div style="font-size:14px;font-weight:600;margin-bottom:8px">Tus discos top</div>'+bars((L.topReleases||[]).map(r=>[r.title,Math.round(r.ms/60000)]),(L.topReleases||[]).map(r=>r.id))+'</div></div>';
   }
   document.getElementById('listening').innerHTML=lh;
-}).catch(e=>greet.textContent='error: '+e.message);
+}).catch(e=>greet.textContent='error: '+e.message);}
+load();
+document.addEventListener('escucharrr:changed',load);   // biblioteca en vivo
 </script>
 <script src="player.js" defer></script>
 </body>

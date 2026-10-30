@@ -109,6 +109,9 @@ window.player = (function () {
   });
   document.addEventListener('input', e => { const a = e.target.closest('#nowbar [data-act="vol"]'); if (a) setVol(parseFloat(a.value)); });
 
+  // biblioteca en vivo: el servidor avisa por SSE cuando reescanea; las vistas se refrescan
+  try { const es = new EventSource('/api/events'); es.onmessage = e => { try { if (JSON.parse(e.data).type === 'library') document.dispatchEvent(new CustomEvent('escucharrr:changed')); } catch (x) {} }; } catch (e) {}
+
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', render); else render();
   const getGain = () => (gainNode ? gainNode.gain.value : audio.volume);   // ganancia efectiva (vol × ReplayGain)
   return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain };

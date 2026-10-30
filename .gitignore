@@ -2,5 +2,7 @@
 *.db
 *.db-wal
 *.db-shm
+# config local del watcher (rutas propias de la máquina)
+app/watch.json
 # node
 node_modules/

@@ -1,0 +1,5 @@
+{
+  "_comment": "Copia esto a app/watch.json (ignorado por git) con tus rutas. El servidor vigila estas carpetas y reescanea/sincroniza al vuelo, refrescando la UI por SSE.",
+  "music": ["C:\\Users\\tu-usuario\\Music"],
+  "obsidianConfig": "../data-layer/config.example.json"
+}

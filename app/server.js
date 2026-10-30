@@ -7,12 +7,14 @@ const http = require('node:http');
 const { DatabaseSync } = require('node:sqlite');
 const fs = require('fs');
 const path = require('path');
+const cp = require('child_process');
 
 const PORT = process.env.PORT || 7733;
 const DB_PATH = path.join(__dirname, 'escucharrr.db');
 const PUB = path.join(__dirname, 'public');
 if (!fs.existsSync(DB_PATH)) { console.error('No existe', DB_PATH, '\nGenera la BD con las herramientas de ../data-layer.'); process.exit(1); }
 const db = new DatabaseSync(DB_PATH);
+try { db.exec('PRAGMA journal_mode=WAL'); db.exec('PRAGMA busy_timeout=5000'); } catch (e) {}
 
 const genresOf = db.prepare(`SELECT group_concat(g.name,'|') gs FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id WHERE rgg.release_group_id=?`);
 const formatOf = db.prepare(`SELECT rel.format f FROM "release" rel WHERE rel.release_group_id=? LIMIT 1`);
@@ -141,8 +143,45 @@ function sendFile(res, file) {
   fs.createReadStream(p).pipe(res);
 }
 
+// ── biblioteca en vivo: watcher de carpetas + eventos SSE a la UI ───────────────
+const sseClients = new Set();
+function sseBroadcast(type) { const line = `data: ${JSON.stringify({ type, t: Date.now() })}\n\n`; for (const r of sseClients) { try { r.write(line); } catch (e) {} } }
+function startWatching() {
+  const cfgPath = path.join(__dirname, 'watch.json');
+  if (!fs.existsSync(cfgPath)) { console.log('biblioteca en vivo: desactivada (crea app/watch.json a partir de watch.example.json)'); return; }
+  let cfg; try { cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch (e) { console.error('watch.json inválido:', e.message); return; }
+  const music = cfg.music || [];
+  const obsidianConfig = cfg.obsidianConfig ? path.resolve(__dirname, cfg.obsidianConfig) : null;
+  let vault = null;
+  if (obsidianConfig && fs.existsSync(obsidianConfig)) { try { const oc = JSON.parse(fs.readFileSync(obsidianConfig, 'utf8')); vault = path.resolve(path.dirname(obsidianConfig), oc.vault); } catch (e) {} }
+  const DL = path.join(__dirname, '..', 'data-layer');
+  const pending = new Set(); let timer = null, running = false;
+  const schedule = (kind) => { pending.add(kind); clearTimeout(timer); timer = setTimeout(run, 1500); };   // debounce 1.5 s
+  const spawnIngest = (args) => new Promise(r => { const p = cp.spawn(process.execPath, args, { cwd: DL }); let o = ''; p.stdout.on('data', d => o += d); p.stderr.on('data', d => o += d); p.on('close', () => r(o.trim().split('\n').pop() || '')); });
+  async function run() {
+    if (running) { pending.add('rerun'); return; }
+    running = true; const kinds = new Set(pending); pending.clear();
+    try {
+      if (kinds.has('music')) for (const root of music) console.log('  [watch] música:', await spawnIngest([path.join(DL, 'scan.js'), '--db', DB_PATH, '--root', root]));
+      if (kinds.has('vault') && obsidianConfig) console.log('  [watch] vault:', await spawnIngest([path.join(DL, 'obsidian-sync.js'), '--db', DB_PATH, '--config', obsidianConfig]));
+      sseBroadcast('library');
+    } catch (e) { console.error('  [watch] error:', e.message); }
+    finally { running = false; if (pending.size) { const r = [...pending][0]; pending.delete('rerun'); schedule(r === 'rerun' ? 'music' : r); } }
+  }
+  const AUD = /\.(flac|wav|mp3|m4a|ogg|opus|aiff?)$/i;
+  for (const root of music) if (fs.existsSync(root)) { try { fs.watch(root, { recursive: true }, (ev, f) => { if (!f || AUD.test(f)) schedule('music'); }); console.log('biblioteca en vivo: vigilando música', root); } catch (e) { console.error('no se pudo vigilar', root, e.message); } }
+  if (vault && fs.existsSync(vault)) { try { fs.watch(vault, { recursive: true }, (ev, f) => { if (!f || /\.md$/i.test(f)) schedule('vault'); }); console.log('biblioteca en vivo: vigilando vault', vault); } catch (e) {} }
+}
+
 http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
+  if (u.pathname === '/api/events') {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+    res.write('retry: 3000\n\n'); sseClients.add(res);
+    const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch (e) {} }, 25000);
+    req.on('close', () => { clearInterval(ping); sseClients.delete(res); });
+    return;
+  }
   if (req.method === 'POST' && u.pathname === '/api/play') {
     let body = ''; req.on('data', c => { body += c; if (body.length > 1e5) req.destroy(); });
     req.on('end', () => { try { sendJSON(res, logPlay(JSON.parse(body || '{}'))); } catch (e) { res.writeHead(400); res.end(String(e.message)); } });
@@ -157,4 +196,4 @@ http.createServer((req, res) => {
     if (u.pathname === '/' || u.pathname === '') return sendFile(res, 'index.html');
     return sendFile(res, u.pathname.replace(/^\//, ''));
   } catch (e) { res.writeHead(500); res.end(String(e.message)); }
-}).listen(PORT, () => console.log('escucharrr en http://localhost:' + PORT));
+}).listen(PORT, () => { console.log('escucharrr en http://localhost:' + PORT); startWatching(); });

@@ -14,6 +14,8 @@ function addCol(db, table, name, decl) {
 
 // Añade las columnas de identificación (ISRC / AcoustID / fingerprint) si faltan.
 function migrate(db) {
+  // WAL + espera: permite 1 escritor + varios lectores a la vez (servidor + watcher + herramientas).
+  try { db.exec('PRAGMA journal_mode=WAL'); db.exec('PRAGMA busy_timeout=5000'); } catch (e) {}
   const added = [];
   if (addCol(db, 'recording', 'isrc', 'TEXT')) added.push('recording.isrc');
   if (addCol(db, 'recording', 'acoustid', 'TEXT')) added.push('recording.acoustid');

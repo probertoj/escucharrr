@@ -99,7 +99,9 @@ document.addEventListener('click',e=>{
 focusbtn.onclick=()=>{focus.hidden=!focus.hidden;focusbtn.textContent=(focus.hidden?'▸':'▾')+' Focus';};
 sort.onchange=render; filter.oninput=()=>{txt=filter.value.toLowerCase().trim();render();};
 
-fetch('/api/library').then(r=>r.json()).then(d=>{ALBUMS=d;render();}).catch(e=>count.textContent='error: '+e.message);
+function load(){fetch('/api/library').then(r=>r.json()).then(d=>{ALBUMS=d;render();}).catch(e=>count.textContent='error: '+e.message);}
+load();
+document.addEventListener('escucharrr:changed',load);   // biblioteca en vivo
 
 // Buscador instantáneo (FTS5 por prefijo)
 (function(){
