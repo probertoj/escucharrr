@@ -16,6 +16,7 @@ if (!ROOT) { console.error('Falta --root <carpeta de música>'); process.exit(1)
 
 const db = new DatabaseSync(DB_PATH);
 db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
+require('./migrate').migrate(db);              // columnas isrc/acoustid/fingerprint si faltan
 
 // ── parsers de cabecera (solo lectura, sin cargar el fichero entero) ──────────
 function readFlac(file) {
@@ -84,10 +85,16 @@ const S = {
   genreBy: db.prepare('SELECT id FROM genre WHERE name=?'),
   insGenre: db.prepare('INSERT INTO genre(name) VALUES(?)'),
   linkGenre: db.prepare('INSERT OR IGNORE INTO release_group_genre(release_group_id,genre_id) VALUES(?,?)'),
-  insFile: db.prepare(`INSERT INTO local_file(path,format,sample_rate,bit_depth,channels,duration_ms,size_bytes,mtime,track_id,recording_id,match_by,match_conf)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-     ON CONFLICT(path) DO UPDATE SET format=excluded.format,sample_rate=excluded.sample_rate,bit_depth=excluded.bit_depth,channels=excluded.channels,duration_ms=excluded.duration_ms,size_bytes=excluded.size_bytes,mtime=excluded.mtime,track_id=excluded.track_id,recording_id=excluded.recording_id,match_by=excluded.match_by,match_conf=excluded.match_conf`),
+  insFile: db.prepare(`INSERT INTO local_file(path,format,sample_rate,bit_depth,channels,duration_ms,size_bytes,mtime,isrc,acoustid,fingerprint,track_id,recording_id,match_by,match_conf)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(path) DO UPDATE SET format=excluded.format,sample_rate=excluded.sample_rate,bit_depth=excluded.bit_depth,channels=excluded.channels,duration_ms=excluded.duration_ms,size_bytes=excluded.size_bytes,mtime=excluded.mtime,isrc=excluded.isrc,acoustid=excluded.acoustid,fingerprint=excluded.fingerprint,track_id=excluded.track_id,recording_id=excluded.recording_id,match_by=excluded.match_by,match_conf=excluded.match_conf`),
+  setRgMbid: db.prepare('UPDATE release_group SET mbid=? WHERE id=? AND mbid IS NULL'),
+  setRelMbid: db.prepare('UPDATE "release" SET mbid=? WHERE id=? AND mbid IS NULL'),
+  setRecMbid: db.prepare('UPDATE recording SET mbid=? WHERE id=? AND mbid IS NULL'),
+  setRecIsrc: db.prepare('UPDATE recording SET isrc=COALESCE(isrc,?), acoustid=COALESCE(acoustid,?) WHERE id=?'),
 };
+// mbid es UNIQUE: si otra fila ya lo tiene, el tag está duplicado -> lo ignoramos sin romper.
+const trySet = (stmt, ...a) => { try { stmt.run(...a); } catch (e) { if (!/UNIQUE/i.test(e.message)) throw e; } };
 const ensureArtist = (name) => { const r = S.artistByName.get(name); return r ? r.id : Number(S.insArtist.run(name, name).lastInsertRowid); };
 const ensureCredit = (aid, name) => { const r = S.creditFor.get(aid, name); if (r) return r.id; const c = Number(S.insCredit.run().lastInsertRowid); S.insCreditName.run(c, aid, name); return c; };
 const ensureRg = (title, cid, year) => { const r = S.rgBy.get(title, cid); return r ? r.id : Number(S.insRg.run(title, cid, 'album', year).lastInsertRowid); };
@@ -114,6 +121,13 @@ try {
     const trackNo = parseInt(t.TRACKNUMBER, 10) || (ok + 1);
     const discNo = parseInt(t.DISCNUMBER, 10) || 1;
     const identified = !!(t.ALBUM && (t.ARTIST || t.ALBUMARTIST) && t.TITLE);
+    // identificadores embebidos (convención Picard) + ISRC + AcoustID
+    const recMbid = t.MUSICBRAINZ_TRACKID || null;          // MBID de la grabación
+    const relMbid = t.MUSICBRAINZ_ALBUMID || null;          // MBID de la edición
+    const rgMbid = t.MUSICBRAINZ_RELEASEGROUPID || null;    // MBID del release-group
+    const isrc = (t.ISRC || '').split(/[;,/]/)[0].trim() || null;
+    const acoustid = t.ACOUSTID_ID || null;
+    const fingerprint = t.ACOUSTID_FINGERPRINT || null;
 
     let trackId = null, recId = null;
     if (identified) {
@@ -126,9 +140,16 @@ try {
       recId = ensureRec(title, tcid, inf.durationMs);
       const ex = S.trackBy.get(med, trackNo);
       trackId = ex ? ex.id : Number(S.insTrack.run(med, trackNo, recId, title, tcid, inf.durationMs).lastInsertRowid);
+      // propagar los MBID/ISRC del tag al grafo (solo si aún no los tiene)
+      if (rgMbid) trySet(S.setRgMbid, rgMbid, rg);
+      if (relMbid) trySet(S.setRelMbid, relMbid, rel);
+      if (recMbid) trySet(S.setRecMbid, recMbid, recId);
+      if (isrc || acoustid) S.setRecIsrc.run(isrc, acoustid, recId);
       ident++;
     }
-    S.insFile.run(file, ext.toUpperCase(), inf.sampleRate, inf.bits, inf.channels, inf.durationMs, st.size, String(st.mtimeMs), trackId, recId, identified ? 'tags' : null, identified ? 0.7 : null);
+    const matchBy = recMbid ? 'mb-tag' : (identified ? 'tags' : null);
+    const matchConf = recMbid ? 0.95 : (identified ? 0.7 : null);
+    S.insFile.run(file, ext.toUpperCase(), inf.sampleRate, inf.bits, inf.channels, inf.durationMs, st.size, String(st.mtimeMs), isrc, acoustid, fingerprint, trackId, recId, matchBy, matchConf);
     ok++;
   }
   db.exec('COMMIT');
@@ -140,7 +161,11 @@ db.exec("INSERT INTO search_fts(name,kind,subject_type,subject_id) SELECT name,'
 db.exec("INSERT INTO search_fts(name,kind,subject_type,subject_id) SELECT title,'album','release_group',id FROM release_group");
 db.exec("INSERT INTO search_fts(name,kind,subject_type,subject_id) SELECT title,'track','recording',id FROM recording");
 
+const nIsrc = db.prepare('SELECT COUNT(*) n FROM local_file WHERE isrc IS NOT NULL').get().n;
+const nMb = db.prepare("SELECT COUNT(*) n FROM local_file WHERE match_by='mb-tag'").get().n;
+const nFp = db.prepare('SELECT COUNT(*) n FROM local_file WHERE fingerprint IS NOT NULL').get().n;
 console.log(`Escaneados ${ok} ficheros (${ident} identificados por tags) -> ${DB_PATH}`);
+console.log(`  identificadores embebidos: ${nMb} con MBID · ${nIsrc} con ISRC · ${nFp} con huella Chromaprint`);
 
 if (DEMO) {
   const show = (l, rows) => { console.log('\n== ' + l + ' =='); rows.forEach(r => console.log('  ' + Object.values(r).join('  |  '))); };

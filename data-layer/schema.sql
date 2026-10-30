@@ -78,11 +78,14 @@ CREATE TABLE IF NOT EXISTS medium (
 CREATE TABLE IF NOT EXISTS recording (
   id               INTEGER PRIMARY KEY,
   mbid             TEXT UNIQUE,
+  isrc             TEXT,                         -- código ISRC (identificador de grabación)
+  acoustid         TEXT,                         -- AcoustID (huella -> id, agrupa grabaciones equivalentes)
   title            TEXT NOT NULL,
   artist_credit_id INTEGER REFERENCES artist_credit(id),
   length_ms        INTEGER,
   work_id          INTEGER REFERENCES work(id)
 );
+-- (los índices sobre isrc/acoustid se crean en migrate.js, tras garantizar las columnas)
 
 -- Posición de una grabación en una edición concreta.
 CREATE TABLE IF NOT EXISTS track (
@@ -154,10 +157,14 @@ CREATE TABLE IF NOT EXISTS local_file (
   -- resultado del análisis de audio (R128 / ReplayGain / waveform)
   loudness_lufs REAL,
   gain_db       REAL,
+  -- identificadores leídos del fichero (tags) o calculados (fpcalc)
+  isrc         TEXT,                          -- ISRC del tag
+  acoustid     TEXT,                          -- AcoustID (del tag ACOUSTID_ID o de la consulta)
+  fingerprint  TEXT,                          -- huella Chromaprint comprimida (tag o fpcalc), para no recalcular
   -- mapeo al grafo (nullable hasta identificar)
   track_id     INTEGER REFERENCES track(id),
   recording_id INTEGER REFERENCES recording(id),
-  match_by     TEXT,                          -- acoustid | tags | manual
+  match_by     TEXT,                          -- mb-tag | isrc | acoustid | tags | manual
   match_conf   REAL
 );
 CREATE INDEX IF NOT EXISTS ix_file_recording ON local_file(recording_id);

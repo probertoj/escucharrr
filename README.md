@@ -13,7 +13,10 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
   - `schema.sql` — esquema SQLite (grafo estilo MusicBrainz; `tier` y `rating` de primera
     clase e indexados; créditos tipados; mapeo de ficheros; procedencia; FTS5; vistas).
   - `obsidian-sync.js` — sincroniza un vault de Obsidian al grafo (bio/tier/rating; tus notas mandan).
-  - `scan.js` — escanea ficheros locales (FLAC/WAV) → `local_file` + mapeo por tags al grafo.
+  - `scan.js` — escanea ficheros locales (FLAC/WAV) → `local_file` + mapeo por tags al grafo
+    (también lee identificadores embebidos: `MUSICBRAINZ_*`, `ACOUSTID_*`, `ISRC`).
+  - `identify.js` — identifica grabaciones por identificador fuerte: **ISRC → MusicBrainz**
+    (sin binario ni key) y **huella Chromaprint → AcoustID → MusicBrainz** (necesita `fpcalc` + API key).
   - `enrich.js` — enriquece desde MusicBrainz: mbid, tipo, fecha, géneros y **créditos por rol**.
   - `config.example.json`, `obsidian-mapping.md`, `sample-vault/` — configuración, spec y ejemplo.
 - `app/` — vista web mínima que lee de la BD (**funcionando**): servidor + biblioteca + página de álbum.
@@ -30,6 +33,9 @@ Todo usa `node:sqlite` (Node ≥ 22.5 / 24), **sin paquetes externos**.
 cd data-layer
 node obsidian-sync.js --db ../app/escucharrr.db --config config.example.json
 node scan.js         --db ../app/escucharrr.db --root "/ruta/a/tu/musica"
+node identify.js     --db ../app/escucharrr.db --isrc            # ISRC -> MusicBrainz (gratis)
+# huella acústica (opcional): necesita fpcalc en el PATH + API key de AcoustID
+node identify.js     --db ../app/escucharrr.db --acoustid --acoustid-key TU_KEY
 node enrich.js       --db ../app/escucharrr.db --limit 50
 
 # 2. arrancar la vista web
