@@ -87,6 +87,19 @@ const Q = {
      JOIN genre g1 ON g1.id=x.genre_id JOIN genre g2 ON g2.id=y.genre_id
      WHERE g1.name=? GROUP BY g2.id ORDER BY n DESC, g2.name LIMIT 10`),
   allGenres: db.prepare(`SELECT g.name, count(*) n FROM genre g JOIN release_group_genre rgg ON rgg.genre_id=g.id GROUP BY g.id ORDER BY n DESC, g.name`),
+  // ── descubrir (recomendaciones sobre el grafo local) ──
+  discUnrated: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
+     FROM v_album a WHERE a.tier_key IS NULL ORDER BY a.first_release DESC, a.title LIMIT 18`),
+  discUnratedCount: db.prepare(`SELECT count(*) n FROM v_album WHERE tier_key IS NULL`),
+  discRevisit: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
+     FROM v_album a
+     WHERE a.tier_rank>=4 AND NOT EXISTS(
+       SELECT 1 FROM play p JOIN track tr ON (p.track_id=tr.id OR p.recording_id=tr.recording_id)
+       JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
+       WHERE rel.release_group_id=a.id)
+     ORDER BY a.tier_rank DESC, RANDOM() LIMIT 12`),
+  discRandom: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
+     FROM v_album a ORDER BY RANDOM() LIMIT 6`),
 };
 function logPlay(j) {
   let recId = j.recording_id || null, trackId = j.track_id || null, ms = j.ms_played;
@@ -156,6 +169,19 @@ function genre(name) {
   const albums = Q.genreAlbums.all(name);
   if (!albums.length) return null;
   return { name, albums, related: Q.genreRelated.all(name) };
+}
+function discover() {
+  let tg = Q.topGenres.all();
+  let sel = tg.filter(g => g.n >= 2);
+  if (!sel.length) sel = tg.slice(0, 3);
+  const byGenre = sel.slice(0, 4).map(g => ({ name: g.name, n: g.n, albums: Q.genreAlbums.all(g.name).slice(0, 12) }));
+  return {
+    unrated: Q.discUnrated.all(),
+    unratedCount: Q.discUnratedCount.get().n,
+    revisit: Q.discRevisit.all(),
+    random: Q.discRandom.all(),
+    byGenre,
+  };
 }
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
@@ -248,6 +274,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/artist') { const a = artist(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/genre') { const g = genre(u.searchParams.get('name')); return g ? sendJSON(res, g) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/genres') return sendJSON(res, Q.allGenres.all());
+    if (u.pathname === '/api/discover') return sendJSON(res, discover());
     if (u.pathname === '/api/home') return sendJSON(res, home());
     if (u.pathname === '/' || u.pathname === '') return sendFile(res, 'index.html');
     return sendFile(res, u.pathname.replace(/^\//, ''));

@@ -33,7 +33,9 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
   - `public/` — biblioteca (Focus por tier/género/década/tipo/formato/valoración, orden, filtro),
     página de álbum (tier, valoración, créditos por rol, bio con procedencia), **página de artista**
     (avatar, géneros, discografía propia y "aparece en" con sus roles), **página de género**
-    (álbumes del género + géneros relacionados) e **índice de géneros**. Todo internavegable:
+    (álbumes del género + géneros relacionados), **índice de géneros** y **Descubrir**
+    (sugerencias desde tu propio grafo: álbumes por valorar, joyas de tier alto sin reproducir,
+    filas por tus géneros dominantes y una tirada al azar — sin nube). Todo internavegable:
     álbum → artista → género, y los artistas del buscador abren su página.
 
 Todo usa `node:sqlite` (Node ≥ 22.5 / 24), **sin paquetes externos**.

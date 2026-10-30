@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — descubrir</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+nav.top{display:flex;gap:16px;font-size:14px;margin-bottom:16px}
+nav.top a{color:var(--text-2)} nav.top a.on{color:var(--text);font-weight:600}
+.lead{color:var(--text-2);font-size:14px;margin:2px 0 6px}
+.seclink{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.seclink a{font-size:13px;color:var(--accent)}
+.row{display:flex;gap:16px;overflow-x:auto;padding-bottom:6px}
+.row .card{flex:none;width:150px}
+.subnote{color:var(--text-2);font-size:13px;margin:-2px 0 10px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="top"><a href="home.html">Inicio</a><a href="/">Biblioteca</a><a href="discover.html" class="on">Descubrir</a><a href="genres.html">Géneros</a><a href="search.html">Buscar</a></nav>
+  <h1>Descubrir</h1>
+  <div class="lead">Sugerencias desde tu propia colección — sin nube, sin algoritmo ajeno.</div>
+  <div id="app" style="margin-top:10px">cargando…</div>
+</div>
+
+<script>
+const TC={excel:['#0F6E56','#E1F5EE'],si:['#639922','#EAF3DE'],ok:['#BA7517','#FAEEDA'],meh:['#5F5E5A','#F1EFE8'],no:['#A32D2D','#FCEBEB']},TN={excel:'Excel',si:'Sí',ok:'Ok',meh:'Meh',no:'No'};
+const PAIRS=[['#0F6E56','#1D9E75'],['#534AB7','#7F77DD'],['#185FA5','#378ADD'],['#854F0B','#BA7517'],['#72243E','#D4537E'],['#5F5E5A','#888780'],['#3B6D11','#639922'],['#993C1D','#D85A30']];
+const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function cover(id){const p=PAIRS[id%PAIRS.length];return `<svg viewBox="0 0 150 150" width="100%" height="100%"><rect width="150" height="150" fill="${p[0]}"/><rect y="94" width="150" height="56" fill="${p[1]}"/><circle cx="104" cy="54" r="26" fill="#FAC775"/><rect x="24" y="24" width="9" height="62" fill="#FAECE7"/></svg>`;}
+function card(a){return `<a class="card" href="album.html?id=${a.id}">
+  <div class="cov">${cover(a.id)}
+    ${a.tier_key?`<span class="badge" style="background:${TC[a.tier_key][0]};color:${TC[a.tier_key][1]}">${TN[a.tier_key]}</span>`:''}
+    ${a.is_favorite?'<span class="fav">♥</span>':''}</div>
+  <div class="t">${esc(a.title)}</div><div class="s">${esc(a.artist)} · ${a.year||'—'}</div></a>`;}
+function grid(list){return `<div class="grid">${list.map(card).join('')}</div>`;}
+function row(list){return `<div class="row">${list.map(card).join('')}</div>`;}
+
+function render(d){
+  let h='';
+  if(d.unrated&&d.unrated.length){
+    h+=`<div class="sec">Por valorar</div><div class="subnote">${d.unratedCount} ${d.unratedCount===1?'álbum sin tier':'álbumes sin tier'} — ponles orden y afinarás todo lo demás.</div>${grid(d.unrated)}`;
+  }
+  if(d.revisit&&d.revisit.length){
+    h+=`<div class="sec">Joyas por revisitar</div><div class="subnote">Tier alto que aún no has reproducido aquí.</div>${grid(d.revisit)}`;
+  }
+  (d.byGenre||[]).forEach(g=>{
+    h+=`<div class="sec seclink"><span>Más de <span style="text-transform:capitalize">${esc(g.name)}</span></span><a href="genre.html?name=${encodeURIComponent(g.name)}">ver los ${g.n} →</a></div>${row(g.albums)}`;
+  });
+  if(d.random&&d.random.length){
+    h+=`<div class="sec seclink"><span>Al azar</span><button id="shuffle" style="font-size:13px;padding:4px 10px">↻ Baraja</button></div>${row(d.random)}`;
+  }
+  app.innerHTML=h||'<div class="count">Aún no hay suficiente en tu biblioteca para sugerir.</div>';
+}
+function load(){fetch('/api/discover').then(r=>r.json()).then(render).catch(e=>app.innerHTML='error: '+e.message);}
+load();
+document.addEventListener('escucharrr:changed',load);   // biblioteca en vivo
+document.addEventListener('click',e=>{if(e.target.closest('#shuffle'))load();});
+</script>
+<script src="player.js" defer></script>
+</body>
+</html>
