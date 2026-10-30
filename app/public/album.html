@@ -29,7 +29,10 @@ fetch('/api/album?id='+id).then(r=>r.json()).then(a=>{
   const about=a.about?`<div class="about"><div class="prov">${a.about_source?('desde '+esc(a.about_source.source)+(a.about_source.source_ref?' · '+esc(a.about_source.source_ref):'')):''}</div>${esc(a.about)}</div>`:'';
   const editions=(a.editions||[]).map(e=>`${esc(e.format||'?')}${e.date?' · '+esc(e.date):''}`).join(' &nbsp;·&nbsp; ');
   const tracks=(a.tracks||[]).length?`<div class="sec">Pistas</div>`+a.tracks.map((t,i)=>`<div class="track"><button class="play" data-idx="${i}" aria-label="Reproducir" title="Reproducir" style="border:none;background:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0 4px">▶</button><span class="pos">${t.pos}</span><span style="flex:1">${esc(t.title)}</span><span class="dur">${mmss(t.length_ms)}</span></div>`).join(''):'';
-  const credits=(a.credits||[]).length?`<div class="sec">Créditos</div><div class="credits">`+a.credits.map(c=>`<div class="c"><div class="role">${esc(c.role)}</div>${c.artists.map(esc).join(', ')}</div>`).join('')+`</div>`:'';
+  const INST={'bass':'bajo','electric bass':'bajo eléctrico','double bass':'contrabajo','guitar':'guitarra','acoustic guitar':'guitarra acústica','electric guitar':'guitarra eléctrica','drums':'batería','percussion':'percusión','piano':'piano','keyboards':'teclados','synthesizer':'sintetizador','organ':'órgano','cello':'violonchelo','violin':'violín','viola':'viola','trumpet':'trompeta','trombone':'trombón','saxophone':'saxofón','flute':'flauta','clarinet':'clarinete','harmonica':'armónica','accordion':'acordeón','vibraphone':'vibráfono'};
+  const tInst=i=>i?(INST[i.toLowerCase()]||i.toLowerCase()):i;
+  const clabel=c=>c.role==='instrumento'&&c.instrument?tInst(c.instrument):(c.role==='voz'&&c.instrument?'voz ('+tInst(c.instrument)+')':c.role);
+  const credits=(a.credits||[]).length?`<div class="sec">Créditos</div><div class="credits">`+a.credits.map(c=>`<div class="c"><div class="role">${esc(clabel(c))}</div>${c.artists.map(esc).join(', ')}</div>`).join('')+`</div>`:'';
   app.innerHTML=`
     <div class="hero">
       <div class="cov">${cover(a.id)}</div>

@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS credit (
   role          TEXT NOT NULL,               -- bass | mixing | production | composer | guest_vocals | ...
   instrument    TEXT,
   detail        TEXT,
+  source        TEXT,                        -- musicbrainz | discogs | user (para reinsertar por fuente)
   position      INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_credit_entity ON credit(entity_type, entity_id);

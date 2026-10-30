@@ -30,7 +30,7 @@ const Q = {
       (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=tr.artist_credit_id ORDER BY acn.position LIMIT 1) artist
      FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
      WHERE rel.release_group_id=? ORDER BY m.position,tr.position`),
-  credits: db.prepare(`SELECT role, group_concat(DISTINCT artist_name) artists FROM v_album_credits WHERE release_group_id=? GROUP BY role ORDER BY role`),
+  credits: db.prepare(`SELECT role, instrument, group_concat(DISTINCT artist_name) artists FROM v_album_credits WHERE release_group_id=? GROUP BY role, instrument ORDER BY role, instrument`),
   search: db.prepare(`SELECT name, kind, subject_type, subject_id FROM search_fts WHERE search_fts MATCH ? ORDER BY bm25(search_fts) LIMIT ?`),
   recAlbum: db.prepare(`SELECT rel.release_group_id id FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE tr.recording_id=? LIMIT 1`),
   cArtists: db.prepare('SELECT count(*) n FROM artist'),
@@ -91,7 +91,7 @@ function album(id) {
   a.about_source = Q.prov.all(id).find(p => p.field === 'about');
   a.editions = Q.editions.all(id);
   a.tracks = Q.tracks.all(id);
-  a.credits = Q.credits.all(id).map(c => ({ role: c.role, artists: (c.artists || '').split(',') }));
+  a.credits = Q.credits.all(id).map(c => ({ role: c.role, instrument: c.instrument, artists: (c.artists || '').split(',') }));
   return a;
 }
 function libraryList() {

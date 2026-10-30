@@ -20,6 +20,7 @@ function migrate(db) {
   if (addCol(db, 'local_file', 'isrc', 'TEXT')) added.push('local_file.isrc');
   if (addCol(db, 'local_file', 'acoustid', 'TEXT')) added.push('local_file.acoustid');
   if (addCol(db, 'local_file', 'fingerprint', 'TEXT')) added.push('local_file.fingerprint');
+  if (addCol(db, 'credit', 'source', 'TEXT')) added.push('credit.source');
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_isrc ON recording(isrc)');
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_acoustid ON recording(acoustid)');
   return added;

@@ -133,7 +133,7 @@ try {
     if (identified) {
       const aid = ensureArtist(artistName), cid = ensureCredit(aid, artistName);
       const rg = ensureRg(album, cid, (t.DATE || '').slice(0, 4) || null);
-      if (t.GENRE) S.linkGenre.run(rg, ensureGenre(t.GENRE));
+      if (t.GENRE) S.linkGenre.run(rg, ensureGenre(t.GENRE.toLowerCase()));  // minúscula: convención común con MB/Discogs
       const rel = ensureRel(rg, album, cid, t.DATE || null, ext.toUpperCase());
       const med = ensureMed(rel, discNo, ext.toUpperCase());
       const tcid = t.ARTIST ? ensureCredit(ensureArtist(t.ARTIST), t.ARTIST) : cid;

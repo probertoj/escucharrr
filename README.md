@@ -18,6 +18,8 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
   - `identify.js` — identifica grabaciones por identificador fuerte: **ISRC → MusicBrainz**
     (sin binario ni key) y **huella Chromaprint → AcoustID → MusicBrainz** (necesita `fpcalc` + API key).
   - `enrich.js` — enriquece desde MusicBrainz: mbid, tipo, fecha, géneros y **créditos por rol**.
+  - `discogs.js` — **créditos por pista desde Discogs** (intérpretes/roles/instrumentos que MB no
+    cubre en sellos pequeños); mapea por posición a nuestras grabaciones. Funciona sin token.
   - `config.example.json`, `obsidian-mapping.md`, `sample-vault/` — configuración, spec y ejemplo.
 - `app/` — vista web mínima que lee de la BD (**funcionando**): servidor + biblioteca + página de álbum.
   - `server.js` — API JSON (`/api/library`, `/api/album?id=`) desde SQLite (node:http + node:sqlite).
@@ -37,6 +39,7 @@ node identify.js     --db ../app/escucharrr.db --isrc            # ISRC -> Music
 # huella acústica (opcional): necesita fpcalc en el PATH + API key de AcoustID
 node identify.js     --db ../app/escucharrr.db --acoustid --acoustid-key TU_KEY
 node enrich.js       --db ../app/escucharrr.db --limit 50
+node discogs.js      --db ../app/escucharrr.db --rg 1   # créditos por pista (donde MB no llega)
 
 # 2. arrancar la vista web
 cd ..

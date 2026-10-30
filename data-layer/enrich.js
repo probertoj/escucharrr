@@ -49,8 +49,8 @@ const S = {
   linkGenre: db.prepare('INSERT OR IGNORE INTO release_group_genre(release_group_id,genre_id) VALUES(?,?)'),
   recByPos: db.prepare(`SELECT tr.recording_id FROM track tr JOIN medium m ON m.id=tr.medium_id
       JOIN "release" rel ON rel.id=m.release_id WHERE rel.release_group_id=? AND m.position=? AND tr.position=?`),
-  delCredits: db.prepare('DELETE FROM credit WHERE entity_type=? AND entity_id=?'),
-  insCredit: db.prepare('INSERT INTO credit(entity_type,entity_id,artist_id,role,instrument,detail,position) VALUES(?,?,?,?,?,?,?)'),
+  delCredits: db.prepare("DELETE FROM credit WHERE entity_type=? AND entity_id=? AND (source='musicbrainz' OR source IS NULL)"),
+  insCredit: db.prepare("INSERT INTO credit(entity_type,entity_id,artist_id,role,instrument,detail,source,position) VALUES(?,?,?,?,?,?,'musicbrainz',?)"),
   prov: db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at) VALUES(?,?,?,?,?,datetime('now'))
      ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source=excluded.source, source_ref=excluded.source_ref, fetched_at=datetime('now')`),
 };
