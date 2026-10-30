@@ -3,11 +3,15 @@
 // Cola persistente (localStorage) + barra fija de "ahora suena" en todas las páginas.
 // Al empezar una pista registra la escucha vía POST /api/play.
 window.player = (function () {
-  const KEY = 'escucharrr.queue', VKEY = 'escucharrr.volume';
+  const KEY = 'escucharrr.queue', VKEY = 'escucharrr.volume', ZKEY = 'escucharrr.zone';
   const PAIRS = [['#0F6E56', '#1D9E75'], ['#534AB7', '#7F77DD'], ['#185FA5', '#378ADD'], ['#854F0B', '#BA7517'], ['#72243E', '#D4537E'], ['#5F5E5A', '#888780'], ['#3B6D11', '#639922'], ['#993C1D', '#D85A30']];
   let q = [], idx = -1, playing = false, loadedIdx = -1, loggedIdx = -1, bar = null;
   let vol = 1; try { const v = parseFloat(localStorage.getItem(VKEY)); if (v >= 0 && v <= 1) vol = v; } catch (e) {}
   try { const s = JSON.parse(localStorage.getItem(KEY)); if (s) { q = s.q || []; idx = (s.idx == null ? -1 : s.idx); } } catch (e) {}
+  // zona de salida: nombre + dispositivo (base para multi-sala al estilo Roon; hoy = salida de este equipo)
+  let zone = { name: 'Este equipo', deviceId: '', label: '' };
+  try { const z = JSON.parse(localStorage.getItem(ZKEY)); if (z && typeof z === 'object') zone = Object.assign(zone, z); } catch (e) {}
+  const persistZone = () => { try { localStorage.setItem(ZKEY, JSON.stringify(zone)); } catch (e) {} };
 
   // ── elemento de audio + grafo Web Audio (se crea tras el primer gesto del usuario) ──
   const audio = new Audio(); audio.preload = 'metadata'; audio.volume = vol;
@@ -21,8 +25,19 @@ window.player = (function () {
       gainNode = ctx.createGain(); gainNode.gain.value = vol;                        // punto de DSP (ganancia / ReplayGain / EQ futuro)
       src.connect(gainNode); gainNode.connect(ctx.destination);
       audio.volume = 1;                                                              // el volumen pasa ahora por la ganancia
+      applySink();                                                                   // enruta a la salida/zona elegida
     } catch (e) { ctx = null; }
   }
+  // enruta el audio al dispositivo de la zona. Con Web Audio el que manda es el AudioContext
+  // (setSinkId del <audio> queda anulado al conectarlo al grafo), por eso priorizamos ctx.setSinkId.
+  function applySink() {
+    const id = zone.deviceId || '';
+    try {
+      if (ctx && typeof ctx.setSinkId === 'function') return ctx.setSinkId(id).catch(() => {});
+      if (typeof audio.setSinkId === 'function') return audio.setSinkId(id).catch(() => {});
+    } catch (e) {}
+  }
+  function sinkSupported() { return (window.AudioContext && 'setSinkId' in AudioContext.prototype) || typeof audio.setSinkId === 'function'; }
   // ReplayGain: ganancia lineal de la pista actual, limitada por el pico para no saturar
   function rgLinear(c) { if (!c || c.gain_db == null) return 1; let g = c.gain_db; if (c.peak_dbfs != null) { const ceil = -1 - c.peak_dbfs; if (g > ceil) g = ceil; } return Math.pow(10, g / 20); }
   function applyVol() { const g = vol * rgLinear(cur()); if (gainNode) gainNode.gain.value = g; else audio.volume = Math.min(1, g); try { localStorage.setItem(VKEY, String(vol)); } catch (e) {} }
@@ -34,7 +49,7 @@ window.player = (function () {
   const lenMs = () => { const c = cur(); const d = audio.duration; return (loadedIdx === idx && isFinite(d) && d > 0) ? d * 1000 : (c && c.length_ms) || 0; };
   const posMs = () => (loadedIdx === idx ? audio.currentTime * 1000 : 0);
   function cover(id, s) { const p = PAIRS[(id || 0) % PAIRS.length]; return `<svg width="${s}" height="${s}" viewBox="0 0 46 46" style="border-radius:7px;display:block"><rect width="46" height="46" fill="${p[0]}"/><rect y="30" width="46" height="16" fill="${p[1]}"/><circle cx="33" cy="16" r="10" fill="#FAC775"/></svg>`; }
-  function logPlay() { const c = cur(); if (c && c.trackId && loggedIdx !== idx) { loggedIdx = idx; fetch('/api/play', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ track_id: c.trackId }) }).catch(() => {}); } }
+  function logPlay() { const c = cur(); if (c && c.trackId && loggedIdx !== idx) { loggedIdx = idx; fetch('/api/play', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ track_id: c.trackId, zone: zone.name }) }).catch(() => {}); } }
 
   function ensureBar() { if (bar) return; bar = document.createElement('div'); bar.id = 'nowbar'; bar.setAttribute('style', 'position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);border-top:1px solid var(--border);padding:8px 16px;display:none;align-items:center;gap:14px'); document.body.appendChild(bar); }
   const volIcon = () => vol === 0 ? '🔇' : vol < 0.5 ? '🔉' : '🔊';
@@ -60,11 +75,56 @@ window.player = (function () {
        </div>
        <span data-act="mute" style="cursor:pointer;font-size:15px" title="Silenciar">${volIcon()}</span>
        <input data-act="vol" type="range" min="0" max="1" step="0.01" value="${vol}" title="Volumen" style="width:72px;accent-color:var(--accent)">
+       <span data-act="zone" title="Salida / zona" style="cursor:pointer;font-size:12px;color:var(--text-2);display:inline-flex;align-items:center;gap:4px;max-width:120px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">🔈 ${esc(zone.name || 'Este equipo')}</span>
        <a href="queue.html" title="Cola" style="font-size:16px;color:var(--text-2);text-decoration:none">☰ ${idx + 1}/${q.length}</a>`;
     emit();
   }
   function progress() { const c = cur(); if (!c) return; const len = lenMs(), p = posMs(); const pr = document.getElementById('npprog'), el = document.getElementById('npel'); if (pr && len) pr.style.width = Math.min(100, p / len * 100) + '%'; if (el) el.textContent = mmss(p); }
   const emit = () => document.dispatchEvent(new Event('player:change'));
+
+  // ── selector de salida / zona (popover anclado a la barra) ──
+  let zpanel = null;
+  function updateZoneBtn() { const b = document.querySelector('#nowbar [data-act="zone"]'); if (b) b.innerHTML = '🔈 ' + esc(zone.name || 'Este equipo'); }
+  function ensureZPanel() {
+    if (zpanel) return;
+    zpanel = document.createElement('div'); zpanel.id = 'zonepanel';
+    zpanel.setAttribute('style', 'position:fixed;right:16px;bottom:62px;z-index:60;width:280px;max-width:calc(100vw - 32px);background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:12px 14px;display:none;font-size:13px');
+    document.body.appendChild(zpanel);
+    document.addEventListener('click', e => { if (zpanel.style.display === 'block' && !e.target.closest('#zonepanel') && !e.target.closest('[data-act="zone"]')) zpanel.style.display = 'none'; });
+  }
+  function toggleZPanel() { ensureZPanel(); if (zpanel.style.display === 'block') { zpanel.style.display = 'none'; return; } zpanel.style.display = 'block'; renderZPanel(); }
+  async function enumOutputs() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return { list: [], labeled: false };
+    let devs = []; try { devs = await navigator.mediaDevices.enumerateDevices(); } catch (e) { return { list: [], labeled: false }; }
+    const outs = devs.filter(d => d.kind === 'audiooutput');
+    return { list: outs, labeled: outs.some(d => d.label) };
+  }
+  async function unlockLabels() {   // los nombres de salida requieren permiso; getUserMedia los desbloquea (y permite setSinkId)
+    try { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); s.getTracks().forEach(t => t.stop()); } catch (e) {}
+    renderZPanel();
+  }
+  function setZoneDevice(id, label) { zone.deviceId = id || ''; zone.label = label || ''; persistZone(); ensureGraph(); applySink(); renderZPanel(); }
+  async function renderZPanel() {
+    ensureZPanel();
+    let h = '<div style="font-weight:600;margin-bottom:8px">Salida y zona</div>';
+    h += '<label style="display:block;font-size:11px;color:var(--text-2);margin-bottom:3px">Nombre de la zona</label>';
+    h += `<input id="zname" value="${esc(zone.name)}" style="width:100%;margin-bottom:10px">`;
+    if (!sinkSupported()) {
+      h += '<div style="color:var(--text-2)">Tu navegador no permite elegir el dispositivo de salida; la zona se guarda igual para el futuro multi-sala.</div>';
+    } else {
+      const { list, labeled } = await enumOutputs();
+      h += '<div style="font-size:11px;color:var(--text-2);margin-bottom:4px">Dispositivo</div>';
+      const rows = [{ deviceId: '', label: 'Predeterminado del sistema' }]
+        .concat(list.filter(d => d.deviceId && d.deviceId !== 'default').map((d, i) => ({ deviceId: d.deviceId, label: d.label || ('Dispositivo ' + (i + 1)) })));
+      h += rows.map(r => {
+        const on = (zone.deviceId || '') === (r.deviceId || '');
+        return `<div class="zdev" data-id="${esc(r.deviceId)}" data-label="${esc(r.label)}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer;${on ? 'background:var(--accent-bg);color:var(--accent)' : ''}"><span>${on ? '◉' : '○'}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(r.label)}</span></div>`;
+      }).join('');
+      if (!labeled && list.length) h += '<div data-act="unlock" style="margin-top:6px;color:var(--accent);cursor:pointer">Mostrar nombres de los dispositivos…</div>';
+      if (!list.length) h += '<div style="color:var(--text-2)">No se detectaron dispositivos de salida.</div>';
+    }
+    zpanel.innerHTML = h;
+  }
 
   function start(i) {
     idx = i; save(); const c = cur(); if (!c) return;
@@ -99,20 +159,27 @@ window.player = (function () {
 
   // interacción de la barra (delegada: la barra se re-renderiza por innerHTML)
   document.addEventListener('click', e => {
+    const zd = e.target.closest('#zonepanel .zdev'); if (zd) { setZoneDevice(zd.dataset.id, zd.dataset.label); return; }
+    if (e.target.closest('#zonepanel [data-act="unlock"]')) { unlockLabels(); return; }
     const a = e.target.closest('#nowbar [data-act]'); if (!a) return;
     const k = a.dataset.act;
     if (k === 'prev') prev();
     else if (k === 'next') next();
     else if (k === 'toggle') toggle();
+    else if (k === 'zone') toggleZPanel();
     else if (k === 'mute') setVol(vol === 0 ? (parseFloat(localStorage.getItem(VKEY + '.last')) || 0.8) : (localStorage.setItem(VKEY + '.last', vol), 0));
     else if (k === 'seek') { const box = a.getBoundingClientRect(); seekFrac((e.clientX - box.left) / box.width); }
   });
-  document.addEventListener('input', e => { const a = e.target.closest('#nowbar [data-act="vol"]'); if (a) setVol(parseFloat(a.value)); });
+  document.addEventListener('input', e => {
+    const a = e.target.closest('#nowbar [data-act="vol"]'); if (a) { setVol(parseFloat(a.value)); return; }
+    const zn = e.target.closest('#zonepanel #zname'); if (zn) { zone.name = zn.value; persistZone(); updateZoneBtn(); }
+  });
 
   // biblioteca en vivo: el servidor avisa por SSE cuando reescanea; las vistas se refrescan
   try { const es = new EventSource('/api/events'); es.onmessage = e => { try { if (JSON.parse(e.data).type === 'library') document.dispatchEvent(new CustomEvent('escucharrr:changed')); } catch (x) {} }; } catch (e) {}
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', render); else render();
   const getGain = () => (gainNode ? gainNode.gain.value : audio.volume);   // ganancia efectiva (vol × ReplayGain)
-  return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain };
+  const getZone = () => ({ name: zone.name, deviceId: zone.deviceId, label: zone.label });
+  return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain, getZone };
 })();

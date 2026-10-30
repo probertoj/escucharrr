@@ -50,7 +50,7 @@ const Q = {
   tiers: db.prepare(`SELECT key, label, (SELECT count(*) FROM rating_tier rt WHERE rt.subject_type='release_group' AND rt.tier_key=tier.key) n FROM tier ORDER BY rank DESC`),
   topGenres: db.prepare(`SELECT g.name, count(*) n FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id GROUP BY g.id ORDER BY n DESC, g.name LIMIT 8`),
   trackInfo: db.prepare('SELECT recording_id, length_ms FROM track WHERE id=?'),
-  insPlay: db.prepare('INSERT INTO play(recording_id,track_id,local_file_id,ms_played,source) VALUES(?,?,?,?,?)'),
+  insPlay: db.prepare('INSERT INTO play(recording_id,track_id,local_file_id,ms_played,source,zone) VALUES(?,?,?,?,?,?)'),
   totalPlays: db.prepare('SELECT COUNT(*) n, COALESCE(SUM(ms_played),0) ms FROM play'),
   daily: db.prepare(`SELECT date(played_at) d, SUM(ms_played) ms, COUNT(*) c FROM play WHERE played_at>=date('now','-27 days') GROUP BY d ORDER BY d`),
   topArtists: db.prepare(`SELECT acn.artist_id aid, acn.name artist, SUM(p.ms_played) ms, COUNT(*) plays FROM play p JOIN recording r ON r.id=p.recording_id JOIN artist_credit_name acn ON acn.artist_credit_id=r.artist_credit_id AND acn.position=1 GROUP BY acn.artist_id ORDER BY ms DESC, plays DESC LIMIT 5`),
@@ -105,7 +105,7 @@ function logPlay(j) {
   let recId = j.recording_id || null, trackId = j.track_id || null, ms = j.ms_played;
   if (trackId) { const t = Q.trackInfo.get(trackId); if (t) { recId = recId || t.recording_id; if (ms == null) ms = t.length_ms; } }
   if (!recId && !trackId) return { ok: false, error: 'falta track_id o recording_id' };
-  Q.insPlay.run(recId, trackId, null, ms || 0, j.source || 'ui');
+  Q.insPlay.run(recId, trackId, null, ms || 0, j.source || 'ui', j.zone || null);
   return { ok: true };
 }
 function home() {
