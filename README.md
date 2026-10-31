@@ -13,8 +13,17 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
   - `schema.sql` — esquema SQLite (grafo estilo MusicBrainz; `tier` y `rating` de primera
     clase e indexados; créditos tipados; mapeo de ficheros; procedencia; FTS5; vistas).
   - `obsidian-sync.js` — sincroniza un vault de Obsidian al grafo (bio/tier/rating; tus notas mandan).
+    Al **borrar** una nota, deshace justo lo que aportó (tier/rating/"acerca de" con `source='obsidian'`,
+    según `provenance`) y la quita; un álbum que solo existía por su nota desaparece (ver `prune.js`).
   - `scan.js` — escanea ficheros locales (FLAC/WAV) → `local_file` + mapeo por tags al grafo
-    (también lee identificadores embebidos: `MUSICBRAINZ_*`, `ACOUSTID_*`, `ISRC`).
+    (también lee identificadores embebidos: `MUSICBRAINZ_*`, `ACOUSTID_*`, `ISRC`). Al **borrar** un
+    fichero del disco, quita su `local_file` y recoge la basura del grafo que queda sin anclar.
+  - `prune.js` — **poda** (cierra el ciclo de la biblioteca en vivo): quita los `local_file` cuyo fichero
+    ya no existe y recoge la basura del grafo (álbum → grabación → género/crédito/artista) que ya no ancla
+    nada. **Conservador**: nunca borra algo que aún sostiene un fichero, una nota, datos del usuario
+    (tier/rating/favorito/edición) o una lista; el historial de escucha se conserva (se desvincula, no se
+    borra). A prueba de unidades desmontadas (si la raíz entera no está, no poda bajo ella). `--no-prune`
+    desactiva la poda en `scan.js`/`obsidian-sync.js`.
   - `identify.js` — identifica grabaciones por identificador fuerte: **ISRC → MusicBrainz**
     (sin binario ni key) y **huella Chromaprint → AcoustID → MusicBrainz** (necesita `fpcalc` + API key).
   - `enrich.js` — enriquece desde MusicBrainz: mbid, tipo, fecha, géneros y **créditos por rol**.
@@ -41,6 +50,8 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     del servidor (`/api/native/*`) en vez del navegador, silenciando los decks para no duplicar el sonido.
   - **Biblioteca en vivo**: con `app/watch.json` (copia de `watch.example.json`), el servidor vigila
     tus carpetas de música y el vault de Obsidian, reescanea/sincroniza al vuelo y refresca la UI por SSE.
+    El ciclo está **cerrado**: borrar un fichero o una nota **poda** su pista/álbum del grafo (ver `prune.js`),
+    no solo añadir/actualizar.
   - **Scrobbling local-first** (`data-layer/scrobble.js`): cada escucha que supera el umbral (mitad de la
     pista o 4 min; ≥ 30 s) se encola en SQLite (`scrobble_queue`, instantánea de metadata con MBIDs) y un
     drenador la envía a **Last.fm** y **ListenBrainz** con reintentos + backoff, tolerando estar sin conexión;

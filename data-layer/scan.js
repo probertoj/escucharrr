@@ -12,6 +12,7 @@ function arg(n, d) { const i = process.argv.indexOf('--' + n); return i >= 0 ? (
 const DB_PATH = arg('db', 'escucharrr.db');
 const ROOT = arg('root');
 const DEMO = process.argv.includes('--demo');
+const PRUNE = !process.argv.includes('--no-prune');   // poda ficheros ausentes + GC del grafo
 if (!ROOT) { console.error('Falta --root <carpeta de música>'); process.exit(1); }
 
 const db = new DatabaseSync(DB_PATH);
@@ -157,6 +158,15 @@ try {
   }
   db.exec('COMMIT');
 } catch (e) { db.exec('ROLLBACK'); throw e; }
+
+// Poda: quita de la biblioteca los ficheros borrados del disco (bajo esta raíz) y recoge la
+// basura del grafo que ya no ancla nada. Así el ciclo de la biblioteca en vivo se cierra:
+// borrar un .flac ya no deja su pista/álbum colgando. (--no-prune para desactivarla.)
+if (PRUNE) {
+  const prune = require('./prune');
+  prune.pruneMissingFiles(db, [path.resolve(ROOT)], (m) => console.log('  ' + m));
+  prune.pruneGraph(db, (m) => console.log('  ' + m));
+}
 
 // FTS (instantánea por prefijo): artistas + álbumes
 db.exec('DELETE FROM search_fts');

@@ -13,6 +13,7 @@ function arg(name, def) { const i = process.argv.indexOf('--' + name); return i 
 const DB_PATH = arg('db', 'escucharrr.db');
 const CFG_PATH = arg('config', 'config.example.json');
 const DEMO = process.argv.includes('--demo');
+const PRUNE = !process.argv.includes('--no-prune');   // poda notas ausentes + GC del grafo
 
 const cfg = JSON.parse(fs.readFileSync(CFG_PATH, 'utf8'));
 const db = new DatabaseSync(DB_PATH);
@@ -107,7 +108,8 @@ function ensureGenre(name) {
 }
 
 // ── sync ────────────────────────────────────────────────────────────────────
-const dir = path.resolve(path.dirname(CFG_PATH), cfg.vault, cfg.albumsFolder);
+const vaultRoot = path.resolve(path.dirname(CFG_PATH), cfg.vault);
+const dir = path.join(vaultRoot, cfg.albumsFolder);
 const files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.md'));
 let n = 0;
 db.exec('BEGIN');
@@ -155,6 +157,44 @@ try {
   }
   db.exec('COMMIT');
 } catch (e) { db.exec('ROLLBACK'); throw e; }
+
+// Poda: si una nota del vault ya no existe, deshaz JUSTO lo que aportó (según la procedencia:
+// tier/rating/"acerca de" con source='obsidian') y quita la nota; luego recoge la basura del
+// grafo (un álbum que solo existía por su nota desaparece). Así "tus notas mandan" también al
+// borrar. Solo poda si la carpeta del vault existe (evita vaciados si el vault no está montado).
+if (PRUNE && fs.existsSync(dir)) {
+  const prune = require('./prune');
+  const inFolder = (relPath) => {
+    const p = relPath.replace(/\\/g, '/').toLowerCase();
+    const pre = cfg.albumsFolder.replace(/\\/g, '/').toLowerCase();
+    return p === pre || p.startsWith(pre.endsWith('/') ? pre : pre + '/');
+  };
+  const provOf = db.prepare("SELECT subject_type, subject_id, field FROM provenance WHERE source='obsidian' AND source_ref=?");
+  const delTier = db.prepare("DELETE FROM rating_tier WHERE subject_type=? AND subject_id=? AND source='obsidian'");
+  const delRating = db.prepare("DELETE FROM rating WHERE subject_type=? AND subject_id=? AND source='obsidian'");
+  const delEdit = db.prepare('DELETE FROM user_edit WHERE subject_type=? AND subject_id=? AND field=?');
+  const delProv = db.prepare('DELETE FROM provenance WHERE subject_type=? AND subject_id=? AND field=?');
+  const delNote = db.prepare('DELETE FROM obsidian_note WHERE id=?');   // CASCADE → obsidian_link
+  let gone = 0;
+  db.exec('BEGIN');
+  try {
+    for (const nt of db.prepare('SELECT id, path FROM obsidian_note').all()) {
+      if (!inFolder(nt.path)) continue;                                  // nota de otra carpeta no sincronizada ahora
+      let exists = false; try { exists = fs.existsSync(path.join(vaultRoot, nt.path)); } catch (e) {}
+      if (exists) continue;
+      for (const pr of provOf.all(nt.path)) {                            // deshacer lo aportado por la nota
+        if (pr.field === 'tier') delTier.run(pr.subject_type, pr.subject_id);
+        else if (pr.field === 'rating') delRating.run(pr.subject_type, pr.subject_id);
+        delEdit.run(pr.subject_type, pr.subject_id, pr.field);
+        delProv.run(pr.subject_type, pr.subject_id, pr.field);
+      }
+      delNote.run(nt.id); gone++;
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  if (gone) console.log(`  poda: ${gone} nota(s) ausente(s) quitada(s)`);
+  prune.pruneGraph(db, (m) => console.log('  ' + m));
+}
 
 // Reconstruir el índice de búsqueda (instantánea = prefijo FTS5; completa = bm25)
 db.exec('DELETE FROM search_fts');
