@@ -42,7 +42,23 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     filas por tus géneros dominantes y una tirada al azar — sin nube). Todo internavegable:
     álbum → artista → género, y los artistas del buscador abren su página.
 
-Todo usa `node:sqlite` (Node ≥ 22.5 / 24), **sin paquetes externos**.
+- `engine/` — **motor de audio nativo** (esqueleto; §4 del diseño: decode → float32 → DSP → salida).
+  Es la parte que SÍ tiene que ser nativa (salida de baja latencia / bit-perfect, fuera del navegador).
+  - `escucharrr-engine.cpp` — renderizador **WASAPI** en float32 (C++, solo Windows SDK, **sin libs externas**):
+    enumera dispositivos de salida (con su formato de mezcla), reproduce PCM `f32le` que recibe por stdin
+    en **modo compartido** (con **ganancia maestra** = el nodo DSP de hoy) o **exclusivo = bit-perfect**
+    (sin tocar la muestra), y sube la prioridad del hilo de audio (MMCSS). Las ranuras de resample (soxr),
+    convolución y dither quedan documentadas para más adelante.
+  - `native-player.js` — bridge Node: la **decodificación** la pone **ffmpeg** (ranura de decoder; libFLAC/dr_flac
+    en el futuro) y el **transporte** (pista, posición, pausa/seek/volumen) lo lleva el bridge — como el "core"
+    de Roon posee las zonas y la UI es un mando. Así la salida nativa es **una zona del servidor**, no del navegador.
+  - `build.ps1` — compila con MSVC (VS Build Tools + workload C++); `cli.js` — demo: `node engine/cli.js devices|play`.
+  - El servidor expone `/api/native/{devices,state,play,pause,resume,stop,seek,volume,output}` para manejarlo
+    (aplica el ReplayGain por pista); si el binario no está compilado, lo avisa sin romper nada.
+
+Todo usa `node:sqlite` (Node ≥ 22.5 / 24), **sin paquetes externos**. El motor nativo añade, solo para la
+salida local nativa, **MSVC + Windows SDK** (compilación) y **ffmpeg** en el PATH (decodificación); la app web
+y el resto del pipeline no los necesitan.
 
 ## Construir la BD y arrancar la app
 
@@ -61,6 +77,11 @@ node analyze.js      --db ../app/escucharrr.db          # loudness R128/ReplayGa
 # 2. arrancar la vista web
 cd ..
 node app/server.js            # http://localhost:7733
+
+# 3. (opcional) motor nativo: compilar y probar la salida WASAPI local
+powershell -ExecutionPolicy Bypass -File engine\build.ps1   # necesita VS Build Tools (C++)
+node engine/cli.js devices                                   # lista dispositivos de salida
+node engine/cli.js play "/ruta/a/pista.flac" 10              # reproduce 10 s por el predeterminado (ffmpeg en PATH)
 ```
 
 Probado de punta a punta con datos reales: FLAC/WAV escaneados con sus propiedades, álbum

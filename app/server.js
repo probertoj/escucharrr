@@ -9,6 +9,17 @@ const fs = require('fs');
 const path = require('path');
 const cp = require('child_process');
 
+// Motor de audio NATIVO (opcional): salida WASAPI local controlada por el
+// servidor — el "core" posee la zona, la UI es un mando (modelo Roon). Si el
+// binario no está compilado, las rutas /api/native/* lo avisan sin romper nada.
+const NATIVE = (() => { try { return require('../engine/native-player'); } catch (e) { return null; } })();
+let _np = null;
+function np() {
+  if (!NATIVE) return null;
+  if (!_np) { _np = new NATIVE.NativePlayer(); _np.on('ended', () => sseBroadcast('native')); _np.on('state', () => sseBroadcast('native')); }
+  return _np;
+}
+
 const PORT = process.env.PORT || 7733;
 const DB_PATH = path.join(__dirname, 'escucharrr.db');
 const PUB = path.join(__dirname, 'public');
@@ -37,8 +48,8 @@ const Q = {
       (SELECT lf.peak_dbfs FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) peak_dbfs
      FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
      WHERE rel.release_group_id=? ORDER BY m.position,tr.position`),
-  fileByTrack: db.prepare('SELECT path, format FROM local_file WHERE track_id=? LIMIT 1'),
-  fileByRec: db.prepare('SELECT path, format FROM local_file WHERE recording_id=? LIMIT 1'),
+  fileByTrack: db.prepare('SELECT path, format, gain_db FROM local_file WHERE track_id=? LIMIT 1'),
+  fileByRec: db.prepare('SELECT path, format, gain_db FROM local_file WHERE recording_id=? LIMIT 1'),
   credits: db.prepare(`SELECT role, instrument, group_concat(DISTINCT artist_name) artists FROM v_album_credits WHERE release_group_id=? GROUP BY role, instrument ORDER BY role, instrument`),
   search: db.prepare(`SELECT name, kind, subject_type, subject_id FROM search_fts WHERE search_fts MATCH ? ORDER BY bm25(search_fts) LIMIT ?`),
   recAlbum: db.prepare(`SELECT rel.release_group_id id FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE tr.recording_id=? LIMIT 1`),
@@ -215,6 +226,45 @@ function streamAudio(req, res, trackId) {
   }
 }
 function sendJSON(res, obj) { const b = JSON.stringify(obj); res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(b); }
+function readBody(req) { return new Promise(resolve => { let b = ''; req.on('data', c => { b += c; if (b.length > 1e5) req.destroy(); }); req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch (e) { resolve({}); } }); }); }
+
+// ── motor nativo: salida WASAPI como zona del servidor ──────────────────────
+function resolveFileByTrack(trackId) {
+  let row = Q.fileByTrack.get(trackId);
+  if (!row) { const t = Q.trackInfo.get(trackId); if (t && t.recording_id) row = Q.fileByRec.get(t.recording_id); }
+  return row || null;
+}
+async function handleNative(req, res, u) {
+  const sub = u.pathname.slice('/api/native/'.length);
+  const P = np();
+  if (!P) return sendJSON(res, { ok: false, error: 'motor nativo no disponible en esta build' });
+  try {
+    if (req.method === 'GET' && sub === 'devices') {
+      if (!fs.existsSync(NATIVE.ENGINE)) return sendJSON(res, { ok: false, built: false, error: 'motor sin compilar: ejecuta engine/build.ps1' });
+      return sendJSON(res, { ok: true, built: true, items: await P.listDevices() });
+    }
+    if (req.method === 'GET' && sub === 'state') return sendJSON(res, { ok: true, state: P.state });
+    const body = req.method === 'POST' ? await readBody(req) : {};
+    if (sub === 'play') {
+      const row = resolveFileByTrack(body.track_id);
+      if (!row || !fs.existsSync(row.path)) return sendJSON(res, { ok: false, error: 'pista sin fichero local' });
+      const opts = { gainDb: row.gain_db != null ? row.gain_db : 0 };   // ReplayGain por pista
+      if (body.deviceId !== undefined) opts.deviceId = body.deviceId || null;
+      if (body.exclusive !== undefined) opts.exclusive = !!body.exclusive;
+      if (body.seekSec) opts.seekSec = body.seekSec;
+      const state = await P.play(row.path, opts);
+      logPlay({ track_id: body.track_id, source: 'native', zone: body.zone || 'este equipo (nativo)' });
+      return sendJSON(res, { ok: true, state });
+    }
+    if (sub === 'pause') return sendJSON(res, { ok: true, state: P.pause() });
+    if (sub === 'resume') return sendJSON(res, { ok: true, state: await P.resume() });
+    if (sub === 'stop') return sendJSON(res, { ok: true, state: P.stop() });
+    if (sub === 'seek') return sendJSON(res, { ok: true, state: await P.seek(Number(body.sec) || 0) });
+    if (sub === 'volume') return sendJSON(res, { ok: true, state: await P.setGainDb(Number(body.db) || 0) });
+    if (sub === 'output') { if (body.deviceId !== undefined) P.setDevice(body.deviceId || null); if (body.exclusive !== undefined) P.setExclusive(!!body.exclusive); return sendJSON(res, { ok: true, state: P.state }); }
+    res.writeHead(404); res.end('{}');
+  } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
+}
 function sendFile(res, file) {
   const p = path.join(PUB, file);
   if (!p.startsWith(PUB) || !fs.existsSync(p)) { res.writeHead(404); res.end('no'); return; }
@@ -266,6 +316,7 @@ http.createServer((req, res) => {
     req.on('end', () => { try { sendJSON(res, logPlay(JSON.parse(body || '{}'))); } catch (e) { res.writeHead(400); res.end(String(e.message)); } });
     return;
   }
+  if (u.pathname.startsWith('/api/native/')) return void handleNative(req, res, u);
   try {
     if (u.pathname === '/api/stream') return streamAudio(req, res, parseInt(u.searchParams.get('track'), 10));
     if (u.pathname === '/api/library') return sendJSON(res, libraryList());

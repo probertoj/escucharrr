@@ -6,3 +6,10 @@
 app/watch.json
 # node
 node_modules/
+# artefactos de compilación del motor nativo (el código fuente sí se versiona)
+engine/*.exe
+engine/*.obj
+engine/*.pdb
+engine/*.ilk
+engine/*.exp
+engine/*.lib
