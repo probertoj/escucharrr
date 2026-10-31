@@ -31,7 +31,9 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     **crossfade** real entre pistas al auto-avanzar (solapa los dos decks con rampas de ganancia),
     cola persistente, barra de "ahora suena" con progreso/seek/volumen y auto-avance, panel de
     ecualizador (presets) + crossfade, y **selector de salida/zona** (`AudioContext.setSinkId`;
-    la "zona" es nombrable y persistente, base para el multi-sala futuro; cada reproducción se registra con su zona).
+    la "zona" es nombrable y persistente, base para el multi-sala futuro; cada reproducción se registra con su zona),
+    con un **conmutador de motor nativo** que enruta el transporte (play/pausa/seek/volumen) a la salida WASAPI
+    del servidor (`/api/native/*`) en vez del navegador, silenciando los decks para no duplicar el sonido.
   - **Biblioteca en vivo**: con `app/watch.json` (copia de `watch.example.json`), el servidor vigila
     tus carpetas de música y el vault de Obsidian, reescanea/sincroniza al vuelo y refresca la UI por SSE.
   - `public/` — biblioteca (Focus por tier/género/década/tipo/formato/valoración, orden, filtro),
@@ -54,7 +56,9 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     de Roon posee las zonas y la UI es un mando. Así la salida nativa es **una zona del servidor**, no del navegador.
   - `build.ps1` — compila con MSVC (VS Build Tools + workload C++); `cli.js` — demo: `node engine/cli.js devices|play`.
   - El servidor expone `/api/native/{devices,state,play,pause,resume,stop,seek,volume,output}` para manejarlo
-    (aplica el ReplayGain por pista); si el binario no está compilado, lo avisa sin romper nada.
+    (aplica ReplayGain × volumen; si el binario no está compilado, lo avisa sin romper nada). El **player** tiene
+    un conmutador "Motor nativo (este equipo)" en el panel 🔈 que enruta el transporte a esas rutas, con selector
+    de dispositivo y casilla **exclusivo (bit-perfect)**; el cambio de modo hace handoff en la posición actual.
 
 Todo usa `node:sqlite` (Node ≥ 22.5 / 24), **sin paquetes externos**. El motor nativo añade, solo para la
 salida local nativa, **MSVC + Windows SDK** (compilación) y **ffmpeg** en el PATH (decodificación); la app web

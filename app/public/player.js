@@ -15,9 +15,14 @@ window.player = (function () {
   let vol = 1; try { const v = parseFloat(localStorage.getItem(VKEY)); if (v >= 0 && v <= 1) vol = v; } catch (e) {}
   try { const s = JSON.parse(localStorage.getItem(KEY)); if (s) { q = s.q || []; idx = (s.idx == null ? -1 : s.idx); } } catch (e) {}
   // zona de salida: nombre + dispositivo (base para multi-sala al estilo Roon; hoy = salida de este equipo)
-  let zone = { name: 'Este equipo', deviceId: '', label: '' };
+  let zone = { name: 'Este equipo', deviceId: '', label: '', native: false, nativeDeviceId: '', nativeExclusive: false };
   try { const z = JSON.parse(localStorage.getItem(ZKEY)); if (z && typeof z === 'object') zone = Object.assign(zone, z); } catch (e) {}
   const persistZone = () => { try { localStorage.setItem(ZKEY, JSON.stringify(zone)); } catch (e) {} };
+  // ── motor nativo (salida WASAPI del servidor, fuera del navegador) ──
+  // Cuando está activo, el transporte va a /api/native/* en vez del audio del navegador,
+  // y los decks se silencian para no duplicar el sonido. La posición se sondea del servidor.
+  let nativeMode = !!zone.native, nativeDeviceId = zone.nativeDeviceId || '', nativeExclusive = !!zone.nativeExclusive;
+  let nativePos = 0, nativeBusy = false, nativeMiss = 0, nativePollTimer = null, nativeVolTimer = null, nativeStartedIdx = -1;
   // ecualizador + crossfade (persistentes)
   let eqOn = false, eqGains = [0, 0, 0, 0, 0, 0, 0];
   try { const e = JSON.parse(localStorage.getItem(EQKEY)); if (e) { eqOn = !!e.on; if (Array.isArray(e.g) && e.g.length === 7) eqGains = e.g.map(Number); } } catch (e) {}
@@ -68,8 +73,8 @@ window.player = (function () {
   const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   const mmss = ms => { ms = ms || 0; if (!isFinite(ms)) ms = 0; return Math.floor(ms / 60000) + ':' + String(Math.floor(ms % 60000 / 1000)).padStart(2, '0'); };
   const loadedCur = () => active().trackIdx === idx;
-  const lenMs = () => { const c = cur(); const d = active().el.duration; return (loadedCur() && isFinite(d) && d > 0) ? d * 1000 : (c && c.length_ms) || 0; };
-  const posMs = () => (loadedCur() ? active().el.currentTime * 1000 : 0);
+  const lenMs = () => { const c = cur(); if (nativeMode) return (c && c.length_ms) || 0; const d = active().el.duration; return (loadedCur() && isFinite(d) && d > 0) ? d * 1000 : (c && c.length_ms) || 0; };
+  const posMs = () => nativeMode ? nativePos * 1000 : (loadedCur() ? active().el.currentTime * 1000 : 0);
   function cover(id, s) { const p = PAIRS[(id || 0) % PAIRS.length]; return `<svg width="${s}" height="${s}" viewBox="0 0 46 46" style="border-radius:7px;display:block"><rect width="46" height="46" fill="${p[0]}"/><rect y="30" width="46" height="16" fill="${p[1]}"/><circle cx="33" cy="16" r="10" fill="#FAC775"/></svg>`; }
   function logPlay() { const c = cur(); if (c && c.trackId && loggedIdx !== idx) { loggedIdx = idx; fetch('/api/play', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ track_id: c.trackId, zone: zone.name }) }).catch(() => {}); } }
 
@@ -98,7 +103,7 @@ window.player = (function () {
        <span data-act="mute" style="cursor:pointer;font-size:15px" title="Silenciar">${volIcon()}</span>
        <input data-act="vol" type="range" min="0" max="1" step="0.01" value="${vol}" title="Volumen" style="width:72px;accent-color:var(--accent)">
        <span data-act="eq" title="Ecualizador y crossfade" style="cursor:pointer;font-size:15px;${eqOn || xfade > 0 ? 'color:var(--accent)' : 'color:var(--text-2)'}">🎚</span>
-       <span data-act="zone" title="Salida / zona" style="cursor:pointer;font-size:12px;color:var(--text-2);display:inline-flex;align-items:center;gap:4px;max-width:120px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">🔈 ${esc(zone.name || 'Este equipo')}</span>
+       <span data-act="zone" title="Salida / zona" style="cursor:pointer;font-size:12px;color:${nativeMode ? 'var(--accent)' : 'var(--text-2)'};display:inline-flex;align-items:center;gap:4px;max-width:150px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">🔈 ${zoneLabel()}</span>
        <a href="queue.html" title="Cola" style="font-size:16px;color:var(--text-2);text-decoration:none">☰ ${idx + 1}/${q.length}</a>`;
     emit();
   }
@@ -129,7 +134,56 @@ window.player = (function () {
   }
   function cancelFade() { if (!fading) return; clearTimeout(fadeTimer); fading = false; const o = other(); if (ctx && o.gain) { try { o.gain.gain.cancelScheduledValues(ctx.currentTime); } catch (e) {} o.gain.gain.value = 0.0001; } o.el.pause(); o.el.removeAttribute('src'); o.trackIdx = -1; }
 
+  // ── transporte por el motor nativo (servidor) ──
+  function njson(path, body) { return fetch('/api/native/' + path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}).then(r => r.json()); }
+  function nativeGainDb(c) { const lin = Math.max(0.0001, vol * rgLinear(c)); return 20 * Math.log10(lin); }   // ReplayGain × volumen (ignorado en bit-perfect)
+  function startNativePoll() { stopNativePoll(); nativePollTimer = setInterval(pollNative, 800); }
+  function stopNativePoll() { if (nativePollTimer) { clearInterval(nativePollTimer); nativePollTimer = null; } }
+  function pollNative() {
+    njson('state').then(j => {
+      if (!j || !j.ok || !j.state) return;
+      nativePos = j.state.positionSec || 0;
+      if (j.state.playing) nativeMiss = 0;
+      else if (playing && !nativeBusy && ++nativeMiss >= 2) { nativeMiss = 0; onNativeEnded(); return; }
+      progress();
+    }).catch(() => {});
+  }
+  function onNativeEnded() { if (idx < q.length - 1) nativePlay(idx + 1); else { playing = false; stopNativePoll(); render(); } }
+  function nativePlay(i, opts) {
+    idx = i; save(); const c = cur(); if (!c) return;
+    if (c.playable === false) { playing = false; nativeStartedIdx = -1; render(); return; }
+    nativeBusy = true; playing = true; loggedIdx = idx; nativeMiss = 0; nativeStartedIdx = idx; render();
+    const body = { track_id: c.trackId, deviceId: nativeDeviceId || null, exclusive: !!nativeExclusive, gainDb: nativeGainDb(c), zone: zone.name };
+    if (opts && opts.seekSec) body.seekSec = opts.seekSec;
+    njson('play', body).then(j => {
+      nativeBusy = false;
+      if (!j || !j.ok) { playing = false; nativeStartedIdx = -1; render(); return; }
+      startNativePoll();
+    }).catch(() => { nativeBusy = false; playing = false; render(); });
+  }
+  function nativeToggle() {
+    const c = cur(); if (!c || c.playable === false) return;
+    if (playing) { nativeBusy = true; playing = false; render(); njson('pause', {}).then(() => { nativeBusy = false; stopNativePoll(); }); }
+    else if (nativeStartedIdx === idx) { nativeBusy = true; playing = true; render(); njson('resume', {}).then(() => { nativeBusy = false; startNativePoll(); }); }
+    else nativePlay(idx);
+  }
+  function nativeSeek(f) { const c = cur(); if (!c) return; const lenS = (c.length_ms || 0) / 1000; if (!lenS) return; nativeBusy = true; njson('seek', { sec: Math.max(0, Math.min(1, f)) * lenS }).then(() => nativeBusy = false); }
+  function nativeStop() { playing = false; nativeStartedIdx = -1; stopNativePoll(); njson('stop', {}).catch(() => {}); }
+  function nativeVolumeApply() { clearTimeout(nativeVolTimer); nativeVolTimer = setTimeout(() => { const c = cur(); if (!c || !playing) return; nativeBusy = true; njson('volume', { db: nativeGainDb(c) }).then(() => nativeBusy = false).catch(() => nativeBusy = false); }, 300); }
+  function setNativeMode(on) {
+    on = !!on; if (on === nativeMode) return;
+    const wasPlaying = playing, posSec = posMs() / 1000;
+    if (nativeMode) nativeStop(); else { cancelFade(); decks.forEach(d => d.el.pause()); }
+    nativeMode = on; zone.native = on; persistZone(); updateZoneBtn();
+    if (cur() && wasPlaying) { if (on) nativePlay(idx, { seekSec: posSec }); else start(idx); }
+    else render();
+    if (zpanel && zpanel.style.display === 'block') renderZPanel();
+  }
+  function setNativeDevice(id) { nativeDeviceId = id || ''; zone.nativeDeviceId = nativeDeviceId; persistZone(); if (nativeMode && playing) nativePlay(idx, { seekSec: nativePos }); renderZPanel(); }
+  function setNativeExclusive(on) { nativeExclusive = !!on; zone.nativeExclusive = nativeExclusive; persistZone(); if (nativeMode && playing) nativePlay(idx, { seekSec: nativePos }); renderZPanel(); }
+
   function start(i) {
+    if (nativeMode) return nativePlay(i);
     cancelFade();
     idx = i; save(); const c = cur(); if (!c) return;
     const d = active();
@@ -144,11 +198,11 @@ window.player = (function () {
     render();
   }
   function onEnded() { if (fading) return; next(); }
-  function next() { if (idx < q.length - 1) start(idx + 1); else { playing = false; active().el.pause(); render(); } }
-  function prev() { const d = active(); if (d.trackIdx === idx && d.el.currentTime > 3) { d.el.currentTime = 0; } else if (idx > 0) start(idx - 1); else d.el.currentTime = 0; }
-  function toggle() { const c = cur(); if (!c || c.playable === false) return; const d = active(); if (d.trackIdx !== idx) return start(idx); if (d.el.paused) { ensureGraph(); if (ctx && ctx.state === 'suspended') ctx.resume(); d.el.play().catch(() => {}); } else d.el.pause(); }
-  function seekFrac(f) { const len = lenMs(); if (loadedCur() && len) active().el.currentTime = Math.max(0, Math.min(1, f)) * len / 1000; }
-  function setVol(v) { vol = Math.max(0, Math.min(1, v)); applyVol(); render(); }
+  function next() { if (nativeMode) { if (idx < q.length - 1) nativePlay(idx + 1); else { playing = false; stopNativePoll(); render(); } return; } if (idx < q.length - 1) start(idx + 1); else { playing = false; active().el.pause(); render(); } }
+  function prev() { if (nativeMode) { if (nativePos > 3 || idx <= 0) nativePlay(idx, { seekSec: 0 }); else nativePlay(idx - 1); return; } const d = active(); if (d.trackIdx === idx && d.el.currentTime > 3) { d.el.currentTime = 0; } else if (idx > 0) start(idx - 1); else d.el.currentTime = 0; }
+  function toggle() { if (nativeMode) return nativeToggle(); const c = cur(); if (!c || c.playable === false) return; const d = active(); if (d.trackIdx !== idx) return start(idx); if (d.el.paused) { ensureGraph(); if (ctx && ctx.state === 'suspended') ctx.resume(); d.el.play().catch(() => {}); } else d.el.pause(); }
+  function seekFrac(f) { if (nativeMode) return nativeSeek(f); const len = lenMs(); if (loadedCur() && len) active().el.currentTime = Math.max(0, Math.min(1, f)) * len / 1000; }
+  function setVol(v) { vol = Math.max(0, Math.min(1, v)); applyVol(); if (nativeMode) nativeVolumeApply(); render(); }
 
   function playTracks(tracks, i) { if (!tracks || !tracks.length) return; q = tracks; start(i || 0); }
   function playAlbum(id, i) { fetch('/api/album?id=' + id).then(r => r.json()).then(a => { const tr = (a.tracks || []).map(t => ({ trackId: t.trackId, title: t.title, artist: a.artist, albumId: a.id, length_ms: t.length_ms, playable: t.playable !== 0, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs })); if (!tr.length) { alert('Este álbum aún no tiene pistas en tu biblioteca.'); return; } playTracks(tr, i || 0); }); }
@@ -159,17 +213,19 @@ window.player = (function () {
 
   // eventos de audio -> estado real (ambos decks; sólo cuenta el activo)
   decks.forEach(d => {
-    d.el.addEventListener('play', () => { if (active() !== d) return; playing = true; logPlay(); render(); });
-    d.el.addEventListener('pause', () => { if (active() !== d) return; playing = false; render(); });
-    d.el.addEventListener('ended', () => { if (active() !== d) return; onEnded(); });
-    d.el.addEventListener('timeupdate', () => { if (active() !== d) return; progress(); maybeCrossfade(); });
-    d.el.addEventListener('durationchange', () => { if (active() !== d) return; render(); });
-    d.el.addEventListener('error', () => { if (active() !== d) return; playing = false; render(); });
+    // en modo nativo los decks están en silencio: sus eventos no deben tocar el estado de la UI
+    d.el.addEventListener('play', () => { if (nativeMode || active() !== d) return; playing = true; logPlay(); render(); });
+    d.el.addEventListener('pause', () => { if (nativeMode || active() !== d) return; playing = false; render(); });
+    d.el.addEventListener('ended', () => { if (nativeMode || active() !== d) return; onEnded(); });
+    d.el.addEventListener('timeupdate', () => { if (nativeMode || active() !== d) return; progress(); maybeCrossfade(); });
+    d.el.addEventListener('durationchange', () => { if (nativeMode || active() !== d) return; render(); });
+    d.el.addEventListener('error', () => { if (nativeMode || active() !== d) return; playing = false; render(); });
   });
 
   // ── selector de salida / zona (popover anclado a la barra) ──
   let zpanel = null;
-  function updateZoneBtn() { const b = document.querySelector('#nowbar [data-act="zone"]'); if (b) b.innerHTML = '🔈 ' + esc(zone.name || 'Este equipo'); }
+  const zoneLabel = () => esc(zone.name || 'Este equipo') + (nativeMode ? ' · nativo' : '');
+  function updateZoneBtn() { const b = document.querySelector('#nowbar [data-act="zone"]'); if (b) b.innerHTML = '🔈 ' + zoneLabel(); }
   function ensureZPanel() {
     if (zpanel) return;
     zpanel = document.createElement('div'); zpanel.id = 'zonepanel';
@@ -194,7 +250,21 @@ window.player = (function () {
     let h = '<div style="font-weight:600;margin-bottom:8px">Salida y zona</div>';
     h += '<label style="display:block;font-size:11px;color:var(--text-2);margin-bottom:3px">Nombre de la zona</label>';
     h += `<input id="zname" value="${esc(zone.name)}" style="width:100%;margin-bottom:10px">`;
-    if (!sinkSupported()) {
+    // conmutador de motor nativo (salida WASAPI del servidor)
+    h += `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px"><span>Motor nativo (este equipo)</span><span data-act="ntoggle" style="cursor:pointer;font-size:12px;padding:2px 10px;border-radius:999px;background:${nativeMode ? 'var(--accent)' : 'var(--surface-2)'};color:${nativeMode ? '#fff' : 'var(--text-2)'}">${nativeMode ? 'Activado' : 'Desactivado'}</span></div>`;
+    if (nativeMode) {
+      h += '<div style="font-size:11px;color:var(--text-2);margin-bottom:6px">Salida WASAPI fuera del navegador (bit-perfect posible).</div>';
+      let nr = null; try { nr = await njson('devices'); } catch (e) {}
+      if (!nr || !nr.ok) {
+        h += `<div style="color:var(--text-2)">${nr && nr.built === false ? 'El motor no está compilado: ejecuta engine/build.ps1.' : 'Motor nativo no disponible en esta build.'}</div>`;
+      } else {
+        h += '<div style="font-size:11px;color:var(--text-2);margin-bottom:4px">Dispositivo</div>';
+        const rows = [{ id: '', name: 'Predeterminado del sistema' }].concat((nr.items || []).map(d => ({ id: d.id, name: d.name + (d.default ? ' (predeterminado)' : '') })));
+        h += rows.map(r => { const on = (nativeDeviceId || '') === (r.id || ''); return `<div class="ndev" data-id="${esc(r.id)}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer;${on ? 'background:var(--accent-bg);color:var(--accent)' : ''}"><span>${on ? '◉' : '○'}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(r.name)}</span></div>`; }).join('');
+        h += `<label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer"><input type="checkbox" data-act="nexcl" ${nativeExclusive ? 'checked' : ''}><span>Exclusivo (bit-perfect)</span></label>`;
+        h += '<div style="font-size:11px;color:var(--text-2);margin-top:4px">En bit-perfect la muestra sale intacta: el volumen y el EQ no se aplican.</div>';
+      }
+    } else if (!sinkSupported()) {
       h += '<div style="color:var(--text-2)">Tu navegador no permite elegir el dispositivo de salida; la zona se guarda igual para el futuro multi-sala.</div>';
     } else {
       const { list, labeled } = await enumOutputs();
@@ -238,6 +308,9 @@ window.player = (function () {
   document.addEventListener('click', e => {
     const zd = e.target.closest('#zonepanel .zdev'); if (zd) { setZoneDevice(zd.dataset.id, zd.dataset.label); return; }
     if (e.target.closest('#zonepanel [data-act="unlock"]')) { unlockLabels(); return; }
+    if (e.target.closest('#zonepanel [data-act="ntoggle"]')) { setNativeMode(!nativeMode); return; }
+    const nd = e.target.closest('#zonepanel .ndev'); if (nd) { setNativeDevice(nd.dataset.id); return; }
+    if (e.target.matches('#zonepanel [data-act="nexcl"]')) { setNativeExclusive(e.target.checked); return; }
     const pre = e.target.closest('#eqpanel [data-pre]'); if (pre) { setPreset(pre.dataset.pre); return; }
     if (e.target.closest('#eqpanel [data-act="eqtoggle"]')) { setEqEnabled(!eqOn); return; }
     const a = e.target.closest('#nowbar [data-act]'); if (!a) return;
@@ -264,5 +337,6 @@ window.player = (function () {
   const getGain = () => (ctx ? masterGain.gain.value * (active().gain ? active().gain.gain.value : 1) : active().el.volume);  // ganancia efectiva (vol × ReplayGain)
   const getZone = () => ({ name: zone.name, deviceId: zone.deviceId, label: zone.label });
   const getAudio = () => ({ eqOn, eqGains: eqGains.slice(), xfade });
-  return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain, getZone, getAudio };
+  const getNative = () => ({ nativeMode, nativeDeviceId, nativeExclusive, nativePos, playing, startedIdx: nativeStartedIdx });
+  return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain, getZone, getAudio, getNative, setNativeMode };
 })();

@@ -248,7 +248,8 @@ async function handleNative(req, res, u) {
     if (sub === 'play') {
       const row = resolveFileByTrack(body.track_id);
       if (!row || !fs.existsSync(row.path)) return sendJSON(res, { ok: false, error: 'pista sin fichero local' });
-      const opts = { gainDb: row.gain_db != null ? row.gain_db : 0 };   // ReplayGain por pista
+      // Ganancia: el cliente puede mandar la suya (ReplayGain × volumen); si no, el RG de la pista.
+      const opts = { gainDb: body.gainDb != null ? body.gainDb : (row.gain_db != null ? row.gain_db : 0) };
       if (body.deviceId !== undefined) opts.deviceId = body.deviceId || null;
       if (body.exclusive !== undefined) opts.exclusive = !!body.exclusive;
       if (body.seekSec) opts.seekSec = body.seekSec;
