@@ -50,6 +50,7 @@ function render(){
     <div class="plhead">
       <h1 id="plname">${esc(pl.name)}</h1>
       <button class="ed" id="rename" title="Renombrar">✎</button>
+      <a class="ed" id="export" title="Exportar a M3U" href="/api/playlist/export?id=${id}" download style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center">⤓</a>
       <button class="ed" id="delete" title="Borrar lista">🗑</button>
     </div>
     <div class="count">${items.length} pista${items.length===1?'':'s'}${mins?' · '+mins+' min':''}</div>

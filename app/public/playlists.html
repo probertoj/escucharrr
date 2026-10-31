@@ -23,6 +23,8 @@ nav.top a{color:var(--text-2)} nav.top a.on{color:var(--text);font-weight:600}
   <div class="newpl">
     <input id="name" placeholder="Nueva lista…" maxlength="80">
     <button class="btn-accent" id="create">Crear</button>
+    <button id="import" title="Importar una lista .m3u/.m3u8">Importar M3U</button>
+    <input type="file" id="m3ufile" accept=".m3u,.m3u8,audio/x-mpegurl,audio/mpegurl,text/plain" style="display:none">
   </div>
   <div class="count" id="count"></div>
   <div class="pllist" id="list"></div>
@@ -42,6 +44,10 @@ function create(){const name=name_.value.trim();if(!name)return;
 const name_=document.getElementById('name');
 document.getElementById('create').addEventListener('click',create);
 name_.addEventListener('keydown',e=>{if(e.key==='Enter')create();});
+// importar M3U: lee el fichero y crea una lista mapeando por ruta y, si no, por etiquetas
+const m3ufile=document.getElementById('m3ufile');
+document.getElementById('import').addEventListener('click',()=>m3ufile.click());
+m3ufile.addEventListener('change',()=>{const f=m3ufile.files&&m3ufile.files[0];if(!f)return;const rd=new FileReader();rd.onload=()=>{const nm=f.name.replace(/\.(m3u8?|txt)$/i,'')||'Lista importada';fetch('/api/playlist/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nm,content:String(rd.result||'')})}).then(r=>r.json()).then(j=>{if(j.ok){alert('Importada «'+j.name+'»: '+j.matched+' de '+j.total+' pistas encontradas en tu biblioteca.');location.href='playlist.html?id='+j.id;}else alert('Error: '+(j.error||''));}).catch(e=>alert('Error: '+e.message));};rd.readAsText(f);m3ufile.value='';});
 load();
 document.addEventListener('escucharrr:changed',load);
 </script>

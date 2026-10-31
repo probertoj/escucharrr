@@ -92,7 +92,9 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     (sugerencias desde tu propio grafo: álbumes por valorar, joyas de tier alto sin reproducir,
     filas por tus géneros dominantes y una tirada al azar — sin nube), y **listas de reproducción**
     (crear, añadir un álbum o una pista suelta desde su página, reordenar ↑↓, quitar, renombrar, borrar
-    y reproducir; tablas `playlist`/`playlist_item`, rutas `/api/playlist(s)`). Todo internavegable:
+    y reproducir; tablas `playlist`/`playlist_item`, rutas `/api/playlist(s)`; **exportar/importar M3U**:
+    `/api/playlist/export?id=` vuelca un `.m3u8` con rutas reales, e importar un `.m3u/.m3u8` crea una lista
+    mapeando cada entrada por **ruta** y, si no la encuentra, por **artista–título** del `#EXTINF`). Todo internavegable:
     álbum → artista → género, y los artistas del buscador abren su página.
 
 - `engine/` — **motor de audio nativo** (esqueleto; §4 del diseño: decode → float32 → DSP → salida).

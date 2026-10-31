@@ -81,6 +81,8 @@ const Q = {
   spotifyClear: db.prepare(`UPDATE release_group SET spotify_album_id=NULL, spotify_url=NULL`),
   spotifyOf: db.prepare(`SELECT spotify_album_id, spotify_url FROM release_group WHERE id=?`),
   spotifyCount: db.prepare(`SELECT COUNT(*) n FROM release_group WHERE spotify_album_id IS NOT NULL`),
+  filesForIndex: db.prepare(`SELECT lf.path, COALESCE(lf.track_id, (SELECT id FROM track WHERE recording_id=lf.recording_id LIMIT 1)) tid FROM local_file lf`),
+  trackTags: db.prepare(`SELECT tr.id tid, COALESCE(tr.title, r.title) title, (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id, r.artist_credit_id) ORDER BY acn.position LIMIT 1) artist FROM track tr JOIN recording r ON r.id=tr.recording_id`),
   prov: db.prepare(`SELECT field,source,source_ref FROM provenance WHERE subject_type='release_group' AND subject_id=?`),
   editions: db.prepare(`SELECT format,date,country FROM "release" WHERE release_group_id=? ORDER BY date`),
   tracks: db.prepare(`SELECT tr.id trackId, tr.recording_id, m.position disc, tr.position pos, tr.title, tr.length_ms,
@@ -545,8 +547,38 @@ function plReorder(id, items) {   // reescritura completa: posiciones 1..n en el
   try { Q.plDeleteItems.run(id); let pos = 0; for (const it of items) Q.plInsert.run(id, ++pos, it.trackId || it.track_id || null, it.recording_id || null); db.exec('COMMIT'); }
   catch (e) { db.exec('ROLLBACK'); throw e; }
 }
+// ── interoperar listas con M3U (.m3u8): exportar con rutas reales, importar mapeando por ruta y por tags ──
+function m3uNormPath(p) { try { return path.resolve(String(p)).replace(/[\\/]+/g, '\\').toLowerCase(); } catch (e) { return String(p).replace(/[\\/]+/g, '\\').toLowerCase(); } }
+function parseM3U(text) {
+  const out = []; let pend = null;
+  for (let line of String(text || '').split(/\r?\n/)) {
+    line = line.trim(); if (!line) continue;
+    if (/^#EXTINF:/i.test(line)) {
+      const m = /^#EXTINF:\s*(-?\d+)\s*,(.*)$/i.exec(line); let secs = 0, artist = '', title = '';
+      if (m) { secs = parseInt(m[1], 10) || 0; const t = m[2]; const d = t.indexOf(' - '); if (d >= 0) { artist = t.slice(0, d).trim(); title = t.slice(d + 3).trim(); } else title = t.trim(); }
+      pend = { secs, artist, title };
+    } else if (line.startsWith('#')) { continue; }
+    else { out.push(Object.assign({ path: line }, pend || {})); pend = null; }
+  }
+  return out;
+}
+function buildPathIndex() { const m = new Map(); for (const r of Q.filesForIndex.all()) if (r.tid) m.set(m3uNormPath(r.path), r.tid); return m; }
+function buildTagIndex() { const m = new Map(); for (const r of Q.trackTags.all()) { const k = spotify.keyOf(r.artist || '', r.title || ''); if (!m.has(k)) m.set(k, r.tid); } return m; }
+function playlistToM3U(id, name) {
+  let m = '#EXTM3U\n';
+  for (const it of playlistItems(id)) { const row = resolveFileByTrack(it.trackId); if (!row || !row.path) continue; const secs = Math.round((it.length_ms || 0) / 1000); m += '#EXTINF:' + secs + ',' + (it.artist || '') + ' - ' + (it.title || '') + '\n' + row.path + '\n'; }
+  return m;
+}
+
 async function handlePlaylists(req, res, u) {
   try {
+    if (u.pathname === '/api/playlist/export') {
+      const id = parseInt(u.searchParams.get('id'), 10); const p = Q.playlist.get(id);
+      if (!p) { res.writeHead(404); return res.end('no'); }
+      const fn = (p.name || 'playlist').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '_') || 'playlist';
+      res.writeHead(200, { 'Content-Type': 'audio/x-mpegurl; charset=utf-8', 'Content-Disposition': 'attachment; filename="' + fn + '.m3u8"' });
+      return res.end(playlistToM3U(id, p.name));
+    }
     if (u.pathname === '/api/playlists') {
       if (req.method === 'GET') return sendJSON(res, { ok: true, items: Q.playlists.all() });
       const b = await readBody(req); const name = (b.name || '').trim();
@@ -559,7 +591,16 @@ async function handlePlaylists(req, res, u) {
       return sendJSON(res, { ok: true, playlist: p, items: playlistItems(id) });
     }
     const sub = u.pathname.slice('/api/playlist/'.length);
-    const b = await readBody(req); const id = parseInt(b.id, 10);
+    const b = await readBody(req);
+    if (sub === 'import') {   // crea una lista nueva desde un .m3u(8): mapea por ruta y, si no, por artista|título
+      const entries = parseM3U(b.content); const name = (b.name || 'Lista importada').trim() || 'Lista importada';
+      const byPath = buildPathIndex(), byTag = buildTagIndex(); const trackIds = []; let matched = 0;
+      for (const e of entries) { let tid = e.path ? byPath.get(m3uNormPath(e.path)) : null; if (!tid && (e.artist || e.title)) tid = byTag.get(spotify.keyOf(e.artist || '', e.title || '')) || null; if (tid) { trackIds.push(tid); matched++; } }
+      const r = Q.plCreate.run(name); const pid = Number(r.lastInsertRowid);
+      if (trackIds.length) plAdd(pid, { track_ids: trackIds });
+      return sendJSON(res, { ok: true, id: pid, name, matched, total: entries.length });
+    }
+    const id = parseInt(b.id, 10);
     if (!id || !Q.playlist.get(id)) return sendJSON(res, { ok: false, error: 'lista no encontrada' });
     if (sub === 'add') return sendJSON(res, { ok: true, added: plAdd(id, b) });
     if (sub === 'remove') { Q.plRemoveAt.run(id, parseInt(b.position, 10)); return sendJSON(res, { ok: true }); }
