@@ -7,6 +7,9 @@ app/watch.json
 # credenciales de scrobbling (tokens/claves propias)
 app/scrobble.json
 app/.lastfm-token
+# Spotify (app propia + token OAuth del usuario)
+app/spotify.json
+app/.spotify-token
 # carátulas cacheadas en local (Cover Art Archive); se re-descargan con covers.js
 app/cache/
 # node

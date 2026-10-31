@@ -44,6 +44,23 @@ let scrobCfg = null;
 function loadScrobbleCfg() { const p = path.join(__dirname, 'scrobble.json'); try { scrobCfg = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null; } catch (e) { scrobCfg = null; } return scrobCfg; }
 loadScrobbleCfg();
 
+// Spotify (SOLO comparar biblioteca local ↔ álbumes guardados del usuario; no reproduce).
+const spotify = require('../data-layer/spotify');
+const SPOTIFY_TOKEN_PATH = path.join(__dirname, '.spotify-token');
+let spotifyCfg = null, spotifyTok = null, spotifyState = '', spotifyLastSync = null;
+function loadSpotify() {
+  try { const p = path.join(__dirname, 'spotify.json'); spotifyCfg = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null; } catch (e) { spotifyCfg = null; }
+  try { spotifyTok = fs.existsSync(SPOTIFY_TOKEN_PATH) ? JSON.parse(fs.readFileSync(SPOTIFY_TOKEN_PATH, 'utf8')) : null; } catch (e) { spotifyTok = null; }
+}
+loadSpotify();
+function saveSpotifyTok(t) { spotifyTok = t; try { fs.writeFileSync(SPOTIFY_TOKEN_PATH, JSON.stringify(t)); } catch (e) {} }
+function spotifyConfigured() { return !!(spotifyCfg && spotifyCfg.clientId && spotifyCfg.clientSecret && spotifyCfg.redirectUri); }
+async function spotifyAccessToken() {
+  if (!spotifyConfigured() || !spotifyTok) return null;
+  if (spotify.expired(spotifyTok)) { try { saveSpotifyTok(await spotify.refresh(spotifyCfg, spotifyTok.refresh_token)); } catch (e) { return null; } }
+  return spotifyTok.access_token;
+}
+
 const genresOf = db.prepare(`SELECT group_concat(g.name,'|') gs FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id WHERE rgg.release_group_id=?`);
 const formatOf = db.prepare(`SELECT rel.format f FROM "release" rel WHERE rel.release_group_id=? LIMIT 1`);
 const Q = {
@@ -59,6 +76,11 @@ const Q = {
   aboutExt: db.prepare(`SELECT about v FROM release_group WHERE id=?`),   // reseña editorial externa (Wikipedia)
   coverOf: db.prepare(`SELECT cover_path, cover_mime FROM release_group WHERE id=?`),   // carátula cacheada (Cover Art Archive)
   albumIdOf: db.prepare(`SELECT rel.release_group_id aid FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE tr.id=?`),
+  spotifyLocal: db.prepare(`SELECT rg.id, rg.title, (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) artist, (SELECT barcode FROM "release" rel WHERE rel.release_group_id=rg.id AND rel.barcode IS NOT NULL LIMIT 1) barcode FROM release_group rg`),
+  spotifySet: db.prepare(`UPDATE release_group SET spotify_album_id=?, spotify_url=? WHERE id=?`),
+  spotifyClear: db.prepare(`UPDATE release_group SET spotify_album_id=NULL, spotify_url=NULL`),
+  spotifyOf: db.prepare(`SELECT spotify_album_id, spotify_url FROM release_group WHERE id=?`),
+  spotifyCount: db.prepare(`SELECT COUNT(*) n FROM release_group WHERE spotify_album_id IS NOT NULL`),
   prov: db.prepare(`SELECT field,source,source_ref FROM provenance WHERE subject_type='release_group' AND subject_id=?`),
   editions: db.prepare(`SELECT format,date,country FROM "release" WHERE release_group_id=? ORDER BY date`),
   tracks: db.prepare(`SELECT tr.id trackId, tr.recording_id, m.position disc, tr.position pos, tr.title, tr.length_ms,
@@ -255,6 +277,10 @@ function album(id) {
   a.editions = Q.editions.all(id);
   a.tracks = Q.tracks.all(id);
   a.credits = Q.credits.all(id).map(c => ({ role: c.role, instrument: c.instrument, artists: (c.artists || '').split(',') }));
+  const sp = Q.spotifyOf.get(id) || {};   // ¿este disco está en tu biblioteca de Spotify?
+  a.spotify_enabled = spotifyConfigured() && !!spotifyTok;
+  a.spotify_saved = !!sp.spotify_album_id;
+  a.spotify_url = sp.spotify_url || null;
   return a;
 }
 function libraryList() {
@@ -446,6 +472,39 @@ async function handleUpnp(req, res, u) {
   } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 
+// ── Spotify: comparar la biblioteca local con tus álbumes guardados (no reproduce) ──
+async function spotifySync() {
+  const token = await spotifyAccessToken(); if (!token) throw new Error('no autorizado');
+  const saved = await spotify.fetchSavedAlbums(token);
+  const matches = spotify.matchLocal(Q.spotifyLocal.all(), saved);
+  db.exec('BEGIN');
+  try { Q.spotifyClear.run(); for (const m of matches) if (m.spotify_album_id) Q.spotifySet.run(m.spotify_album_id, m.spotify_url, m.id); db.exec('COMMIT'); }
+  catch (e) { db.exec('ROLLBACK'); throw e; }
+  const matched = matches.filter(m => m.spotify_album_id).length;
+  spotifyLastSync = { at: Date.now(), saved: saved.length, matched };
+  return { saved: saved.length, matched };
+}
+async function handleSpotify(req, res, u) {
+  const sub = u.pathname.slice('/api/spotify/'.length);
+  try {
+    if (sub === 'status') return sendJSON(res, { ok: true, configured: spotifyConfigured(), authorized: !!spotifyTok, matched: Q.spotifyCount.get().n, lastSync: spotifyLastSync });
+    if (sub === 'auth') {
+      if (!spotifyConfigured()) { res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('Configura app/spotify.json (clientId/clientSecret/redirectUri) a partir de spotify.example.json.'); }
+      spotifyState = Math.random().toString(36).slice(2);
+      res.writeHead(302, { Location: spotify.authorizeUrl(spotifyCfg, spotifyState) }); return res.end();
+    }
+    if (sub === 'callback') {
+      const code = u.searchParams.get('code'), err = u.searchParams.get('error');
+      if (err || !code) { res.writeHead(302, { Location: '/settings.html?spotify=error' }); return res.end(); }
+      try { saveSpotifyTok(await spotify.exchangeCode(spotifyCfg, code)); } catch (e) { res.writeHead(302, { Location: '/settings.html?spotify=error' }); return res.end(); }
+      spotifySync().catch(() => {});                           // sincroniza en segundo plano tras conectar
+      res.writeHead(302, { Location: '/settings.html?spotify=ok' }); return res.end();
+    }
+    if (sub === 'sync' && req.method === 'POST') { const r = await spotifySync(); return sendJSON(res, { ok: true, ...r }); }
+    res.writeHead(404); res.end('{}');
+  } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
+}
+
 // ── scrobbling: now-playing (efímero) + submit (cola) + estado ──────────────
 function scrobbleMetaOf(trackId) { const m = Q.scrobbleMeta.get(trackId); if (!m || !m.artist || !m.title) return null; m.track_id = trackId; return m; }
 async function handleScrobble(req, res, u) {
@@ -563,7 +622,8 @@ function settingsInfo() {
   const scr = { enabled: [], pending: 0 };
   try { scr.enabled = scrobble.enabledServices(scrobCfg || {}); scr.pending = scrobble.pendingCount(db, scrobCfg || {}); } catch (e) {}
   const native = { available: !!NATIVE, built: !!(NATIVE && fs.existsSync(NATIVE.ENGINE)) };
-  return { app: { version: '0.1', port: PORT, db: DB_PATH }, library, watch, scrobble: scr, native };
+  const spot = { configured: spotifyConfigured(), authorized: !!spotifyTok, matched: (() => { try { return Q.spotifyCount.get().n; } catch (e) { return 0; } })() };
+  return { app: { version: '0.1', port: PORT, db: DB_PATH }, library, watch, scrobble: scr, native, spotify: spot };
 }
 
 // ── biblioteca en vivo: watcher de carpetas + eventos SSE a la UI ───────────────
@@ -612,6 +672,7 @@ http.createServer((req, res) => {
   }
   if (u.pathname.startsWith('/api/native/')) return void handleNative(req, res, u);
   if (u.pathname.startsWith('/api/upnp/')) return void handleUpnp(req, res, u);
+  if (u.pathname.startsWith('/api/spotify/')) return void handleSpotify(req, res, u);
   if (u.pathname.startsWith('/api/scrobble/')) return void handleScrobble(req, res, u);
   if (u.pathname === '/api/lyrics') return void getLyrics(parseInt(u.searchParams.get('track'), 10)).then(r => sendJSON(res, r)).catch(() => sendJSON(res, { found: false }));
   if (u.pathname === '/api/playlists' || u.pathname === '/api/playlist' || u.pathname.startsWith('/api/playlist/')) return void handlePlaylists(req, res, u);

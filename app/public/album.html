@@ -50,6 +50,7 @@ fetch('/api/album?id='+id).then(r=>r.json()).then(a=>{
           ${editions?`<span><span class="k">Ediciones</span> ${editions}</span>`:''}
         </div>
         <div>${genres}</div>
+        ${a.spotify_enabled?`<div style="margin-top:9px;font-size:13px">${a.spotify_saved?`<span style="color:#1DB954;font-weight:600">● En tu biblioteca de Spotify</span>${a.spotify_url?` · <a href="${esc(a.spotify_url)}" target="_blank" rel="noopener" style="color:var(--text-2)">abrir</a>`:''}`:'<span style="color:var(--text-2)">○ No está en tu biblioteca de Spotify</span>'}</div>`:''}
       </div>
     </div>
     ${about}

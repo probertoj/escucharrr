@@ -43,6 +43,14 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     (`app/cache/covers/<id>.jpg`, gitignored) con **procedencia** (`provenance`, `source='coverartarchive'`; o
     `'none'` si no hay, para no reconsultar). `--size 250|500|1200`, `--rg ID`, `--limit`, `--force`. El servidor
     sirve la carátula por `/api/cover?rg=ID` y, si no hay, devuelve el **SVG geométrico de respaldo** (mismo por id).
+  - `spotify.js` — **¿tengo este disco en mi Spotify?** Compara tu biblioteca local con tus **álbumes guardados**
+    en Spotify (Web API, scope `user-library-read`; **no reproduce nada**). Necesita una app propia de
+    `developer.spotify.com` (clientId/secret en `app/spotify.json`, gitignored, a partir de `spotify.example.json`)
+    y tu OK (OAuth; el token se guarda en `app/.spotify-token`). El servidor expone `/api/spotify/{status,auth,
+    callback,sync}`; `sync` trae tus álbumes guardados y los **empareja** con los locales (por `artista|título`
+    normalizado —quita acentos, `(remaster)`, artículos— y por **UPC** si lo hay), marcando `release_group.
+    spotify_album_id`. La página de álbum muestra **«● En tu biblioteca de Spotify»** o «○ No está»; se conecta y
+    sincroniza desde Configuración → Servicios.
   - `analyze.js` — **loudness EBU R128 / ReplayGain** con ffmpeg (`ebur128`): por pista mide LUFS integrado y
     pico → `gain_db` (ref −18 LUFS) + `peak_dbfs`; y **por álbum** mide el disco entero como un solo programa
     (concatena sus ficheros con el demuxer `concat`) → `album_gain_db` + `album_peak_dbfs`, iguales para todas

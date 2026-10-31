@@ -109,7 +109,8 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   <div class="grp"><h2><span class="gi">↻</span> Servicios y scrobbling</h2><div class="body">
     <div class="row"><div class="lbl"><div class="k">Scrobbling</div><div class="d">${(scr.enabled&&scr.enabled.length)?'activo: '+scr.enabled.map(esc).join(', ')+(scr.pending?` · ${scr.pending} en cola`:''):'desactivado (crea <span class="mono">app/scrobble.json</span> a partir de <span class="mono">scrobble.example.json</span>)'}</div></div></div>
-    <div class="row"><div class="lbl"><div class="k">Spotify / Tidal / Qobuz</div><div class="d soon">próximamente — ver <span class="mono">docs/ajustes-vs-roon.md</span></div></div></div>
+    <div class="row"><div class="lbl"><div class="k">Spotify — ¿tengo este disco en mi biblioteca?</div><div class="d" id="spotrow">comparando tus discos locales con tus álbumes guardados en Spotify…</div></div><span id="spotbtns"></span></div>
+    <div class="row"><div class="lbl"><div class="k">Tidal / Qobuz</div><div class="d soon">próximamente — ver <span class="mono">docs/ajustes-vs-roon.md</span></div></div></div>
   </div></div>
 
   <div class="grp"><h2><span class="gi">🎨</span> Interfaz</h2><div class="body">
@@ -141,6 +142,21 @@ window.addEventListener('DOMContentLoaded', async () => {
   function refreshEq() { if (!P || !P.getSettings) return; const s = P.getSettings(); const on = document.getElementById('eqon'); if (on) on.checked = s.eqOn; s.eqGains.forEach((v,i) => { const sl = document.querySelector('.eqband[data-i="'+i+'"]'); if (sl) sl.value = v; const g = document.getElementById('eqg'+i); if (g) g.textContent = (v>0?'+':'') + v; }); }
 
   ['chooseout', 'chooseout2'].forEach(id => { const co = document.getElementById(id); if (co) co.addEventListener('click', () => { if (P && P.openOutput) P.openOutput(); }); });
+
+  // Spotify: comparar la biblioteca local con tus álbumes guardados
+  function renderSpotify(sp) {
+    const row = document.getElementById('spotrow'), btns = document.getElementById('spotbtns'); if (!row) return;
+    sp = sp || {};
+    if (!sp.configured) { row.innerHTML = 'Crea <span class="mono">app/spotify.json</span> (a partir de <span class="mono">spotify.example.json</span>) con una app de <span class="mono">developer.spotify.com</span> y su Redirect URI.'; btns.innerHTML = ''; return; }
+    if (!sp.authorized) { row.textContent = 'Conecta tu cuenta para traer tus álbumes guardados (solo lectura, no reproduce nada).'; btns.innerHTML = '<button id="spotconn">Conectar Spotify</button>'; document.getElementById('spotconn').onclick = () => location.href = '/api/spotify/auth'; return; }
+    row.innerHTML = 'Conectado. <b>' + (sp.matched || 0) + '</b> de tus discos locales están en tu Spotify (se indica en cada álbum).';
+    btns.innerHTML = '<button id="spotsync">Sincronizar</button>';
+    document.getElementById('spotsync').onclick = async () => { const b = document.getElementById('spotsync'); b.disabled = true; b.textContent = 'Sincronizando…'; try { const r = await fetch('/api/spotify/sync', { method: 'POST' }).then(x => x.json()); if (r.ok) row.innerHTML = 'Sincronizado: <b>' + r.matched + '</b> de tus discos están en Spotify (de ' + r.saved + ' guardados).'; else row.textContent = 'Error: ' + (r.error || ''); } catch (e) { row.textContent = 'Error de red.'; } b.disabled = false; b.textContent = 'Sincronizar'; };
+  }
+  renderSpotify(info.spotify);
+  const sq = new URLSearchParams(location.search).get('spotify');
+  if (sq === 'ok') { const r = document.getElementById('spotrow'); if (r) r.innerHTML = '¡Conectado! Sincronizando tu biblioteca…'; setTimeout(() => fetch('/api/spotify/status').then(x => x.json()).then(renderSpotify).catch(() => {}), 2500); }
+  else if (sq === 'error') { const r = document.getElementById('spotrow'); if (r) r.textContent = 'No se pudo conectar con Spotify. Revisa app/spotify.json y la Redirect URI.'; }
 });
 </script>
 </body>

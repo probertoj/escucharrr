@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS release_group (
   about            TEXT,                      -- reseña/contexto editorial externo (Wikipedia); el user_edit 'about' de Obsidian manda
   cover_path       TEXT,                      -- ruta local (relativa a app/) de la carátula cacheada (Cover Art Archive)
   cover_mime       TEXT,                      -- tipo MIME de la carátula cacheada (image/jpeg, image/png)
+  spotify_album_id TEXT,                      -- si está GUARDADO en la biblioteca de Spotify del usuario: su id de álbum (si no, NULL)
+  spotify_url      TEXT,                      -- enlace al álbum en Spotify (cuando está guardado)
   created_at       TEXT DEFAULT (datetime('now')),
   updated_at       TEXT DEFAULT (datetime('now'))
 );

@@ -29,6 +29,8 @@ function migrate(db) {
   if (addCol(db, 'release_group', 'about', 'TEXT')) added.push('release_group.about');   // reseña editorial externa (Wikipedia); el user_edit 'about' de Obsidian manda
   if (addCol(db, 'release_group', 'cover_path', 'TEXT')) added.push('release_group.cover_path');   // carátula cacheada (Cover Art Archive)
   if (addCol(db, 'release_group', 'cover_mime', 'TEXT')) added.push('release_group.cover_mime');
+  if (addCol(db, 'release_group', 'spotify_album_id', 'TEXT')) added.push('release_group.spotify_album_id');   // guardado en la biblioteca de Spotify
+  if (addCol(db, 'release_group', 'spotify_url', 'TEXT')) added.push('release_group.spotify_url');
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_isrc ON recording(isrc)');
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_acoustid ON recording(acoustid)');
   return added;

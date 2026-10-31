@@ -1,0 +1,6 @@
+{
+  "_comment": "Copia esto a app/spotify.json (gitignored). Crea una app en https://developer.spotify.com/dashboard, añade la Redirect URI de abajo, y pega aquí el Client ID y Client Secret. Sirve SOLO para comparar tus álbumes locales con tu biblioteca de Spotify (scope user-library-read); no reproduce nada.",
+  "clientId": "",
+  "clientSecret": "",
+  "redirectUri": "http://127.0.0.1:7733/api/spotify/callback"
+}
