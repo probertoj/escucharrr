@@ -51,6 +51,11 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     normalizado —quita acentos, `(remaster)`, artículos— y por **UPC** si lo hay), marcando `release_group.
     spotify_album_id`. La página de álbum muestra **«● En tu biblioteca de Spotify»** o «○ No está»; se conecta y
     sincroniza desde Configuración → Servicios.
+  - `waveform.js` — **barra de onda (waveform)** estilo Roon: decodifica cada pista con ffmpeg a PCM mono de
+    baja tasa y la resume en **~200 picos** (0-255) que guarda en `local_file.peaks` (base64). El servidor los
+    sirve por `/api/peaks?track=`; el reproductor pinta la onda en la barra de "ahora suena" (SVG en dos capas con
+    `clip-path` para la parte reproducida) y se puede buscar pulsando en ella. Si una pista no tiene picos, cae a
+    la barra de progreso simple.
   - `analyze.js` — **loudness EBU R128 / ReplayGain** con ffmpeg (`ebur128`): por pista mide LUFS integrado y
     pico → `gain_db` (ref −18 LUFS) + `peak_dbfs`; y **por álbum** mide el disco entero como un solo programa
     (concatena sus ficheros con el demuxer `concat`) → `album_gain_db` + `album_peak_dbfs`, iguales para todas
@@ -157,6 +162,7 @@ node discogs.js      --db ../app/escucharrr.db --rg 1   # créditos por pista (d
 node editorial.js    --db ../app/escucharrr.db          # bio/reseña desde Wikipedia (abierto, sin clave)
 node covers.js       --db ../app/escucharrr.db          # carátulas reales desde Cover Art Archive (cacheadas)
 node analyze.js      --db ../app/escucharrr.db          # loudness R128/ReplayGain (necesita ffmpeg)
+node waveform.js     --db ../app/escucharrr.db          # picos para la barra de onda (necesita ffmpeg)
 
 # 2. arrancar la vista web
 cd ..

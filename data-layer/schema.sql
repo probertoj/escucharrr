@@ -166,6 +166,7 @@ CREATE TABLE IF NOT EXISTS local_file (
   peak_dbfs     REAL,                          -- pico real (dBFS) para limitar sin clipping
   album_gain_db   REAL,                        -- ganancia ReplayGain de ÁLBUM (igual para todo el disco)
   album_peak_dbfs REAL,                         -- pico máximo del álbum (dBFS) para limitar
+  peaks         TEXT,                           -- waveform: base64 de ~200 picos (0-255) para la barra de onda
   -- identificadores leídos del fichero (tags) o calculados (fpcalc)
   isrc         TEXT,                          -- ISRC del tag
   acoustid     TEXT,                          -- AcoustID (del tag ACOUSTID_ID o de la consulta)

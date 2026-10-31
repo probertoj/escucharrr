@@ -96,7 +96,7 @@ window.player = (function () {
   function cover(id, s) { return `<img src="/api/cover?rg=${id || 0}" alt="" draggable="false" style="width:${s}px;height:${s}px;object-fit:cover;border-radius:7px;display:block">`; }
   function logPlay() { const c = cur(); if (c && c.trackId && loggedIdx !== idx) { loggedIdx = idx; fetch('/api/play', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ track_id: c.trackId, zone: zone.name }) }).catch(() => {}); } }
   const spost = (p, b) => fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).catch(() => {});
-  function trackStarted() { trackStartEpoch = Math.floor(Date.now() / 1000); const c = cur(); if (c && c.trackId) spost('/api/scrobble/nowplaying', { track_id: c.trackId }); if (lypanel && lypanel.style.display === 'block') loadLyrics(); }   // "sonando ahora" + recargar letra si el panel está abierto
+  function trackStarted() { trackStartEpoch = Math.floor(Date.now() / 1000); const c = cur(); if (c && c.trackId) spost('/api/scrobble/nowplaying', { track_id: c.trackId }); fetchPeaks(); if (lypanel && lypanel.style.display === 'block') loadLyrics(); }   // "sonando ahora" + recargar letra si el panel está abierto
   // scrobble al superar el umbral (mitad de la pista o 4 min; pistas ≥ 30 s), una sola vez
   function maybeScrobble() {
     const c = cur(); if (!c || !c.trackId || scrobbledIdx === idx) return;
@@ -118,6 +118,19 @@ window.player = (function () {
   function snapshot() { try { undoStack.push(JSON.stringify({ q, idx })); if (undoStack.length > 25) undoStack.shift(); } catch (e) {} }
   function undo() { const s = undoStack.pop(); if (!s) return false; try { const o = JSON.parse(s); q = o.q; idx = o.idx; save(); render(); return true; } catch (e) { return false; } }
 
+  // ── waveform (barra de onda tipo Roon): picos 0-255 por pista, servidos por /api/peaks ──
+  let curPeaks = null, curPeaksTrack = -1;
+  function fetchPeaks() {
+    const c = cur(); if (!c || !c.trackId) { curPeaks = null; curPeaksTrack = -1; return; }
+    if (c.trackId === curPeaksTrack) return;
+    curPeaksTrack = c.trackId; curPeaks = null;
+    fetch('/api/peaks?track=' + c.trackId).then(r => r.ok ? r.json() : null).then(j => { const cc = cur(); if (j && j.peaks && cc && cc.trackId === curPeaksTrack) { curPeaks = j.peaks; render(); } }).catch(() => {});
+  }
+  function wfSvg(peaks) {
+    const n = peaks.length; let b = '';
+    for (let i = 0; i < n; i++) { const h = Math.max(3, peaks[i] / 255 * 100); const y = ((100 - h) / 2).toFixed(1); b += '<rect x="' + (i + 0.12).toFixed(2) + '" y="' + y + '" width="0.76" height="' + h.toFixed(1) + '" rx="0.3"/>'; }
+    return '<svg viewBox="0 0 ' + n + ' 100" preserveAspectRatio="none" width="100%" height="100%" style="display:block">' + b + '</svg>';
+  }
   function ensureBar() { if (bar) return; bar = document.createElement('div'); bar.id = 'nowbar'; bar.setAttribute('style', 'position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);border-top:1px solid var(--border);padding:8px 16px;display:none;align-items:center;gap:14px'); document.body.appendChild(bar); }
   const volIcon = () => vol === 0 ? '🔇' : vol < 0.5 ? '🔉' : '🔊';
   function render() {
@@ -134,9 +147,12 @@ window.player = (function () {
            <span data-act="toggle" style="cursor:pointer;font-size:20px" title="Play/Pausa">${playing ? '⏸' : '▶'}</span>
            <span data-act="next" style="cursor:pointer" title="Siguiente">⏭</span>
          </div>
-         <div style="display:flex;align-items:center;gap:8px;width:100%;max-width:380px">
+         <div style="display:flex;align-items:center;gap:8px;width:100%;max-width:420px">
            <span id="npel" style="font-size:11px;color:var(--muted);width:34px;text-align:right">${mmss(p)}</span>
-           <div data-act="seek" title="Buscar" style="flex:1;height:8px;display:flex;align-items:center;cursor:${noAudio ? 'default' : 'pointer'}"><div style="width:100%;height:4px;background:var(--surface-2);border-radius:999px;overflow:hidden"><div id="npprog" style="width:${len ? Math.min(100, p / len * 100) : 0}%;height:100%;background:var(--accent)"></div></div></div>
+           ${(() => { const frac = len ? Math.min(100, p / len * 100) : 0; const wf = curPeaks && curPeaksTrack === c.trackId;
+             return wf
+               ? `<div data-act="seek" title="Buscar" style="position:relative;flex:1;height:26px;cursor:${noAudio ? 'default' : 'pointer'}"><div style="position:absolute;inset:0;fill:var(--surface-2)">${wfSvg(curPeaks)}</div><div id="npwf" style="position:absolute;inset:0;fill:var(--accent);clip-path:inset(0 ${100 - frac}% 0 0)">${wfSvg(curPeaks)}</div></div>`
+               : `<div data-act="seek" title="Buscar" style="flex:1;height:8px;display:flex;align-items:center;cursor:${noAudio ? 'default' : 'pointer'}"><div style="width:100%;height:4px;background:var(--surface-2);border-radius:999px;overflow:hidden"><div id="npprog" style="width:${frac}%;height:100%;background:var(--accent)"></div></div></div>`; })()}
            <span style="font-size:11px;color:var(--muted);width:34px">${mmss(len)}</span>
          </div>
        </div>
@@ -148,7 +164,7 @@ window.player = (function () {
        <a href="queue.html" title="Cola" style="font-size:16px;color:var(--text-2);text-decoration:none">☰ ${idx + 1}/${q.length}</a>`;
     emit();
   }
-  function progress() { const c = cur(); if (!c) return; const len = lenMs(), p = posMs(); const pr = document.getElementById('npprog'), el = document.getElementById('npel'); if (pr && len) pr.style.width = Math.min(100, p / len * 100) + '%'; if (el) el.textContent = mmss(p); maybeScrobble(); maybeRadio(); syncLy(); }
+  function progress() { const c = cur(); if (!c) return; const len = lenMs(), p = posMs(); const frac = len ? Math.min(100, p / len * 100) : 0; const pr = document.getElementById('npprog'), wf = document.getElementById('npwf'), el = document.getElementById('npel'); if (pr && len) pr.style.width = frac + '%'; if (wf && len) wf.style.clipPath = 'inset(0 ' + (100 - frac) + '% 0 0)'; if (el) el.textContent = mmss(p); maybeScrobble(); maybeRadio(); syncLy(); }
   const emit = () => document.dispatchEvent(new Event('player:change'));
 
   // ── crossfade: al acercarse el final de la pista activa, solapa con la siguiente ──

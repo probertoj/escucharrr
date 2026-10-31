@@ -107,6 +107,8 @@ const Q = {
      WHERE rel.release_group_id=? ORDER BY m.position,tr.position`),
   fileByTrack: db.prepare('SELECT path, format, gain_db FROM local_file WHERE track_id=? LIMIT 1'),
   fileByRec: db.prepare('SELECT path, format, gain_db FROM local_file WHERE recording_id=? LIMIT 1'),
+  peaksByTrack: db.prepare('SELECT peaks FROM local_file WHERE track_id=? AND peaks IS NOT NULL LIMIT 1'),
+  peaksByRec: db.prepare('SELECT peaks FROM local_file WHERE recording_id=? AND peaks IS NOT NULL LIMIT 1'),
   credits: db.prepare(`SELECT role, instrument, group_concat(DISTINCT artist_name) artists FROM v_album_credits WHERE release_group_id=? GROUP BY role, instrument ORDER BY role, instrument`),
   search: db.prepare(`SELECT name, kind, subject_type, subject_id FROM search_fts WHERE search_fts MATCH ? ORDER BY bm25(search_fts) LIMIT ?`),
   recAlbum: db.prepare(`SELECT rel.release_group_id id FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE tr.recording_id=? LIMIT 1`),
@@ -371,6 +373,12 @@ function resolveFileByTrack(trackId) {
   let row = Q.fileByTrack.get(trackId);
   if (!row) { const t = Q.trackInfo.get(trackId); if (t && t.recording_id) row = Q.fileByRec.get(t.recording_id); }
   return row || null;
+}
+function peaksOf(trackId) {
+  let row = Q.peaksByTrack.get(trackId);
+  if (!row) { const t = Q.trackInfo.get(trackId); if (t && t.recording_id) row = Q.peaksByRec.get(t.recording_id); }
+  if (!row || !row.peaks) return null;
+  return Array.from(Buffer.from(row.peaks, 'base64'));
 }
 async function handleNative(req, res, u) {
   const sub = u.pathname.slice('/api/native/'.length);
@@ -744,6 +752,7 @@ http.createServer((req, res) => {
   try {
     if (u.pathname === '/api/stream') return streamAudio(req, res, parseInt(u.searchParams.get('track'), 10));
     if (u.pathname === '/api/cover') return serveCover(res, parseInt(u.searchParams.get('rg'), 10));
+    if (u.pathname === '/api/peaks') { const pk = peaksOf(parseInt(u.searchParams.get('track'), 10)); return pk ? sendJSON(res, { peaks: pk }) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/settings') return sendJSON(res, settingsInfo());
     if (u.pathname === '/api/library') return sendJSON(res, libraryList());
     if (u.pathname === '/api/album') { const a = album(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
