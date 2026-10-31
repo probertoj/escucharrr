@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — lista</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.plhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+.plhead h1{margin:0}
+.plhead .ed{background:none;border:none;color:var(--text-2);cursor:pointer;font-size:15px}
+.plhead .ed:hover{color:var(--text)}
+.trow{display:flex;align-items:center;gap:10px;padding:8px 6px;border-radius:8px}
+.trow:hover{background:var(--surface-2)}
+.trow .pos{width:22px;text-align:right;color:var(--muted);font-size:12px}
+.trow .thumb{width:34px;height:34px;border-radius:6px;flex:none;overflow:hidden}
+.trow .ti{flex:1;min-width:0;overflow:hidden}
+.trow .ti .t{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trow .ti .a{font-size:12px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trow .dur{color:var(--muted);font-size:12px;width:38px;text-align:right}
+.trow .acts{display:flex;gap:4px;opacity:.55}
+.trow:hover .acts{opacity:1}
+.trow .acts span{cursor:pointer;color:var(--text-2);font-size:13px;padding:2px 4px;border-radius:5px}
+.trow .acts span:hover{background:var(--surface);color:var(--text)}
+.play{border:none;background:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0 2px}
+.noaudio{opacity:.5}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div style="margin-bottom:14px"><a href="playlists.html" style="color:var(--accent)">‹ Listas</a></div>
+  <div id="app">cargando…</div>
+</div>
+
+<script>
+const PAIRS=[['#0F6E56','#1D9E75'],['#534AB7','#7F77DD'],['#185FA5','#378ADD'],['#854F0B','#BA7517'],['#72243E','#D4537E'],['#5F5E5A','#888780'],['#3B6D11','#639922'],['#993C1D','#D85A30']];
+function cover(id){const p=PAIRS[(id||0)%PAIRS.length];return `<svg viewBox="0 0 46 46" width="100%" height="100%"><rect width="46" height="46" fill="${p[0]}"/><rect y="30" width="46" height="16" fill="${p[1]}"/><circle cx="33" cy="16" r="10" fill="#FAC775"/></svg>`;}
+const mmss=ms=>ms?`${Math.floor(ms/60000)}:${String(Math.round(ms%60000/1000)).padStart(2,'0')}`:'';
+const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const id=+new URLSearchParams(location.search).get('id');
+let pl=null, items=[];
+
+function api(path,body){return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());}
+function load(){fetch('/api/playlist?id='+id).then(r=>r.json()).then(j=>{if(!j.ok){app.innerHTML='No encontrada';return;}pl=j.playlist;items=j.items||[];render();}).catch(e=>app.innerHTML='error: '+e.message);}
+
+function render(){
+  const total=items.reduce((s,t)=>s+(t.length_ms||0),0);
+  const mins=Math.round(total/60000);
+  app.innerHTML=`
+    <div class="plhead">
+      <h1 id="plname">${esc(pl.name)}</h1>
+      <button class="ed" id="rename" title="Renombrar">✎</button>
+      <button class="ed" id="delete" title="Borrar lista">🗑</button>
+    </div>
+    <div class="count">${items.length} pista${items.length===1?'':'s'}${mins?' · '+mins+' min':''}</div>
+    ${items.length?`<div style="margin:12px 0"><button class="btn-accent" id="playall">▶ Reproducir</button></div>`:''}
+    <div id="rows">${items.map((t,i)=>row(t,i)).join('')||'<div style="color:var(--text-2);margin-top:14px">Lista vacía. Añade pistas o álbumes desde su página.</div>'}</div>`;
+}
+function row(t,i){
+  const no=t.playable===false;
+  return `<div class="trow${no?' noaudio':''}" data-i="${i}">
+    <span class="pos">${i+1}</span>
+    <button class="play" data-i="${i}" title="Reproducir"${no?' disabled style="opacity:.4;cursor:default"':''}>▶</button>
+    <a class="thumb" href="album.html?id=${t.albumId}">${cover(t.albumId)}</a>
+    <span class="ti"><div class="t">${esc(t.title)}${no?' · sin audio local':''}</div><div class="a">${esc(t.artist||'')}${t.album?' — <a href="album.html?id='+t.albumId+'" style="color:var(--text-2)">'+esc(t.album)+'</a>':''}</div></span>
+    <span class="dur">${mmss(t.length_ms)}</span>
+    <span class="acts"><span data-act="up" data-i="${i}" title="Subir">↑</span><span data-act="down" data-i="${i}" title="Bajar">↓</span><span data-act="rm" data-i="${i}" title="Quitar">✕</span></span>
+  </div>`;
+}
+function persistOrder(){return api('/api/playlist/reorder',{id,items:items.map(t=>({trackId:t.trackId,recording_id:t.recording_id}))});}
+
+document.addEventListener('click',e=>{
+  const p=e.target.closest('.play'); if(p&&!p.disabled){player.playTracks(items.slice(),+p.dataset.i);return;}
+  if(e.target.closest('#playall')){player.playTracks(items.slice(),0);return;}
+  const a=e.target.closest('.acts span'); if(a){
+    const i=+a.dataset.i, act=a.dataset.act;
+    if(act==='rm'){ items.splice(i,1); render(); persistOrder(); }
+    else if(act==='up'&&i>0){ [items[i-1],items[i]]=[items[i],items[i-1]]; render(); persistOrder(); }
+    else if(act==='down'&&i<items.length-1){ [items[i+1],items[i]]=[items[i],items[i+1]]; render(); persistOrder(); }
+    return;
+  }
+  if(e.target.closest('#rename')){ const n=prompt('Nuevo nombre de la lista:',pl.name); if(n&&n.trim()){ pl.name=n.trim(); api('/api/playlist/rename',{id,name:pl.name}).then(load); } return; }
+  if(e.target.closest('#delete')){ if(confirm('¿Borrar la lista "'+pl.name+'"? No borra la música.')){ api('/api/playlist/delete',{id}).then(()=>location.href='playlists.html'); } return; }
+});
+load();
+document.addEventListener('escucharrr:changed',load);
+</script>
+<script src="player.js" defer></script>
+</body>
+</html>

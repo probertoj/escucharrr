@@ -29,7 +29,7 @@ fetch('/api/album?id='+id).then(r=>r.json()).then(a=>{
   const artistLink=a.artist_id?`<a href="artist.html?id=${a.artist_id}" style="color:var(--accent)">${esc(a.artist)}</a>`:esc(a.artist);
   const about=a.about?`<div class="about"><div class="prov">${a.about_source?('desde '+esc(a.about_source.source)+(a.about_source.source_ref?' · '+esc(a.about_source.source_ref):'')):''}</div>${esc(a.about)}</div>`:'';
   const editions=(a.editions||[]).map(e=>`${esc(e.format||'?')}${e.date?' · '+esc(e.date):''}`).join(' &nbsp;·&nbsp; ');
-  const tracks=(a.tracks||[]).length?`<div class="sec">Pistas</div>`+a.tracks.map((t,i)=>`<div class="track"><button class="play" data-idx="${i}" aria-label="Reproducir" title="Reproducir" style="border:none;background:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0 4px">▶</button><span class="pos">${t.pos}</span><span style="flex:1">${esc(t.title)}</span><span class="dur">${mmss(t.length_ms)}</span></div>`).join(''):'';
+  const tracks=(a.tracks||[]).length?`<div class="sec">Pistas</div>`+a.tracks.map((t,i)=>`<div class="track"><button class="play" data-idx="${i}" aria-label="Reproducir" title="Reproducir" style="border:none;background:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0 4px">▶</button><span class="pos">${t.pos}</span><span style="flex:1">${esc(t.title)}</span><span class="addtrk" data-tid="${t.trackId}" title="Añadir a una lista" style="cursor:pointer;color:var(--text-2);font-size:14px;padding:0 6px">＋</span><span class="dur">${mmss(t.length_ms)}</span></div>`).join(''):'';
   const INST={'bass':'bajo','electric bass':'bajo eléctrico','double bass':'contrabajo','guitar':'guitarra','acoustic guitar':'guitarra acústica','electric guitar':'guitarra eléctrica','drums':'batería','percussion':'percusión','piano':'piano','keyboards':'teclados','synthesizer':'sintetizador','organ':'órgano','cello':'violonchelo','violin':'violín','viola':'viola','trumpet':'trompeta','trombone':'trombón','saxophone':'saxofón','flute':'flauta','clarinet':'clarinete','harmonica':'armónica','accordion':'acordeón','vibraphone':'vibráfono'};
   const tInst=i=>i?(INST[i.toLowerCase()]||i.toLowerCase()):i;
   const clabel=c=>c.role==='instrumento'&&c.instrument?tInst(c.instrument):(c.role==='voz'&&c.instrument?'voz ('+tInst(c.instrument)+')':c.role);
@@ -41,7 +41,7 @@ fetch('/api/album?id='+id).then(r=>r.json()).then(a=>{
         <div style="color:var(--text-2);font-size:13px">${esc(a.primary_type||'álbum')} · ${a.year||'—'}</div>
         <h1>${esc(a.title)}</h1>
         <div style="font-size:15px">${artistLink}</div>
-        ${(a.tracks||[]).length?`<div style="margin-top:10px"><button class="btn-accent" id="playalbum">▶ Reproducir</button></div>`:''}
+        ${(a.tracks||[]).length?`<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn-accent" id="playalbum">▶ Reproducir</button><button id="addalbum" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px">＋ Añadir a lista</button></div>`:''}
         <div class="meta">
           <span>${tier}</span>
           <span><span class="k">Valoración</span> ${stars}</span>
@@ -59,8 +59,37 @@ fetch('/api/album?id='+id).then(r=>r.json()).then(a=>{
 // Reproducir: encola el álbum y arranca (el player registra la escucha)
 document.addEventListener('click',e=>{
   const b=e.target.closest('.play'); if(b){player.playAlbum(id, +b.dataset.idx); return;}
-  if(e.target.closest('#playalbum')) player.playAlbum(id, 0);
+  if(e.target.closest('#playalbum')){player.playAlbum(id, 0);return;}
+  const aa=e.target.closest('#addalbum'); if(aa){pickPlaylist(aa,plid=>addTo(plid,{album_id:id},'Álbum añadido'));return;}
+  const at=e.target.closest('.addtrk'); if(at){pickPlaylist(at,plid=>addTo(plid,{track_ids:[+at.dataset.tid]},'Pista añadida'));return;}
 });
+
+// ── añadir a lista: popover de selección + toast ──
+function addTo(plid,payload,okMsg){fetch('/api/playlist/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:plid,...payload})}).then(r=>r.json()).then(j=>toast(j.ok?okMsg:(j.error||'error'))).catch(()=>toast('error'));}
+let pop=null;
+function closePop(){if(pop){pop.remove();pop=null;document.removeEventListener('click',onDoc,true);}}
+function onDoc(e){if(pop&&!e.target.closest('#plpop')&&!e.target.closest('.addtrk')&&!e.target.closest('#addalbum'))closePop();}
+function pickPlaylist(anchor,onPick){
+  closePop();
+  fetch('/api/playlists').then(r=>r.json()).then(j=>{
+    const pls=j.items||[];
+    pop=document.createElement('div');pop.id='plpop';
+    pop.setAttribute('style','position:absolute;z-index:70;min-width:200px;max-width:280px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:6px;font-size:13px');
+    pop.innerHTML=`<div style="padding:6px 8px;color:var(--text-2);font-size:11px">Añadir a…</div>`+
+      pls.map(p=>`<div class="plopt" data-id="${p.id}" style="padding:7px 10px;border-radius:7px;cursor:pointer">${esc(p.name)} <span style="color:var(--text-2)">· ${p.n}</span></div>`).join('')+
+      `<div class="plnew" style="padding:7px 10px;border-radius:7px;cursor:pointer;color:var(--accent);border-top:1px solid var(--border);margin-top:4px">＋ Nueva lista…</div>`;
+    document.body.appendChild(pop);
+    const r=anchor.getBoundingClientRect();
+    pop.style.top=(window.scrollY+r.bottom+6)+'px';
+    pop.style.left=(window.scrollX+Math.min(r.left,window.innerWidth-300))+'px';
+    pop.querySelectorAll('.plopt').forEach(o=>o.addEventListener('click',()=>{const pid=+o.dataset.id;closePop();onPick(pid);}));
+    pop.querySelector('.plnew').addEventListener('click',()=>{const n=prompt('Nombre de la nueva lista:');if(n&&n.trim()){fetch('/api/playlists',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n.trim()})}).then(x=>x.json()).then(j=>{closePop();if(j.ok)onPick(j.id);});}else closePop();});
+    setTimeout(()=>document.addEventListener('click',onDoc,true),0);
+    pop.querySelectorAll('.plopt,.plnew').forEach(o=>{o.addEventListener('mouseenter',()=>o.style.background='var(--surface-2)');o.addEventListener('mouseleave',()=>o.style.background='');});
+  });
+}
+let toastT=null;
+function toast(msg){let t=document.getElementById('toast');if(!t){t=document.createElement('div');t.id='toast';t.setAttribute('style','position:fixed;left:50%;bottom:80px;transform:translateX(-50%);z-index:80;background:var(--text);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.25);opacity:0;transition:opacity .15s');document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(toastT);toastT=setTimeout(()=>t.style.opacity='0',1800);}
 </script>
 <script src="player.js" defer></script>
 </body>

@@ -51,7 +51,9 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     (avatar, géneros, discografía propia y "aparece en" con sus roles), **página de género**
     (álbumes del género + géneros relacionados), **índice de géneros** y **Descubrir**
     (sugerencias desde tu propio grafo: álbumes por valorar, joyas de tier alto sin reproducir,
-    filas por tus géneros dominantes y una tirada al azar — sin nube). Todo internavegable:
+    filas por tus géneros dominantes y una tirada al azar — sin nube), y **listas de reproducción**
+    (crear, añadir un álbum o una pista suelta desde su página, reordenar ↑↓, quitar, renombrar, borrar
+    y reproducir; tablas `playlist`/`playlist_item`, rutas `/api/playlist(s)`). Todo internavegable:
     álbum → artista → género, y los artistas del buscador abren su página.
 
 - `engine/` — **motor de audio nativo** (esqueleto; §4 del diseño: decode → float32 → DSP → salida).

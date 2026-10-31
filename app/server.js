@@ -132,6 +132,30 @@ const Q = {
        (SELECT acn2.name FROM artist_credit_name acn2 WHERE acn2.artist_credit_id=rg.artist_credit_id ORDER BY acn2.position LIMIT 1) album_artist
      FROM track tr JOIN recording r ON r.id=tr.recording_id JOIN medium m ON m.id=tr.medium_id
      JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id WHERE tr.id=?`),
+  // ── listas de reproducción ──
+  playlists: db.prepare(`SELECT p.id, p.name, p.created_at, (SELECT count(*) FROM playlist_item pi WHERE pi.playlist_id=p.id) n FROM playlist p ORDER BY p.created_at DESC, p.id DESC`),
+  playlist: db.prepare('SELECT id, name, created_at FROM playlist WHERE id=?'),
+  plItems: db.prepare(`SELECT pi.position, pi.track_id trackId, COALESCE(tr.recording_id, pi.recording_id) recording_id,
+       COALESCE(tr.title, r.title) title, COALESCE(tr.length_ms, r.length_ms) length_ms,
+       (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id, r.artist_credit_id) ORDER BY acn.position LIMIT 1) artist,
+       rg.id albumId, rg.title album,
+       EXISTS(SELECT 1 FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=COALESCE(tr.recording_id, pi.recording_id)) playable,
+       (SELECT lf.gain_db FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=COALESCE(tr.recording_id, pi.recording_id) LIMIT 1) gain_db,
+       (SELECT lf.peak_dbfs FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=COALESCE(tr.recording_id, pi.recording_id) LIMIT 1) peak_dbfs,
+       (SELECT lf.album_gain_db FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=COALESCE(tr.recording_id, pi.recording_id) LIMIT 1) album_gain_db,
+       (SELECT lf.album_peak_dbfs FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=COALESCE(tr.recording_id, pi.recording_id) LIMIT 1) album_peak_dbfs
+     FROM playlist_item pi LEFT JOIN track tr ON tr.id=pi.track_id
+     LEFT JOIN recording r ON r.id=COALESCE(tr.recording_id, pi.recording_id)
+     LEFT JOIN medium m ON m.id=tr.medium_id LEFT JOIN "release" rel ON rel.id=m.release_id LEFT JOIN release_group rg ON rg.id=rel.release_group_id
+     WHERE pi.playlist_id=? ORDER BY pi.position`),
+  plMaxPos: db.prepare('SELECT COALESCE(MAX(position),0) m FROM playlist_item WHERE playlist_id=?'),
+  plInsert: db.prepare('INSERT INTO playlist_item(playlist_id,position,track_id,recording_id) VALUES(?,?,?,?)'),
+  plCreate: db.prepare('INSERT INTO playlist(name) VALUES(?)'),
+  plRename: db.prepare('UPDATE playlist SET name=? WHERE id=?'),
+  plDelete: db.prepare('DELETE FROM playlist WHERE id=?'),
+  plDeleteItems: db.prepare('DELETE FROM playlist_item WHERE playlist_id=?'),
+  plRemoveAt: db.prepare('DELETE FROM playlist_item WHERE playlist_id=? AND position=?'),
+  albumTrackIds: db.prepare(`SELECT tr.id FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE rel.release_group_id=? ORDER BY m.position, tr.position`),
 };
 function logPlay(j) {
   let recId = j.recording_id || null, trackId = j.track_id || null, ms = j.ms_played;
@@ -309,6 +333,51 @@ async function handleScrobble(req, res, u) {
   }
   res.writeHead(404); res.end('{}');
 }
+
+// ── listas de reproducción ─────────────────────────────────────────────────
+function playlistItems(id) {
+  return Q.plItems.all(id).map(t => ({ trackId: t.trackId, title: t.title, artist: t.artist, albumId: t.albumId, album: t.album, length_ms: t.length_ms, playable: t.playable !== 0, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs, position: t.position, recording_id: t.recording_id }));
+}
+function plAdd(id, b) {
+  let trackIds = [];
+  if (b.album_id) trackIds = Q.albumTrackIds.all(parseInt(b.album_id, 10)).map(r => r.id);
+  else if (Array.isArray(b.track_ids)) trackIds = b.track_ids.map(Number).filter(Boolean);
+  if (!trackIds.length) return 0;
+  let pos = Q.plMaxPos.get(id).m;
+  db.exec('BEGIN');
+  try { for (const t of trackIds) Q.plInsert.run(id, ++pos, t, null); db.exec('COMMIT'); }
+  catch (e) { db.exec('ROLLBACK'); throw e; }
+  return trackIds.length;
+}
+function plReorder(id, items) {   // reescritura completa: posiciones 1..n en el orden dado
+  db.exec('BEGIN');
+  try { Q.plDeleteItems.run(id); let pos = 0; for (const it of items) Q.plInsert.run(id, ++pos, it.trackId || it.track_id || null, it.recording_id || null); db.exec('COMMIT'); }
+  catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+async function handlePlaylists(req, res, u) {
+  try {
+    if (u.pathname === '/api/playlists') {
+      if (req.method === 'GET') return sendJSON(res, { ok: true, items: Q.playlists.all() });
+      const b = await readBody(req); const name = (b.name || '').trim();
+      if (!name) return sendJSON(res, { ok: false, error: 'falta nombre' });
+      const r = Q.plCreate.run(name); return sendJSON(res, { ok: true, id: Number(r.lastInsertRowid) });
+    }
+    if (u.pathname === '/api/playlist') {
+      const id = parseInt(u.searchParams.get('id'), 10); const p = Q.playlist.get(id);
+      if (!p) { res.writeHead(404); return res.end('{}'); }
+      return sendJSON(res, { ok: true, playlist: p, items: playlistItems(id) });
+    }
+    const sub = u.pathname.slice('/api/playlist/'.length);
+    const b = await readBody(req); const id = parseInt(b.id, 10);
+    if (!id || !Q.playlist.get(id)) return sendJSON(res, { ok: false, error: 'lista no encontrada' });
+    if (sub === 'add') return sendJSON(res, { ok: true, added: plAdd(id, b) });
+    if (sub === 'remove') { Q.plRemoveAt.run(id, parseInt(b.position, 10)); return sendJSON(res, { ok: true }); }
+    if (sub === 'reorder') { plReorder(id, Array.isArray(b.items) ? b.items : []); return sendJSON(res, { ok: true }); }
+    if (sub === 'rename') { const name = (b.name || '').trim(); if (name) Q.plRename.run(name, id); return sendJSON(res, { ok: true }); }
+    if (sub === 'delete') { Q.plDeleteItems.run(id); Q.plDelete.run(id); return sendJSON(res, { ok: true }); }
+    res.writeHead(404); res.end('{}');
+  } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
+}
 function sendFile(res, file) {
   const p = path.join(PUB, file);
   if (!p.startsWith(PUB) || !fs.existsSync(p)) { res.writeHead(404); res.end('no'); return; }
@@ -362,6 +431,7 @@ http.createServer((req, res) => {
   }
   if (u.pathname.startsWith('/api/native/')) return void handleNative(req, res, u);
   if (u.pathname.startsWith('/api/scrobble/')) return void handleScrobble(req, res, u);
+  if (u.pathname === '/api/playlists' || u.pathname === '/api/playlist' || u.pathname.startsWith('/api/playlist/')) return void handlePlaylists(req, res, u);
   try {
     if (u.pathname === '/api/stream') return streamAudio(req, res, parseInt(u.searchParams.get('track'), 10));
     if (u.pathname === '/api/library') return sendJSON(res, libraryList());
