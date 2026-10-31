@@ -53,7 +53,7 @@ const Q = {
   about: db.prepare(`SELECT value v FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='about'`),
   prov: db.prepare(`SELECT field,source,source_ref FROM provenance WHERE subject_type='release_group' AND subject_id=?`),
   editions: db.prepare(`SELECT format,date,country FROM "release" WHERE release_group_id=? ORDER BY date`),
-  tracks: db.prepare(`SELECT tr.id trackId, m.position disc, tr.position pos, tr.title, tr.length_ms,
+  tracks: db.prepare(`SELECT tr.id trackId, tr.recording_id, m.position disc, tr.position pos, tr.title, tr.length_ms,
       (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=tr.artist_credit_id ORDER BY acn.position LIMIT 1) artist,
       EXISTS(SELECT 1 FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id) playable,
       (SELECT lf.gain_db FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) gain_db,
@@ -156,6 +156,9 @@ const Q = {
   plDeleteItems: db.prepare('DELETE FROM playlist_item WHERE playlist_id=?'),
   plRemoveAt: db.prepare('DELETE FROM playlist_item WHERE playlist_id=? AND position=?'),
   albumTrackIds: db.prepare(`SELECT tr.id FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE rel.release_group_id=? ORDER BY m.position, tr.position`),
+  // ── radio (auto-extensión de la cola desde el grafo local) ──
+  trackAlbum: db.prepare(`SELECT rel.release_group_id id FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE tr.id=? LIMIT 1`),
+  albumGenreIds: db.prepare('SELECT genre_id FROM release_group_genre WHERE release_group_id=?'),
 };
 function logPlay(j) {
   let recId = j.recording_id || null, trackId = j.track_id || null, ms = j.ms_played;
@@ -163,6 +166,31 @@ function logPlay(j) {
   if (!recId && !trackId) return { ok: false, error: 'falta track_id o recording_id' };
   Q.insPlay.run(recId, trackId, null, ms || 0, j.source || 'ui', j.zone || null);
   return { ok: true };
+}
+// Radio: dado un track semilla, recomienda N pistas reproducibles del grafo local
+// (álbumes que comparten género, por tier, con algo de azar), excluyendo lo que ya suena.
+function radio(seedTrackId, excludeRecIds, n) {
+  n = Math.min(Math.max(parseInt(n, 10) || 5, 1), 20);
+  const sa = Q.trackAlbum.get(seedTrackId);
+  const genreIds = sa ? Q.albumGenreIds.all(sa.id).map(r => r.genre_id) : [];
+  const ex = (excludeRecIds || []).filter(x => Number.isFinite(x));
+  const gp = genreIds.length ? genreIds.map(() => '?').join(',') : 'NULL';
+  const exClause = ex.length ? ' AND tr.recording_id NOT IN (' + ex.map(() => '?').join(',') + ')' : '';
+  const sql = `SELECT tr.id trackId, tr.recording_id, COALESCE(tr.title,r.title) title,
+       (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id,r.artist_credit_id) ORDER BY acn.position LIMIT 1) artist,
+       rg.id albumId, COALESCE(tr.length_ms,r.length_ms) length_ms,
+       (SELECT lf.gain_db FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) gain_db,
+       (SELECT lf.peak_dbfs FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) peak_dbfs,
+       (SELECT lf.album_gain_db FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) album_gain_db,
+       (SELECT lf.album_peak_dbfs FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) album_peak_dbfs,
+       (SELECT count(*) FROM release_group_genre g WHERE g.release_group_id=rg.id AND g.genre_id IN (${gp})) shared
+     FROM track tr JOIN recording r ON r.id=tr.recording_id JOIN medium m ON m.id=tr.medium_id
+     JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id
+     WHERE EXISTS(SELECT 1 FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id)${exClause}
+     GROUP BY tr.recording_id
+     ORDER BY shared DESC, COALESCE((SELECT tier_rank FROM v_album WHERE id=rg.id),0) DESC, RANDOM() LIMIT ?`;
+  const rows = db.prepare(sql).all(...genreIds, ...ex, n);
+  return rows.map(t => ({ trackId: t.trackId, recording_id: t.recording_id, title: t.title, artist: t.artist, albumId: t.albumId, length_ms: t.length_ms, playable: true, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs }));
 }
 function home() {
   return {
@@ -441,6 +469,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/genre') { const g = genre(u.searchParams.get('name')); return g ? sendJSON(res, g) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/genres') return sendJSON(res, Q.allGenres.all());
     if (u.pathname === '/api/discover') return sendJSON(res, discover());
+    if (u.pathname === '/api/radio') { const seed = parseInt(u.searchParams.get('seed'), 10); const ex = (u.searchParams.get('exclude') || '').split(',').map(x => parseInt(x, 10)).filter(Boolean); return sendJSON(res, { tracks: seed ? radio(seed, ex, u.searchParams.get('n')) : [] }); }
     if (u.pathname === '/api/home') return sendJSON(res, home());
     if (u.pathname === '/' || u.pathname === '') return sendFile(res, 'index.html');
     return sendFile(res, u.pathname.replace(/^\//, ''));

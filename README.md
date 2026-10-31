@@ -31,7 +31,9 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
   - `public/player.js` — **reproductor real**: doble "deck" `<audio>` → grafo Web Audio
     (ganancia por pista con ReplayGain → **EQ** de 7 bandas `BiquadFilter` → ganancia maestra → salida),
     **crossfade** real entre pistas al auto-avanzar (solapa los dos decks con rampas de ganancia),
-    cola persistente, barra de "ahora suena" con progreso/seek/volumen y auto-avance, panel de
+    cola persistente al estilo "Swim" de Roon (historial de lo reproducido, **radio** que auto-extiende la
+    cola con pistas afines de tu grafo cuando se acaba, y **deshacer** cambios de cola),
+    barra de "ahora suena" con progreso/seek/volumen y auto-avance, panel de
     ecualizador (presets) + crossfade + **normalización ReplayGain pista/álbum/off**,
     y **selector de salida/zona** (`AudioContext.setSinkId`;
     la "zona" es nombrable y persistente, base para el multi-sala futuro; cada reproducción se registra con su zona),

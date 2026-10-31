@@ -9,9 +9,11 @@
 <body>
 <div class="wrap">
   <nav style="display:flex;gap:16px;font-size:14px;margin-bottom:16px"><a href="home.html" style="color:var(--text-2)">Inicio</a><a href="/" style="color:var(--text-2)">Biblioteca</a><a href="search.html" style="color:var(--text-2)">Buscar</a></nav>
-  <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:12px">
-    <h1 style="font-size:26px">Cola</h1><span id="count" style="font-size:13px;color:var(--text-2)"></span>
-    <button id="clear" style="margin-left:auto">Vaciar lo próximo</button>
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+    <h1 style="font-size:26px;margin:0">Cola</h1><span id="count" style="font-size:13px;color:var(--text-2)"></span>
+    <span id="radio" title="Radio: cuando se acabe la cola, la extiende con pistas afines de tu biblioteca" style="margin-left:auto;cursor:pointer;font-size:13px;padding:5px 12px;border-radius:999px;border:1px solid var(--border)">📻 Radio</span>
+    <button id="undo">⤺ Deshacer</button>
+    <button id="clear">Vaciar lo próximo</button>
   </div>
   <div id="list"></div>
 </div>
@@ -23,11 +25,18 @@ const mmss=ms=>{ms=ms||0;return Math.floor(ms/60000)+':'+String(Math.floor(ms%60
 function mini(id){const p=PAIRS[(id||0)%PAIRS.length];return `<svg width="40" height="40" viewBox="0 0 40 40" style="border-radius:5px;flex:none"><rect width="40" height="40" fill="${p[0]}"/><circle cx="28" cy="14" r="8" fill="#FAC775"/></svg>`;}
 const list=document.getElementById('list');
 function render(){
+  if(!window.player)return;   // el primer player:change puede llegar antes de que player.js se asigne
   const st=player.getState(); const q=st.q, idx=st.idx;
   document.getElementById('count').textContent=q.length+' pistas';
+  const rb=document.getElementById('radio');
+  rb.style.background=st.radioOn?'var(--accent)':'transparent';
+  rb.style.color=st.radioOn?'#fff':'var(--text-2)';
+  rb.style.borderColor=st.radioOn?'var(--accent)':'var(--border)';
+  const ub=document.getElementById('undo'); ub.disabled=!st.canUndo; ub.style.opacity=st.canUndo?'1':'.45'; ub.style.cursor=st.canUndo?'pointer':'default';
   if(!q.length){list.innerHTML='<div style="color:var(--text-2);padding:20px 0">La cola está vacía. Reproduce un álbum para empezar.</div>';return;}
   let h='';
   q.forEach((t,i)=>{
+    if(idx>0 && i===0) h+='<div style="font-size:11px;color:var(--text-2);margin:0 0 4px;letter-spacing:.04em">REPRODUCIDO</div>';
     if(idx>=0 && i===idx+1) h+='<div style="font-size:11px;color:var(--text-2);margin:14px 0 4px;letter-spacing:.04em">PRÓXIMAMENTE</div>';
     const cur=i===idx;
     h+=`<div class="track" style="${cur?'background:var(--accent-bg);border-radius:8px;':''}${i<idx?'opacity:.55;':''}padding:9px 10px">
@@ -42,7 +51,9 @@ function render(){
 document.addEventListener('click',e=>{
   const j=e.target.closest('[data-jump]'); if(j){player.jumpTo(+j.dataset.jump);return;}
   const r=e.target.closest('[data-remove]'); if(r){player.removeAt(+r.dataset.remove);return;}
-  if(e.target.closest('#clear'))player.clearUpcoming();
+  if(e.target.closest('#clear')){player.clearUpcoming();return;}
+  if(e.target.closest('#radio')){player.setRadio(!player.getState().radioOn);return;}
+  if(e.target.closest('#undo')){player.undo();return;}
 });
 document.addEventListener('player:change',render);
 window.addEventListener('DOMContentLoaded',render);

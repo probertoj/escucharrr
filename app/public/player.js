@@ -13,6 +13,8 @@ window.player = (function () {
   const EQPRE = { plano: [0, 0, 0, 0, 0, 0, 0], graves: [6, 4, 1, 0, 0, 0, 1], voz: [-2, -1, 1, 3, 3, 1, 0], brillo: [0, 0, 0, 0, 2, 4, 5], loudness: [5, 3, 0, -1, 0, 3, 5] };
   let q = [], idx = -1, playing = false, loggedIdx = -1, bar = null;
   let scrobbledIdx = -1, trackStartEpoch = 0;   // scrobbling: una vez por pista, con la hora de inicio
+  let radioOn = false; try { radioOn = localStorage.getItem('escucharrr.radio') === '1'; } catch (e) {}   // radio: auto-extiende la cola
+  let radioFetching = false, undoStack = [];     // deshacer: pila de instantáneas de la cola
   let vol = 1; try { const v = parseFloat(localStorage.getItem(VKEY)); if (v >= 0 && v <= 1) vol = v; } catch (e) {}
   try { const s = JSON.parse(localStorage.getItem(KEY)); if (s) { q = s.q || []; idx = (s.idx == null ? -1 : s.idx); } } catch (e) {}
   // zona de salida: nombre + dispositivo (base para multi-sala al estilo Roon; hoy = salida de este equipo)
@@ -98,6 +100,20 @@ window.player = (function () {
     const len = lenMs(); if (!len || len < 30000) return;
     if (posMs() >= Math.min(len / 2, 240000)) { scrobbledIdx = idx; spost('/api/scrobble/submit', { track_id: c.trackId, listened_at: trackStartEpoch || Math.floor(Date.now() / 1000) }); }
   }
+  // ── radio (modelo "Swim"): al llegar a la última pista, extiende la cola desde el grafo ──
+  function maybeRadio() {
+    if (!radioOn || radioFetching || idx < 0 || idx < q.length - 1) return;   // sólo en la última de la cola
+    const seed = cur(); if (!seed || !seed.trackId) return;
+    radioFetching = true;
+    const exclude = q.map(t => t.recording_id).filter(Boolean).join(',');
+    fetch('/api/radio?n=5&seed=' + seed.trackId + (exclude ? '&exclude=' + encodeURIComponent(exclude) : ''))
+      .then(r => r.json()).then(j => { radioFetching = false; if (j && j.tracks && j.tracks.length) { q = q.concat(j.tracks); save(); render(); } })
+      .catch(() => { radioFetching = false; });
+  }
+  function setRadio(on) { radioOn = !!on; try { localStorage.setItem('escucharrr.radio', radioOn ? '1' : '0'); } catch (e) {} if (radioOn) maybeRadio(); render(); }
+  // ── deshacer cambios de cola (quitar / vaciar lo próximo) ──
+  function snapshot() { try { undoStack.push(JSON.stringify({ q, idx })); if (undoStack.length > 25) undoStack.shift(); } catch (e) {} }
+  function undo() { const s = undoStack.pop(); if (!s) return false; try { const o = JSON.parse(s); q = o.q; idx = o.idx; save(); render(); return true; } catch (e) { return false; } }
 
   function ensureBar() { if (bar) return; bar = document.createElement('div'); bar.id = 'nowbar'; bar.setAttribute('style', 'position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);border-top:1px solid var(--border);padding:8px 16px;display:none;align-items:center;gap:14px'); document.body.appendChild(bar); }
   const volIcon = () => vol === 0 ? '🔇' : vol < 0.5 ? '🔉' : '🔊';
@@ -128,7 +144,7 @@ window.player = (function () {
        <a href="queue.html" title="Cola" style="font-size:16px;color:var(--text-2);text-decoration:none">☰ ${idx + 1}/${q.length}</a>`;
     emit();
   }
-  function progress() { const c = cur(); if (!c) return; const len = lenMs(), p = posMs(); const pr = document.getElementById('npprog'), el = document.getElementById('npel'); if (pr && len) pr.style.width = Math.min(100, p / len * 100) + '%'; if (el) el.textContent = mmss(p); maybeScrobble(); }
+  function progress() { const c = cur(); if (!c) return; const len = lenMs(), p = posMs(); const pr = document.getElementById('npprog'), el = document.getElementById('npel'); if (pr && len) pr.style.width = Math.min(100, p / len * 100) + '%'; if (el) el.textContent = mmss(p); maybeScrobble(); maybeRadio(); }
   const emit = () => document.dispatchEvent(new Event('player:change'));
 
   // ── crossfade: al acercarse el final de la pista activa, solapa con la siguiente ──
@@ -222,21 +238,21 @@ window.player = (function () {
     render();
   }
   function onEnded() { if (fading) return; next(); }
-  function next() { if (nativeMode) { if (idx < q.length - 1) nativePlay(idx + 1); else { playing = false; stopNativePoll(); render(); } return; } if (idx < q.length - 1) start(idx + 1); else { playing = false; active().el.pause(); render(); } }
+  function next() { if (nativeMode) { if (idx < q.length - 1) nativePlay(idx + 1); else if (radioOn) maybeRadio(); else { playing = false; stopNativePoll(); render(); } return; } if (idx < q.length - 1) start(idx + 1); else if (radioOn) maybeRadio(); else { playing = false; active().el.pause(); render(); } }
   function prev() { if (nativeMode) { if (nativePos > 3 || idx <= 0) nativePlay(idx, { seekSec: 0 }); else nativePlay(idx - 1); return; } const d = active(); if (d.trackIdx === idx && d.el.currentTime > 3) { d.el.currentTime = 0; } else if (idx > 0) start(idx - 1); else d.el.currentTime = 0; }
   function toggle() { if (nativeMode) return nativeToggle(); const c = cur(); if (!c || c.playable === false) return; const d = active(); if (d.trackIdx !== idx) return start(idx); if (d.el.paused) { ensureGraph(); if (ctx && ctx.state === 'suspended') ctx.resume(); d.el.play().catch(() => {}); } else d.el.pause(); }
   function seekFrac(f) { if (nativeMode) return nativeSeek(f); const len = lenMs(); if (loadedCur() && len) active().el.currentTime = Math.max(0, Math.min(1, f)) * len / 1000; }
   function setVol(v) { vol = Math.max(0, Math.min(1, v)); applyVol(); if (nativeMode) nativeVolumeApply(); render(); }
 
   function playTracks(tracks, i) { if (!tracks || !tracks.length) return; q = tracks; start(i || 0); }
-  function playAlbum(id, i) { fetch('/api/album?id=' + id).then(r => r.json()).then(a => { const tr = (a.tracks || []).map(t => ({ trackId: t.trackId, title: t.title, artist: a.artist, albumId: a.id, length_ms: t.length_ms, playable: t.playable !== 0, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs })); if (!tr.length) { alert('Este álbum aún no tiene pistas en tu biblioteca.'); return; } playTracks(tr, i || 0); }); }
+  function playAlbum(id, i) { fetch('/api/album?id=' + id).then(r => r.json()).then(a => { const tr = (a.tracks || []).map(t => ({ trackId: t.trackId, recording_id: t.recording_id, title: t.title, artist: a.artist, albumId: a.id, length_ms: t.length_ms, playable: t.playable !== 0, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs })); if (!tr.length) { alert('Este álbum aún no tiene pistas en tu biblioteca.'); return; } playTracks(tr, i || 0); }); }
   // cambia el modo de normalización y lo re-aplica en caliente (navegador o nativo)
   function applyRgMode() { if (nativeMode) { if (playing) nativeVolumeApply(); } else { const d = active(); if (d && d.gain && loadedCur()) setDeckGain(d, cur()); applyVol(); } }
   function setRgMode(m) { if (m !== 'track' && m !== 'album' && m !== 'off') return; if (m !== rgMode) { rgMode = m; persistRg(); applyRgMode(); } renderEqPanel(); }
   function jumpTo(i) { if (i >= 0 && i < q.length) start(i); }
-  function removeAt(i) { const wasCur = i === idx; q.splice(i, 1); if (i < idx) idx--; if (idx >= q.length) idx = q.length - 1; save(); if (wasCur) { if (q.length) start(idx); else { idx = -1; cancelFade(); active().el.pause(); active().el.removeAttribute('src'); active().trackIdx = -1; render(); } } else render(); }
-  function clearUpcoming() { q = q.slice(0, idx + 1); save(); render(); }
-  const getState = () => ({ q: q.slice(), idx, playing });
+  function removeAt(i) { snapshot(); const wasCur = i === idx; q.splice(i, 1); if (i < idx) idx--; if (idx >= q.length) idx = q.length - 1; save(); if (wasCur) { if (q.length) start(idx); else { idx = -1; cancelFade(); active().el.pause(); active().el.removeAttribute('src'); active().trackIdx = -1; render(); } } else render(); }
+  function clearUpcoming() { snapshot(); q = q.slice(0, idx + 1); save(); render(); }
+  const getState = () => ({ q: q.slice(), idx, playing, radioOn, canUndo: undoStack.length > 0 });
 
   // eventos de audio -> estado real (ambos decks; sólo cuenta el activo)
   decks.forEach(d => {
@@ -371,5 +387,5 @@ window.player = (function () {
   const getZone = () => ({ name: zone.name, deviceId: zone.deviceId, label: zone.label });
   const getAudio = () => ({ eqOn, eqGains: eqGains.slice(), xfade, rgMode });
   const getNative = () => ({ nativeMode, nativeDeviceId, nativeExclusive, nativePos, playing, startedIdx: nativeStartedIdx });
-  return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain, getZone, getAudio, getNative, setNativeMode };
+  return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain, getZone, getAudio, getNative, setNativeMode, setRadio, undo };
 })();
