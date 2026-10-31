@@ -51,12 +51,26 @@ fetch('/api/album?id='+id).then(r=>r.json()).then(a=>{
         </div>
         <div>${genres}</div>
         ${a.spotify_enabled?`<div style="margin-top:9px;font-size:13px">${a.spotify_saved?`<span style="color:#1DB954;font-weight:600">● En tu biblioteca de Spotify</span>${a.spotify_url?` · <a href="${esc(a.spotify_url)}" target="_blank" rel="noopener" style="color:var(--text-2)">abrir</a>`:''}`:'<span style="color:var(--text-2)">○ No está en tu biblioteca de Spotify</span>'}</div>`:''}
+        <div id="tagbox" style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
       </div>
     </div>
     ${about}
     ${tracks}
     ${credits}`;
+  renderTags(a.tags||[]);
 }).catch(e=>app.innerHTML='error: '+e.message);
+
+// ── tags de usuario (etiquetas libres, estilo Roon) ──
+function renderTags(tags){
+  const box=document.getElementById('tagbox'); if(!box) return;
+  box.innerHTML=(tags||[]).map(t=>`<span class="gchip" style="display:inline-flex;align-items:center;gap:5px"><a href="tag.html?name=${encodeURIComponent(t)}" style="color:inherit">${esc(t)}</a><span class="txtag" data-tag="${esc(t)}" title="Quitar etiqueta" style="cursor:pointer;color:var(--text-2)">✕</span></span>`).join('')
+    +`<span class="chip" id="addtag" style="cursor:pointer">＋ etiqueta</span>`;
+}
+async function tagPost(path,name){ try{ const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({album_id:id,name})}).then(x=>x.json()); if(r&&r.ok) renderTags(r.tags||[]); }catch(e){} }
+document.addEventListener('click',e=>{
+  const add=e.target.closest('#addtag'); if(add){ const n=prompt('Etiqueta (p. ej. «domingo», «lluvia», «para el coche»):'); if(n&&n.trim()) tagPost('/api/tag/add', n.trim()); return; }
+  const rm=e.target.closest('.txtag'); if(rm){ tagPost('/api/tag/remove', rm.dataset.tag); return; }
+});
 
 // Reproducir: encola el álbum y arranca (el player registra la escucha)
 document.addEventListener('click',e=>{

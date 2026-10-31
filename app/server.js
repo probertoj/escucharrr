@@ -38,7 +38,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS scrobble_queue (
   listened_at INTEGER NOT NULL, created_at TEXT DEFAULT (datetime('now')),
   lastfm_done INTEGER DEFAULT 0, lbz_done INTEGER DEFAULT 0, attempts INTEGER DEFAULT 0, next_try TEXT, last_error TEXT);
   CREATE INDEX IF NOT EXISTS ix_scrobble_pending ON scrobble_queue(lastfm_done, lbz_done);
-  CREATE TABLE IF NOT EXISTS lyrics (recording_id INTEGER PRIMARY KEY, found INTEGER DEFAULT 0, instrumental INTEGER DEFAULT 0, plain TEXT, synced TEXT, source TEXT, fetched_at TEXT DEFAULT (datetime('now')));`);
+  CREATE TABLE IF NOT EXISTS lyrics (recording_id INTEGER PRIMARY KEY, found INTEGER DEFAULT 0, instrumental INTEGER DEFAULT 0, plain TEXT, synced TEXT, source TEXT, fetched_at TEXT DEFAULT (datetime('now')));
+  CREATE TABLE IF NOT EXISTS tag (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, created_at TEXT DEFAULT (datetime('now')));
+  CREATE TABLE IF NOT EXISTS tag_item (tag_id INTEGER NOT NULL REFERENCES tag(id) ON DELETE CASCADE, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, created_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (tag_id, subject_type, subject_id));
+  CREATE INDEX IF NOT EXISTS ix_tag_item ON tag_item(subject_type, subject_id);`);
 const lyrics = require('../data-layer/lyrics');
 let scrobCfg = null;
 function loadScrobbleCfg() { const p = path.join(__dirname, 'scrobble.json'); try { scrobCfg = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null; } catch (e) { scrobCfg = null; } return scrobCfg; }
@@ -83,6 +86,14 @@ const Q = {
   spotifyCount: db.prepare(`SELECT COUNT(*) n FROM release_group WHERE spotify_album_id IS NOT NULL`),
   filesForIndex: db.prepare(`SELECT lf.path, COALESCE(lf.track_id, (SELECT id FROM track WHERE recording_id=lf.recording_id LIMIT 1)) tid FROM local_file lf`),
   trackTags: db.prepare(`SELECT tr.id tid, COALESCE(tr.title, r.title) title, (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id, r.artist_credit_id) ORDER BY acn.position LIMIT 1) artist FROM track tr JOIN recording r ON r.id=tr.recording_id`),
+  // ── tags de usuario (etiquetas libres sobre álbumes, estilo Roon) ──
+  tagsOfAlbum: db.prepare(`SELECT t.name FROM tag t JOIN tag_item ti ON ti.tag_id=t.id WHERE ti.subject_type='release_group' AND ti.subject_id=? ORDER BY t.name`),
+  allTags: db.prepare(`SELECT t.name, count(*) n FROM tag t JOIN tag_item ti ON ti.tag_id=t.id AND ti.subject_type='release_group' GROUP BY t.id ORDER BY n DESC, t.name`),
+  tagAlbums: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite FROM v_album a JOIN tag_item ti ON ti.subject_type='release_group' AND ti.subject_id=a.id JOIN tag t ON t.id=ti.tag_id WHERE t.name=? ORDER BY a.title`),
+  tagCreate: db.prepare(`INSERT OR IGNORE INTO tag(name) VALUES(?)`),
+  tagLink: db.prepare(`INSERT OR IGNORE INTO tag_item(tag_id, subject_type, subject_id) VALUES((SELECT id FROM tag WHERE name=?), 'release_group', ?)`),
+  tagUnlink: db.prepare(`DELETE FROM tag_item WHERE tag_id=(SELECT id FROM tag WHERE name=?) AND subject_type='release_group' AND subject_id=?`),
+  tagGc: db.prepare(`DELETE FROM tag WHERE NOT EXISTS (SELECT 1 FROM tag_item ti WHERE ti.tag_id=tag.id)`),
   prov: db.prepare(`SELECT field,source,source_ref FROM provenance WHERE subject_type='release_group' AND subject_id=?`),
   editions: db.prepare(`SELECT format,date,country FROM "release" WHERE release_group_id=? ORDER BY date`),
   tracks: db.prepare(`SELECT tr.id trackId, tr.recording_id, m.position disc, tr.position pos, tr.title, tr.length_ms,
@@ -279,6 +290,7 @@ function album(id) {
   a.editions = Q.editions.all(id);
   a.tracks = Q.tracks.all(id);
   a.credits = Q.credits.all(id).map(c => ({ role: c.role, instrument: c.instrument, artists: (c.artists || '').split(',') }));
+  a.tags = Q.tagsOfAlbum.all(id).map(r => r.name);   // etiquetas de usuario
   const sp = Q.spotifyOf.get(id) || {};   // ¿este disco está en tu biblioteca de Spotify?
   a.spotify_enabled = spotifyConfigured() && !!spotifyTok;
   a.spotify_saved = !!sp.spotify_album_id;
@@ -286,7 +298,7 @@ function album(id) {
   return a;
 }
 function libraryList() {
-  return Q.library.all().map(a => { a.genres = (genresOf.get(a.id).gs || '').split('|').filter(Boolean); a.format = (formatOf.get(a.id) || {}).f || null; return a; });
+  return Q.library.all().map(a => { a.genres = (genresOf.get(a.id).gs || '').split('|').filter(Boolean); a.format = (formatOf.get(a.id) || {}).f || null; a.tags = Q.tagsOfAlbum.all(a.id).map(r => r.name); return a; });
 }
 function artist(id) {
   const a = Q.artist.get(id); if (!a) return null;
@@ -711,6 +723,18 @@ http.createServer((req, res) => {
     req.on('end', () => { try { sendJSON(res, logPlay(JSON.parse(body || '{}'))); } catch (e) { res.writeHead(400); res.end(String(e.message)); } });
     return;
   }
+  if (req.method === 'POST' && (u.pathname === '/api/tag/add' || u.pathname === '/api/tag/remove')) {
+    let body = ''; req.on('data', c => { body += c; if (body.length > 1e5) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const b = JSON.parse(body || '{}'); const id = parseInt(b.album_id, 10); const name = String(b.name || '').trim().toLowerCase().slice(0, 40);
+        if (!id || !name) { res.writeHead(400); return res.end('{}'); }
+        if (u.pathname.endsWith('/add')) { Q.tagCreate.run(name); Q.tagLink.run(name, id); } else { Q.tagUnlink.run(name, id); Q.tagGc.run(); }
+        sendJSON(res, { ok: true, tags: Q.tagsOfAlbum.all(id).map(r => r.name) });
+      } catch (e) { res.writeHead(400); res.end(String(e.message)); }
+    });
+    return;
+  }
   if (u.pathname.startsWith('/api/native/')) return void handleNative(req, res, u);
   if (u.pathname.startsWith('/api/upnp/')) return void handleUpnp(req, res, u);
   if (u.pathname.startsWith('/api/spotify/')) return void handleSpotify(req, res, u);
@@ -727,6 +751,8 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/artist') { const a = artist(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/genre') { const g = genre(u.searchParams.get('name')); return g ? sendJSON(res, g) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/genres') return sendJSON(res, Q.allGenres.all());
+    if (u.pathname === '/api/tags') return sendJSON(res, Q.allTags.all());
+    if (u.pathname === '/api/tag') { const name = u.searchParams.get('name'); const albums = Q.tagAlbums.all(name); return albums.length ? sendJSON(res, { name, albums }) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/discover') return sendJSON(res, discover());
     if (u.pathname === '/api/radio') { const seed = parseInt(u.searchParams.get('seed'), 10); const ex = (u.searchParams.get('exclude') || '').split(',').map(x => parseInt(x, 10)).filter(Boolean); return sendJSON(res, { tracks: seed ? radio(seed, ex, u.searchParams.get('n')) : [] }); }
     if (u.pathname === '/api/home') return sendJSON(res, home());

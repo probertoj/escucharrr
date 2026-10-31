@@ -272,6 +272,21 @@ CREATE TABLE IF NOT EXISTS flag (
   PRIMARY KEY (subject_type, subject_id, flag)
 );
 
+-- Etiquetas de usuario (tags libres, estilo Roon): nombre único + enlaces a sujetos (hoy álbumes).
+CREATE TABLE IF NOT EXISTS tag (
+  id         INTEGER PRIMARY KEY,
+  name       TEXT UNIQUE NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS tag_item (
+  tag_id       INTEGER NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
+  subject_type TEXT NOT NULL,                 -- release_group (por ahora)
+  subject_id   INTEGER NOT NULL,
+  created_at   TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (tag_id, subject_type, subject_id)
+);
+CREATE INDEX IF NOT EXISTS ix_tag_item ON tag_item(subject_type, subject_id);
+
 -- Override de usuario: gana a cualquier fuente externa.
 CREATE TABLE IF NOT EXISTS user_edit (
   subject_type TEXT NOT NULL,

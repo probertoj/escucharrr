@@ -85,7 +85,9 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     abierta, sin clave), con **sincronización** (karaoke: la línea en curso se resalta y centra según la
     reproducción) cuando LRCLIB la tiene, o texto plano si no. Cacheada en local (tabla `lyrics`, con caché
     negativa para no repetir consultas). Panel 📝 en la barra del player, en cualquier página.
-  - `public/` — biblioteca (Focus por tier/género/década/tipo/formato/valoración, orden, filtro),
+  - `public/` — biblioteca (Focus por tier/género/**etiqueta**/década/tipo/formato/valoración, orden, filtro),
+    **etiquetas de usuario** (tags libres estilo Roon: se añaden/quitan en cada álbum y filtran la biblioteca;
+    tablas `tag`/`tag_item`, rutas `/api/tags`, `/api/tag`, `/api/tag/{add,remove}`, página `tag.html`),
     página de álbum (tier, valoración, créditos por rol, bio con procedencia), **página de artista**
     (avatar, géneros, discografía propia y "aparece en" con sus roles), **página de género**
     (álbumes del género + géneros relacionados), **índice de géneros** y **Descubrir**

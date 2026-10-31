@@ -40,11 +40,12 @@ function cover(id){return `<img src="/api/cover?rg=${id}" alt="" loading="lazy" 
 function stars(s){return s?`<span class="stars">★</span> ${(+s).toFixed(1)}`:'<span style="color:var(--muted)">—</span>';}
 
 let ALBUMS=[];
-const active={tier:[],genre:[],decade:[],type:[],format:[]}; let minR=null, txt='';
-const facetDefs=[['tier','Tier'],['genre','Género'],['decade','Década'],['type','Tipo'],['format','Formato']];
+const active={tier:[],genre:[],tag:[],decade:[],type:[],format:[]}; let minR=null, txt='';
+const facetDefs=[['tier','Tier'],['genre','Género'],['tag','Etiqueta'],['decade','Década'],['type','Tipo'],['format','Formato']];
 function valsOf(key){const m={};ALBUMS.forEach(a=>{let vs=[];
   if(key==='tier')vs=a.tier_key?[a.tier_key]:[];
   else if(key==='genre')vs=a.genres||[];
+  else if(key==='tag')vs=a.tags||[];
   else if(key==='decade')vs=a.year?[String(Math.floor(a.year/10)*10)+'s']:[];
   else if(key==='type')vs=a.primary_type?[a.primary_type.toLowerCase()]:[];
   else if(key==='format')vs=a.format?[a.format]:[];
@@ -52,6 +53,7 @@ function valsOf(key){const m={};ALBUMS.forEach(a=>{let vs=[];
 function matchFacet(a,key,sel){if(!sel.length)return true;let vs=[];
   if(key==='tier')vs=a.tier_key?[a.tier_key]:[];
   else if(key==='genre')vs=a.genres||[];
+  else if(key==='tag')vs=a.tags||[];
   else if(key==='decade')vs=a.year?[String(Math.floor(a.year/10)*10)+'s']:[];
   else if(key==='type')vs=a.primary_type?[a.primary_type.toLowerCase()]:[];
   else if(key==='format')vs=a.format?[a.format]:[];
