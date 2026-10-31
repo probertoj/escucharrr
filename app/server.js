@@ -53,6 +53,7 @@ const Q = {
          WHERE rg.id=a.id ORDER BY acn.position LIMIT 1) artist_id
      FROM v_album a WHERE a.id=?`),
   about: db.prepare(`SELECT value v FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='about'`),
+  aboutExt: db.prepare(`SELECT about v FROM release_group WHERE id=?`),   // reseña editorial externa (Wikipedia)
   prov: db.prepare(`SELECT field,source,source_ref FROM provenance WHERE subject_type='release_group' AND subject_id=?`),
   editions: db.prepare(`SELECT format,date,country FROM "release" WHERE release_group_id=? ORDER BY date`),
   tracks: db.prepare(`SELECT tr.id trackId, tr.recording_id, m.position disc, tr.position pos, tr.title, tr.length_ms,
@@ -242,9 +243,10 @@ function album(id) {
   const a = Q.album.get(id); if (!a) return null;
   a.genres = (genresOf.get(id).gs || '').split('|').filter(Boolean);
   a.format = (formatOf.get(id) || {}).f || null;
+  // "Acerca de": la nota de Obsidian (user_edit) MANDA; si no hay, cae a la reseña editorial externa.
   const ab = Q.about.get(id);
-  a.about = ab ? ab.v : null;
-  a.about_source = Q.prov.all(id).find(p => p.field === 'about');
+  if (ab) { a.about = ab.v; a.about_source = Q.prov.all(id).find(p => p.field === 'about') || null; }
+  else { const ext = Q.aboutExt.get(id); a.about = (ext && ext.v) || null; a.about_source = a.about ? (Q.prov.all(id).find(p => p.field === 'about_editorial') || null) : null; }
   a.editions = Q.editions.all(id);
   a.tracks = Q.tracks.all(id);
   a.credits = Q.credits.all(id).map(c => ({ role: c.role, instrument: c.instrument, artists: (c.artists || '').split(',') }));

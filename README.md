@@ -29,6 +29,13 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
   - `enrich.js` — enriquece desde MusicBrainz: mbid, tipo, fecha, géneros y **créditos por rol**.
   - `discogs.js` — **créditos por pista desde Discogs** (intérpretes/roles/instrumentos que MB no
     cubre en sellos pequeños); mapea por posición a nuestras grabaciones. Funciona sin token.
+  - `editorial.js` — **editorial desde fuentes abiertas**: bio del artista + contexto/reseña del álbum
+    desde **Wikipedia** (texto), resuelta por **Wikidata** vía las relaciones de MusicBrainz (sin clave).
+    Cadena por MBID: MB `url-rels` → `wikidata` (Q…) → sitelink al idioma preferido (`--lang`, por defecto
+    `es`, con fallback a inglés) → resumen REST de Wikipedia. Guarda el texto (`artist.bio` /
+    `release_group.about`) con **procedencia** (tabla `provenance`, `source='wikipedia'`, enlace al artículo).
+    **Tus notas de Obsidian mandan**: solo rellena lo externo; el `user_edit` sigue ganando al leer. Entidades
+    sin MBID se saltan (identificador fuerte, sin adivinar por nombre). Cacheado; `--force` re-consulta.
   - `analyze.js` — **loudness EBU R128 / ReplayGain** con ffmpeg (`ebur128`): por pista mide LUFS integrado y
     pico → `gain_db` (ref −18 LUFS) + `peak_dbfs`; y **por álbum** mide el disco entero como un solo programa
     (concatena sus ficheros con el demuxer `concat`) → `album_gain_db` + `album_peak_dbfs`, iguales para todas
@@ -111,6 +118,7 @@ node identify.js     --db ../app/escucharrr.db --isrc            # ISRC -> Music
 node identify.js     --db ../app/escucharrr.db --acoustid --acoustid-key TU_KEY
 node enrich.js       --db ../app/escucharrr.db --limit 50
 node discogs.js      --db ../app/escucharrr.db --rg 1   # créditos por pista (donde MB no llega)
+node editorial.js    --db ../app/escucharrr.db          # bio/reseña desde Wikipedia (abierto, sin clave)
 node analyze.js      --db ../app/escucharrr.db          # loudness R128/ReplayGain (necesita ffmpeg)
 
 # 2. arrancar la vista web

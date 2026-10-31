@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS release_group (
   artist_credit_id INTEGER REFERENCES artist_credit(id),
   primary_type     TEXT,                     -- album | ep | single | live | compilation | soundtrack
   first_release    TEXT,                     -- fecha de la 1ª edición (YYYY o YYYY-MM-DD)
+  about            TEXT,                      -- reseña/contexto editorial externo (Wikipedia); el user_edit 'about' de Obsidian manda
   created_at       TEXT DEFAULT (datetime('now')),
   updated_at       TEXT DEFAULT (datetime('now'))
 );

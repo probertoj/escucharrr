@@ -26,6 +26,7 @@ function migrate(db) {
   if (addCol(db, 'local_file', 'peak_dbfs', 'REAL')) added.push('local_file.peak_dbfs');
   if (addCol(db, 'local_file', 'album_gain_db', 'REAL')) added.push('local_file.album_gain_db');
   if (addCol(db, 'local_file', 'album_peak_dbfs', 'REAL')) added.push('local_file.album_peak_dbfs');
+  if (addCol(db, 'release_group', 'about', 'TEXT')) added.push('release_group.about');   // reseña editorial externa (Wikipedia); el user_edit 'about' de Obsidian manda
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_isrc ON recording(isrc)');
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_acoustid ON recording(acoustid)');
   return added;
