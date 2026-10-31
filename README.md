@@ -84,19 +84,25 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
   Es la parte que SÍ tiene que ser nativa (salida de baja latencia / bit-perfect, fuera del navegador).
   - `escucharrr-engine.cpp` — renderizador **WASAPI** en float32 (C++, solo Windows SDK, **sin libs externas**):
     enumera dispositivos de salida (con su formato de mezcla) y reproduce PCM `f32le` en **modo compartido**
-    (con **ganancia maestra** + **ecualizador de 7 bandas** `biquad` — mismas frecuencias que el player web)
-    o **exclusivo = bit-perfect** (sin tocar la muestra), con prioridad de hilo de audio (MMCSS). Recibe el PCM
-    por un **named pipe** y acepta **control en vivo por stdin** (`gain`/`eq`/`pause`/`resume`/`flush`/`stop`):
-    así el motor y el dispositivo quedan vivos toda la reproducción. Ranuras de resample (soxr), convolución y
-    dither, y el bit-perfect entero 16/24-bit, documentadas para más adelante.
+    o **exclusivo = bit-perfect** (sin tocar la muestra), con prioridad de hilo de audio (MMCSS). Grafo DSP:
+    **resample** (sinc enventanado **Kaiser**, polifásico) → **ganancia maestra** → **EQ de 7 bandas** `biquad`
+    (mismas frecuencias que el player web), y **cuantización con dither TPDF** si la salida es PCM entero. El
+    resample iguala la entrada (tasa **nativa** del fichero) a la tasa de mezcla del dispositivo para que **WASAPI
+    no vuelva a remuestrear** (sustituye su SRC por uno de alta calidad: banda de paso plana a ~20 kHz, rechazo de
+    alias ~98–109 dB — medible con `escucharrr-engine --selftest`). Recibe el PCM por un **named pipe** y acepta
+    **control en vivo por stdin** (`gain`/`eq`/`inrate`/`pause`/`resume`/`flush`/`stop`): así el motor y el
+    dispositivo quedan vivos toda la reproducción. Ranuras de convolución y noise-shaping, documentadas para después.
   - `native-player.js` — bridge Node: la **decodificación** la pone **ffmpeg** (ranura de decoder; libFLAC/dr_flac
-    en el futuro) y el **transporte** lo lleva el bridge — como el "core" de Roon posee las zonas y la UI es un
+    en el futuro) a la **tasa nativa** del fichero y el **resample** lo hace el motor; el **transporte** lo lleva el
+    bridge — como el "core" de Roon posee las zonas y la UI es un
     mando. Salida nativa = **zona del servidor**. Volumen y pausa son **inmediatos** (un comando, sin relanzar);
     el **seek** solo hace flush del buffer y reposiciona ffmpeg sobre el mismo pipe (el dispositivo no se corta);
     el **cambio de pista reutiliza el motor** (mismo dispositivo en compartido) sin reinicializar WASAPI (casi sin
-    corte); el fin real de la pista se detecta por duración (ffmpeg decodifica mucho antes de que acabe el audio).
+    corte), reconfigurando el resampler al vuelo (`inrate`) si la nueva pista tiene otra tasa; el fin real de la
+    pista se detecta por duración (ffmpeg decodifica mucho antes de que acabe el audio).
     Al volver de la zona nativa al navegador, la reproducción **reanuda en la posición** (no desde cero).
   - `build.ps1` — compila con MSVC (VS Build Tools + workload C++); `cli.js` — demo: `node engine/cli.js devices|play`.
+    Autoprueba numérica del DSP (resample + dither, sin hardware de audio): `escucharrr-engine.exe --selftest`.
   - El servidor expone `/api/native/{devices,state,play,pause,resume,stop,seek,volume,eq,output}` para manejarlo
     (aplica ReplayGain × volumen; si el binario no está compilado, lo avisa sin romper nada). El **player** tiene
     un conmutador "Motor nativo (este equipo)" en el panel 🔈 que enruta el transporte a esas rutas, con selector

@@ -8,12 +8,17 @@
 //
 // Esto implementa la parte del §4 del documento de diseño que SÍ tiene que ser
 // nativa: pipeline float interno → DSP → salida WASAPI, con bypass bit-perfect.
-// El grafo DSP encadenable (resample soxr, convolución, dither) son ranuras
-// documentadas para más adelante; por ahora el único nodo es la ganancia.
+// Grafo DSP: resample (sinc Kaiser polifásico) → ganancia → EQ de 7 bandas, y
+// cuantización con dither TPDF si la salida es PCM entero. El resample iguala la
+// entrada a la tasa de mezcla del dispositivo para que WASAPI NO vuelva a remuestrear.
+// Quedan como ranura la convolución/noise-shaping; la decodificación la pone quien
+// alimenta stdin (hoy ffmpeg, a la tasa NATIVA del fichero).
 //
 //   escucharrr-engine --list-devices
-//   escucharrr-engine --play --rate 44100 --channels 2 [--device-id <id>]
-//                      [--exclusive] [--gain <lineal>]     (PCM f32le por stdin)
+//   escucharrr-engine --selftest                            (autoprueba numérica del DSP)
+//   escucharrr-engine --play --rate 48000 --channels 2 [--in-rate 44100]
+//                      [--device-id <id>] [--exclusive] [--gain <lineal>] [--rs-taps N]
+//                      (PCM f32le por stdin o --pcm-pipe; --in-rate = tasa del fichero)
 //
 // Compilar con build.ps1 (MSVC). Sin dependencias externas: solo Windows SDK.
 
@@ -268,6 +273,195 @@ static void eq_coeffs(Biquad& bq, int band, double gainDb, double Fs) {
     bq.a1 = (float)(a1 / a0); bq.a2 = (float)(a2 / a0);
 }
 
+// ── control de tasa de entrada en vivo (cambio de pista con otro sample rate) ──
+static volatile long g_inRateReq = 0;       // nueva tasa de entrada pedida (Hz)
+static volatile long g_inRateDirty = 0;     // 1 = reconstruir el resampler en el hilo de audio
+
+// ── nodo DSP de resample: sinc enventanado Kaiser, polifásico ───────────────────
+// Igualamos la entrada (tasa del fichero) a la tasa de mezcla del dispositivo para que
+// WASAPI NO vuelva a remuestrear: sustituimos su SRC interno por uno de alta calidad.
+// Racional L/M (L=out/g, M=in/g); si in==out no se crea (paso directo bit a bit).
+// Lineal-fase; la latencia de grupo es constante e irrelevante para el reloj de pared.
+static int    RS_TAPS = 64;                  // taps por fase (calidad); --rs-taps lo cambia
+static double RS_BETA = 9.0;                 // Kaiser beta (≈ 90 dB de rechazo)
+static double RS_ROLLOFF = 0.918;            // banda de paso plana hasta ~0.918·Nyquist (~20 kHz @44.1k)
+
+static double bessel_i0(double x) {          // I0 modificada de Bessel (ventana Kaiser)
+    double sum = 1.0, term = 1.0, k = 1.0, x2 = x * x / 4.0;
+    while (term > sum * 1e-14) { term *= x2 / (k * k); sum += term; k += 1.0; }
+    return sum;
+}
+static unsigned gcd_u(unsigned a, unsigned b) { while (b) { unsigned t = a % b; a = b; b = t; } return a; }
+
+struct Resampler {
+    int ch = 1, L = 1, M = 1, tpp = 0;       // tpp = taps por fase
+    std::vector<float> poly;                 // L*tpp: poly[p*tpp+m] = h[p + m*L]
+    std::vector<float> buf;                  // ventana de entrada intercalada (ch floats por frame)
+    long long inBase = 0, nextIn = 0, i0 = 0;
+    int p = 0;
+
+    Resampler(int channels, unsigned inRate, unsigned outRate, int tapsPerPhase, double beta) {
+        ch = channels > 0 ? channels : 1;
+        unsigned g = gcd_u(inRate, outRate);
+        L = (int)(outRate / g); M = (int)(inRate / g);
+        tpp = tapsPerPhase;
+        int N = tpp * L;                     // taps totales del prototipo
+        poly.assign((size_t)L * tpp, 0.0f);
+        double fc = RS_ROLLOFF * 0.5 / (double)(L > M ? L : M);   // corte normalizado (con rolloff) en el dominio sobremuestreado
+        int center = (N - 1) / 2;
+        double denom = bessel_i0(beta);
+        for (int i = 0; i < N; i++) {
+            double m = i - center;
+            double s = (m == 0.0) ? 2.0 * fc : sin(2.0 * M_PI * fc * m) / (M_PI * m);
+            double r = (N > 1) ? ((double)i / (N - 1) * 2.0 - 1.0) : 0.0;
+            double w = bessel_i0(beta * sqrt(1.0 - r * r)) / denom;
+            int ph = i % L, mm = i / L;
+            if (mm < tpp) poly[(size_t)ph * tpp + mm] = (float)(s * w);
+        }
+        // normaliza cada subfiltro a ganancia unidad en continua → paso de banda ≈ 0 dB
+        for (int ph = 0; ph < L; ph++) {
+            double s = 0; for (int m = 0; m < tpp; m++) s += poly[(size_t)ph * tpp + m];
+            if (s != 0.0) for (int m = 0; m < tpp; m++) poly[(size_t)ph * tpp + m] /= (float)s;
+        }
+    }
+    void reset() { buf.clear(); inBase = nextIn = i0 = 0; p = 0; }
+    bool empty() const { return i0 >= nextIn; }        // sin entrada pendiente para producir más
+
+    void push(const float* x, size_t frames) {
+        size_t off = buf.size();
+        buf.resize(off + frames * (size_t)ch);
+        memcpy(buf.data() + off, x, frames * (size_t)ch * sizeof(float));
+        nextIn += (long long)frames;
+    }
+    inline float sample(long long abs, int c) const {
+        if (abs < inBase) return 0.0f;                 // pre-historia = silencio
+        size_t idx = (size_t)(abs - inBase) * ch + c;
+        return idx < buf.size() ? buf[idx] : 0.0f;
+    }
+    // produce hasta maxFrames de salida; se detiene cuando necesita más entrada (i0 >= nextIn)
+    size_t pull(float* out, size_t maxFrames) {
+        size_t n = 0;
+        while (n < maxFrames && i0 < nextIn) {
+            const float* ph = &poly[(size_t)p * tpp];
+            for (int c = 0; c < ch; c++) {
+                float acc = 0.0f;
+                for (int m = 0; m < tpp; m++) acc += ph[m] * sample(i0 - m, c);
+                out[n * ch + c] = acc;
+            }
+            n++;
+            p += M; i0 += p / L; p %= L;
+        }
+        compact();
+        return n;
+    }
+    void compact() {                                   // descarta la historia que ya no hace falta
+        long long keepFrom = i0 - (tpp - 1);
+        if (keepFrom <= inBase) return;
+        long long have = (long long)(buf.size() / ch);
+        long long drop = keepFrom - inBase;
+        if (drop > have) drop = have;
+        buf.erase(buf.begin(), buf.begin() + (size_t)drop * ch);
+        inBase += drop;
+    }
+};
+
+// ── cuantización float→entero con dither TPDF (triangular, 1 LSB pp) ─────────────
+// Ruta de salida en PCM entero (p. ej. WASAPI exclusivo entero). El modo compartido usa
+// float y NO pasa por aquí. Verificado numéricamente en --selftest; la salida entera
+// AUDIBLE necesita un DAC exclusivo que no podemos probar en esta máquina.
+static unsigned long long g_ditherState = 0x853c49e6748fea9bULL;
+static inline double dither_rand() {                   // uniforme [0,1) (PRNG xorshift/lcg barato)
+    g_ditherState = g_ditherState * 6364136223846793005ULL + 1442695040888963407ULL;
+    return (double)((g_ditherState >> 11) & 0x1FFFFFFFFFFFFFULL) / (double)0x20000000000000ULL;
+}
+static void float_to_int(const float* in, BYTE* out, size_t frames, int ch,
+                         int bytesPerSample, int validBits, bool dither) {
+    const double full = (double)(1LL << (validBits - 1));      // 32768.0 para 16 bits
+    const long long maxv = (1LL << (validBits - 1)) - 1, minv = -(1LL << (validBits - 1));
+    const int shift = (bytesPerSample * 8) - validBits;        // alinea en el contenedor (24→32)
+    const size_t nvals = frames * (size_t)ch;
+    for (size_t i = 0; i < nvals; i++) {
+        double s = (double)in[i] * full;
+        if (dither) s += dither_rand() - dither_rand();        // TPDF: ±1 LSB triangular
+        long long v = (long long)llround(s);
+        if (v > maxv) v = maxv; else if (v < minv) v = minv;
+        v <<= shift;
+        BYTE* d = out + i * (size_t)bytesPerSample;
+        for (int b = 0; b < bytesPerSample; b++) d[b] = (BYTE)((v >> (8 * b)) & 0xFF);   // little-endian
+    }
+}
+
+// ── autoprueba numérica (sin hardware de audio): mide el resampler y el dither ──
+static double goertzel_amp(const float* x, size_t n, double freq, double fs) {
+    double w = 2.0 * M_PI * freq / fs, c = 2.0 * cos(w), s1 = 0, s2 = 0;
+    for (size_t i = 0; i < n; i++) { double s0 = x[i] + c * s1 - s2; s2 = s1; s1 = s0; }
+    double re = s1 - s2 * cos(w), im = s2 * sin(w);
+    return 2.0 * sqrt(re * re + im * im) / (double)n;          // ≈ amplitud del tono
+}
+static std::vector<float> resample_tone(unsigned in, unsigned out, double hz, double amp) {
+    std::vector<float> x(in);                                  // 1 s de entrada mono
+    for (size_t i = 0; i < in; i++) x[i] = (float)(amp * sin(2.0 * M_PI * hz * i / in));
+    if (in == out) return x;
+    Resampler rs(1, in, out, RS_TAPS, RS_BETA);
+    std::vector<float> y; y.reserve(out + 64);
+    std::vector<float> tmp(4096);
+    size_t pos = 0;
+    while (pos < x.size() || !rs.empty()) {
+        if (pos < x.size()) { size_t blk = x.size() - pos < 4096 ? x.size() - pos : 4096; rs.push(&x[pos], blk); pos += blk; }
+        for (;;) { size_t g = rs.pull(tmp.data(), tmp.size()); if (!g) break; y.insert(y.end(), tmp.begin(), tmp.begin() + g); }
+        if (pos >= x.size() && rs.empty()) break;
+    }
+    return y;
+}
+static double rms_of(const std::vector<float>& v, size_t off, size_t len) {
+    double s = 0; for (size_t i = 0; i < len; i++) s += (double)v[off + i] * v[off + i];
+    return sqrt(s / (len ? len : 1));
+}
+static int selftest() {
+    std::string out = "{\"event\":\"selftest\",\"taps\":" + std::to_string(RS_TAPS) +
+                      ",\"beta\":" + std::to_string(RS_BETA) + ",\"resampler\":[";
+    struct Pair { unsigned in, out; } pairs[] = { {44100,48000}, {48000,44100}, {96000,48000}, {88200,44100}, {44100,44100} };
+    bool first = true;
+    for (auto& pr : pairs) {
+        // planitud de la banda de paso: ganancia a 1 kHz y a 19 kHz (debe ser ≈ 0 dB)
+        auto gain_at = [&](double hz) {
+            std::vector<float> y = resample_tone(pr.in, pr.out, hz, 0.5);
+            size_t off = y.size() / 4, len = y.size() / 2; if (len < 2048) { off = 0; len = y.size(); }
+            return 20.0 * log10(goertzel_amp(&y[off], len, hz, pr.out) / 0.5 + 1e-20);
+        };
+        double pass1k = gain_at(1000.0), pass19k = gain_at(19000.0);
+        // rechazo (solo bajada): tono por encima de la Nyquist de salida → debe aliasar poco
+        double rejDb = 0; bool hasRej = pr.in > pr.out;
+        if (hasRej) {
+            double outNyq = pr.out / 2.0, inNyq = pr.in / 2.0, rej = (outNyq + inNyq) / 2.0;
+            std::vector<float> yr = resample_tone(pr.in, pr.out, rej, 0.5);
+            size_t o2 = yr.size() / 4, l2 = yr.size() / 2; if (l2 < 2048) { o2 = 0; l2 = yr.size(); }
+            rejDb = 20.0 * log10(rms_of(yr, o2, l2) / (0.5 / sqrt(2.0)) + 1e-20);
+        }
+        char b[320];
+        sprintf_s(b, "%s{\"in\":%u,\"out\":%u,\"passGainDb@1k\":%.3f,\"passGainDb@19k\":%.3f,%s}",
+                  first ? "" : ",", pr.in, pr.out, pass1k, pass19k,
+                  hasRej ? (std::string("\"aliasDb\":") + std::to_string(rejDb)).c_str() : "\"aliasDb\":null");
+        out += b; first = false;
+    }
+    out += "],\"dither\":";
+    {   // cuantiza un tono bajo (−60 dBFS) a 16 bits: truncado vs TPDF (DC del error de cuantización)
+        const size_t N = 48000; std::vector<float> x(N); double f = 997, amp = 0.001;
+        for (size_t i = 0; i < N; i++) x[i] = (float)(amp * sin(2.0 * M_PI * f * i / 48000.0));
+        std::vector<BYTE> q(N * 2); std::vector<float> back(N);
+        auto decode16 = [&]() { for (size_t i = 0; i < N; i++) { short s = (short)((unsigned short)q[i * 2] | ((unsigned short)q[i * 2 + 1] << 8)); back[i] = s / 32768.0f; } };
+        float_to_int(x.data(), q.data(), N, 1, 2, 16, false); decode16();
+        double dcT = 0; for (size_t i = 0; i < N; i++) dcT += back[i] - x[i]; dcT /= N;
+        float_to_int(x.data(), q.data(), N, 1, 2, 16, true); decode16();
+        double dcD = 0; for (size_t i = 0; i < N; i++) dcD += back[i] - x[i]; dcD /= N;
+        char b[200]; sprintf_s(b, "{\"truncErrDC\":%.3e,\"ditherErrDC\":%.3e}", dcT, dcD);
+        out += b;
+    }
+    out += "}";
+    emit(out);
+    return 0;
+}
+
 static DWORD WINAPI stdin_reader(LPVOID) {
     const size_t CH = 1 << 15; // 32 KiB
     std::vector<char> tmp(CH);
@@ -312,6 +506,7 @@ static DWORD WINAPI control_reader(LPVOID) {
             if (g) { g++; EnterCriticalSection(&g_eqCs); for (int k = 0; k < 7; k++) { char* end; double v = strtod(g, &end); if (end == g) break; g_eqGainReq[k] = (float)v; g = end; while (*g == ',' || *g == ' ') g++; } LeaveCriticalSection(&g_eqCs); }
             g_eqDirty = 1;
         }
+        else if (strstr(line, "\"inrate\"")) { const char* v = strstr(line, "\"v\""); if (v) { v = strchr(v, ':'); if (v) { g_inRateReq = atol(v + 1); g_inRateDirty = 1; } } }
         else if (strstr(line, "\"pause\""))  g_paused = 1;
         else if (strstr(line, "\"resume\"")) g_paused = 0;
         else if (strstr(line, "\"flush\""))  { if (g_ring) g_ring->clear(); }
@@ -351,7 +546,7 @@ static void make_float_format(WAVEFORMATEXTENSIBLE& wf, unsigned rate, unsigned 
 }
 
 static int play_stream(unsigned reqRate, unsigned reqCh, bool exclusive,
-                       float gain, const std::string& deviceId, bool liveControl) {
+                       float gain, const std::string& deviceId, bool liveControl, unsigned inRate) {
     IMMDeviceEnumerator* en = nullptr;
     HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
                                   CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),
@@ -415,7 +610,7 @@ static int play_stream(unsigned reqRate, unsigned reqCh, bool exclusive,
         outIsFloat = (wfx->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
     }
     if (!outIsFloat)
-        emit("{\"event\":\"notice\",\"message\":\"el dispositivo no usa float32 nativo; conversión no implementada en el esqueleto\"}");
+        emit("{\"event\":\"notice\",\"message\":\"el dispositivo usa PCM entero; se cuantiza float→entero con dither TPDF\"}");
 
     REFERENCE_TIME dur = REFTIMES_PER_SEC / 10; // ~100 ms
     DWORD flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
@@ -447,13 +642,37 @@ static int play_stream(unsigned reqRate, unsigned reqCh, bool exclusive,
 
     const WORD frameBytes = useFmt->nBlockAlign;
     const WORD channels = useFmt->nChannels;
+    const int  chn = (int)channels;
     const bool canGain = !bitPerfect && outIsFloat;   // en bit-perfect la muestra sale intacta
 
+    // Si el dispositivo no es float (p. ej. exclusivo entero), cuantizamos con dither TPDF.
+    int intBytes = 0, intValid = 0;                    // 0 = salida float (sin cuantizar)
+    if (!outIsFloat) {
+        intBytes = frameBytes / (channels ? channels : 1);
+        intValid = useFmt->wBitsPerSample;
+        if (useFmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
+            WAVEFORMATEXTENSIBLE* wfx = (WAVEFORMATEXTENSIBLE*)useFmt;
+            if (wfx->Samples.wValidBitsPerSample) intValid = wfx->Samples.wValidBitsPerSample;
+        }
+    }
+    const bool ditherOut = (intBytes > 0);
+
+    // Nodo de resample: igualamos la entrada a la tasa de salida para que WASAPI no remuestree.
+    const unsigned outRate = useFmt->nSamplesPerSec;
+    Resampler* rs = (inRate && inRate != outRate && outIsFloat)
+                        ? new Resampler(chn, inRate, outRate, RS_TAPS, RS_BETA) : nullptr;
+
     // formato de salida resuelto
+    const char* outFmt = outIsFloat ? "f32" : (intBytes == 2 ? "s16" : intBytes == 3 ? "s24" : "s32");
     emit("{\"event\":\"started\",\"device\":\"" + json_escape(devName) +
          "\",\"mode\":\"" + (exclusive && bitPerfect ? "exclusive" : "shared") +
          "\",\"bitPerfect\":" + (bitPerfect ? "true" : "false") +
-         ",\"rate\":" + std::to_string(useFmt->nSamplesPerSec) +
+         ",\"rate\":" + std::to_string(outRate) +
+         ",\"inRate\":" + std::to_string(inRate ? inRate : outRate) +
+         ",\"resampling\":" + (rs ? "true" : "false") +
+         ",\"taps\":" + std::to_string(rs ? RS_TAPS : 0) +
+         ",\"outFormat\":\"" + outFmt + "\"" +
+         ",\"dither\":" + (ditherOut ? "true" : "false") +
          ",\"channels\":" + std::to_string(channels) +
          ",\"bufferFrames\":" + std::to_string(bufFrames) +
          ",\"live\":" + (liveControl ? "true" : "false") +
@@ -466,17 +685,51 @@ static int play_stream(unsigned reqRate, unsigned reqCh, bool exclusive,
     ac->Start();
 
     unsigned long long totalFrames = 0;
-    std::vector<char> scratch;
+    std::vector<float> fbuf;                            // salida en float (tras resample + DSP)
+    std::vector<char>  inbytes;                         // bytes crudos leídos del anillo
     Biquad eq[8][7];
-    const int eqCh = (channels <= 8) ? channels : 0;   // EQ hasta 8 canales
+    const int eqCh = (channels <= 8) ? channels : 0;    // EQ hasta 8 canales
+
+    // Rellena `want` frames de SALIDA en dst (float). Con resampler tira de él y lo realimenta
+    // desde el anillo (a tasa de entrada); sin él copia directo del anillo. Devuelve frames.
+    auto produce = [&](float* dst, UINT32 want) -> UINT32 {
+        if (!rs) {
+            size_t wantB = (size_t)want * chn * sizeof(float);
+            if (inbytes.size() < wantB) inbytes.resize(wantB);
+            size_t got = g_ring->read(inbytes.data(), wantB);
+            UINT32 gf = (UINT32)(got / (chn * sizeof(float)));
+            if (gf) memcpy(dst, inbytes.data(), (size_t)gf * chn * sizeof(float));
+            return gf;
+        }
+        UINT32 done = 0;
+        while (done < want) {
+            done += (UINT32)rs->pull(dst + (size_t)done * chn, want - done);
+            if (done >= want) break;
+            size_t need = (size_t)((double)(want - done) * rs->M / rs->L) + (size_t)RS_TAPS + 2;
+            size_t wantB = need * chn * sizeof(float);
+            if (inbytes.size() < wantB) inbytes.resize(wantB);
+            size_t got = g_ring->read(inbytes.data(), wantB);
+            size_t gf = got / (chn * sizeof(float));
+            if (gf) rs->push((const float*)inbytes.data(), gf);
+            else break;                                 // anillo vacío (EOF o underrun)
+        }
+        return done;
+    };
+
     bool running = true;
     while (running) {
         if (liveControl && g_stop) break;
         DWORD w = WaitForSingleObject(hEvent, 200);
         if (w != WAIT_OBJECT_0) {
-            // timeout: en modo stdin, si el stream terminó y el anillo está vacío, salimos
-            if (!liveControl && g_ring->isDrained()) break;
+            // timeout: en modo stdin, si el stream terminó y todo está vaciado, salimos
+            if (!liveControl && g_ring->isDrained() && (!rs || rs->empty())) break;
             continue;
+        }
+        // cambio de tasa de entrada en vivo (nueva pista con otro sample rate): reconstruye el nodo
+        if (liveControl && InterlockedExchange(&g_inRateDirty, 0)) {
+            unsigned ni = (unsigned)g_inRateReq;
+            if (rs) { delete rs; rs = nullptr; }
+            if (ni && ni != outRate && outIsFloat) rs = new Resampler(chn, ni, outRate, RS_TAPS, RS_BETA);
         }
         UINT32 padding = 0;
         if (!HR_OK(ac->GetCurrentPadding(&padding))) break;
@@ -492,31 +745,30 @@ static int play_stream(unsigned reqRate, unsigned reqCh, bool exclusive,
             continue;
         }
 
-        size_t wantBytes = (size_t)avail * frameBytes;
-        if (scratch.size() < wantBytes) scratch.resize(wantBytes);
-        size_t got = g_ring->read(scratch.data(), wantBytes);
+        if (fbuf.size() < (size_t)avail * chn) fbuf.resize((size_t)avail * chn);
+        UINT32 gotFrames = produce(fbuf.data(), avail);
 
-        UINT32 gotFrames = (UINT32)(got / frameBytes);   // frames completos disponibles
         if (gotFrames > 0) {
-            memcpy(out, scratch.data(), (size_t)gotFrames * frameBytes);
+            float* f = fbuf.data();
             const float gnow = liveControl ? g_gainLive : gain;
             const bool doGain = canGain && gnow != 1.0f;
             const bool doEq = canGain && g_eqOn && eqCh > 0;
             if (doEq && InterlockedExchange(&g_eqDirty, 0)) {       // recalcula coeficientes al cambiar
                 EnterCriticalSection(&g_eqCs);
-                for (int c = 0; c < eqCh; c++) for (int bnd = 0; bnd < 7; bnd++) eq_coeffs(eq[c][bnd], bnd, g_eqGainReq[bnd], (double)useFmt->nSamplesPerSec);
+                for (int c = 0; c < eqCh; c++) for (int bnd = 0; bnd < 7; bnd++) eq_coeffs(eq[c][bnd], bnd, g_eqGainReq[bnd], (double)outRate);
                 LeaveCriticalSection(&g_eqCs);
             }
             if (doGain || doEq) {                                   // ganancia (RG×vol) primero, luego EQ
-                float* f = (float*)out;
                 for (UINT32 i = 0; i < gotFrames; i++)
-                    for (int c = 0; c < (int)channels; c++) {
-                        float s = f[i * channels + c];
+                    for (int c = 0; c < chn; c++) {
+                        float s = f[i * chn + c];
                         if (doGain) s *= gnow;
                         if (doEq) for (int bnd = 0; bnd < 7; bnd++) s = eq[c][bnd].process(s);
-                        f[i * channels + c] = s;
+                        f[i * chn + c] = s;
                     }
             }
+            if (ditherOut) float_to_int(f, out, gotFrames, chn, intBytes, intValid, true);
+            else memcpy(out, f, (size_t)gotFrames * frameBytes);
         }
         // silencio en el resto si hubo underrun / fin de stream (en live esperamos más PCM)
         if (gotFrames < avail)
@@ -524,8 +776,9 @@ static int play_stream(unsigned reqRate, unsigned reqCh, bool exclusive,
         rc->ReleaseBuffer(avail, 0);
         totalFrames += gotFrames;
 
-        if (!liveControl && gotFrames == 0 && g_ring->isDrained()) running = false;
+        if (!liveControl && gotFrames == 0 && g_ring->isDrained() && (!rs || rs->empty())) running = false;
     }
+    if (rs) { delete rs; rs = nullptr; }
 
     // drenar el buffer del dispositivo antes de parar
     Sleep((DWORD)(dur / (REFTIMES_PER_SEC / 1000)) + 50);
@@ -548,8 +801,8 @@ static int play_stream(unsigned reqRate, unsigned reqCh, bool exclusive,
 // --------------------------------------------------------------------------
 
 int main(int argc, char** argv) {
-    bool doList = false, doPlay = false, exclusive = false;
-    unsigned rate = 44100, channels = 2;
+    bool doList = false, doPlay = false, doSelftest = false, exclusive = false;
+    unsigned rate = 44100, channels = 2, inRate = 0;
     float gain = 1.0f;
     std::string deviceId;
 
@@ -557,13 +810,18 @@ int main(int argc, char** argv) {
         std::string a = argv[i];
         if (a == "--list-devices") doList = true;
         else if (a == "--play") doPlay = true;
+        else if (a == "--selftest") doSelftest = true;
         else if (a == "--exclusive") exclusive = true;
         else if (a == "--rate" && i + 1 < argc) rate = (unsigned)atoi(argv[++i]);
+        else if (a == "--in-rate" && i + 1 < argc) inRate = (unsigned)atoi(argv[++i]);
         else if (a == "--channels" && i + 1 < argc) channels = (unsigned)atoi(argv[++i]);
         else if (a == "--gain" && i + 1 < argc) gain = (float)atof(argv[++i]);
+        else if (a == "--rs-taps" && i + 1 < argc) { int t = atoi(argv[++i]); if (t >= 4 && t <= 256) RS_TAPS = t; }
         else if (a == "--device-id" && i + 1 < argc) deviceId = argv[++i];
         else if (a == "--pcm-pipe" && i + 1 < argc) g_pcmPipe = utf8_to_wide(argv[++i]);
     }
+
+    if (doSelftest) return selftest();   // autoprueba numérica: no necesita COM ni dispositivo
 
     InitializeCriticalSection(&g_eqCs);
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -585,7 +843,7 @@ int main(int argc, char** argv) {
             _setmode(_fileno(stdin), _O_BINARY);  // PCM crudo por stdin
             hReader = CreateThread(nullptr, 0, stdin_reader, nullptr, 0, nullptr);
         }
-        rc = play_stream(rate, channels, exclusive, gain, deviceId, live);
+        rc = play_stream(rate, channels, exclusive, gain, deviceId, live, inRate);
         g_stop = 1; ring.cancel();
         if (hReader) { WaitForSingleObject(hReader, 1000); CloseHandle(hReader); }
         if (hCtl) { WaitForSingleObject(hCtl, 200); CloseHandle(hCtl); }

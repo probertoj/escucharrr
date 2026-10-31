@@ -7,7 +7,9 @@
 // volumen o pausar es inmediato (no se relanza ffmpeg ni se reinicia la salida),
 // y un seek solo descarta el buffer (flush) y reposiciona ffmpeg sobre el mismo
 // pipe, sin cortar el dispositivo. La DECODIFICACIÓN la pone ffmpeg (ranura de
-// decoder; libFLAC/dr_flac en el futuro) y el TRANSPORTE lo lleva este bridge.
+// decoder; libFLAC/dr_flac en el futuro) a la tasa NATIVA del fichero, y el
+// RESAMPLE lo hace el motor (nodo DSP sinc Kaiser) igualándola a la del dispositivo,
+// para que WASAPI no vuelva a remuestrear. El TRANSPORTE lo lleva este bridge.
 //
 // Cambiar de dispositivo/exclusivo sí reinicia el motor (el formato de salida es
 // fijo por sesión WASAPI); el cambio de pista también arranca un motor nuevo.
@@ -49,7 +51,7 @@ class NativePlayer extends EventEmitter {
       playing: false, paused: false, file: null, deviceId: null,
       exclusive: false, gainDb: 0, baseOffset: 0, startedAt: 0,
       device: null, mode: null, bitPerfect: false, live: false, durationSec: 0,
-      rate: 0, channels: 2,
+      rate: 0, channels: 2, inRate: 0, resampling: false, outFormat: null, taps: 0,
     };
   }
 
@@ -136,8 +138,9 @@ class NativePlayer extends EventEmitter {
     if (opts.eq) this._eq = { on: !!opts.eq.on, gains: (opts.eq.gains || this._eq.gains).slice(0, 7) };
 
     const probe = this._probe(file);               // rate/canales nativos + duración
-    let rate = 48000, ch = 2;
-    if (exclusive) { rate = probe.rate; ch = probe.channels; }
+    const inRate = probe.rate || 48000;            // tasa NATIVA del fichero (ffmpeg solo decodifica a ella)
+    let rate = 48000, ch = 2;                       // `rate` = tasa de SALIDA (dispositivo); el motor resamplea inRate→rate
+    if (exclusive) { rate = probe.rate; ch = probe.channels; }   // bit-perfect: salida == nativa (sin resample)
     else {
       try { const devs = await this.listDevices(); const dev = deviceId ? devs.find(d => d.id === deviceId) : devs.find(d => d.default); if (dev) { rate = dev.rate || 48000; ch = dev.channels || 2; } }
       catch { rate = 48000; }
@@ -150,10 +153,11 @@ class NativePlayer extends EventEmitter {
       this._ffExpectEnd = true;
       if (this._ff) { try { if (this._sock) this._ff.stdout.unpipe(this._sock); this._ff.kill(); } catch {} }
       this._writeCtl({ cmd: 'flush' });
+      if (inRate !== this._state.inRate) this._writeCtl({ cmd: 'inrate', v: inRate });   // nueva pista con otra tasa: reconfigura el resampler
       if (opts.eq) this._sendEq();
       this._writeCtl({ cmd: 'gain', v: dbToLinear(gainDb) });   // ReplayGain de la nueva pista, en vivo
-      this._ff = this._spawnFfmpeg(file, offset, rate, ch);
-      Object.assign(this._state, { playing: true, paused: false, file, gainDb, baseOffset: offset, startedAt: Date.now(), durationSec: probe.duration || 0 });
+      this._ff = this._spawnFfmpeg(file, offset, inRate, ch);
+      Object.assign(this._state, { playing: true, paused: false, file, gainDb, baseOffset: offset, startedAt: Date.now(), durationSec: probe.duration || 0, inRate, resampling: inRate !== rate });
       clearTimeout(this._endTimer); this._scheduleEnd();
       this.emit('state', this.state);
       return this.state;
@@ -169,22 +173,22 @@ class NativePlayer extends EventEmitter {
     });
     await new Promise((res, rej) => { this._server.once('error', rej); this._server.listen(pipePath, res); });
 
-    const engArgs = ['--play', '--rate', String(rate), '--channels', String(ch), '--pcm-pipe', pipePath];
+    const engArgs = ['--play', '--rate', String(rate), '--in-rate', String(inRate), '--channels', String(ch), '--pcm-pipe', pipePath];
     if (exclusive) engArgs.push('--exclusive'); else engArgs.push('--gain', String(dbToLinear(gainDb)));
     if (deviceId) engArgs.push('--device-id', deviceId);
     const eng = spawn(ENGINE, engArgs, { windowsHide: true });
     eng.on('error', e => this.emit('error', e));
     eng.stdin.on('error', () => {});
     lineReader(eng.stdout, o => {
-      if (o.event === 'started') { Object.assign(this._state, { device: o.device, mode: o.mode, bitPerfect: o.bitPerfect, live: o.live }); this._sendEq(); }
+      if (o.event === 'started') { Object.assign(this._state, { device: o.device, mode: o.mode, bitPerfect: o.bitPerfect, live: o.live, resampling: !!o.resampling, outFormat: o.outFormat || null, taps: o.taps || 0, inRate: o.inRate || inRate }); this._sendEq(); }
       else if (o.event === 'error' || o.event === 'notice') this.emit('engine', o);
     });
     eng.on('close', () => { if (this._eng === eng) { this._state.playing = false; this._state.live = false; } });
 
     this._eng = eng;
     this._ffExpectEnd = false;
-    this._ff = this._spawnFfmpeg(file, offset, rate, ch);
-    Object.assign(this._state, { playing: true, paused: false, file, deviceId, exclusive, gainDb, baseOffset: offset, startedAt: Date.now(), rate, channels: ch, durationSec: probe.duration || 0 });
+    this._ff = this._spawnFfmpeg(file, offset, inRate, ch);
+    Object.assign(this._state, { playing: true, paused: false, file, deviceId, exclusive, gainDb, baseOffset: offset, startedAt: Date.now(), rate, channels: ch, inRate, resampling: inRate !== rate, durationSec: probe.duration || 0 });
     this._scheduleEnd();
     this.emit('state', this.state);
     return this.state;
@@ -219,7 +223,7 @@ class NativePlayer extends EventEmitter {
     this._ffExpectEnd = true;
     if (this._ff) { try { if (this._sock) this._ff.stdout.unpipe(this._sock); this._ff.kill(); } catch {} }
     this._writeCtl({ cmd: 'flush' });
-    this._ff = this._spawnFfmpeg(s.file, sec, s.rate, s.channels);
+    this._ff = this._spawnFfmpeg(s.file, sec, s.inRate || s.rate, s.channels);
     s.baseOffset = sec; s.startedAt = Date.now(); s.paused = false; s.playing = true;
     this._scheduleEnd();
     this.emit('state', this.state);
