@@ -114,6 +114,15 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     (aplica ReplayGain × volumen; si el binario no está compilado, lo avisa sin romper nada). El **player** tiene
     un conmutador "Motor nativo (este equipo)" en el panel 🔈 que enruta el transporte a esas rutas, con selector
     de dispositivo y casilla **exclusivo (bit-perfect)**; el cambio de modo hace handoff en la posición actual.
+  - `upnp.js` — **salida de red UPnP/DLNA** (sin dependencias: `node:dgram` + `node:http`). Descubre MediaRenderers
+    por **SSDP**, lee su `description.xml` y controla **AVTransport** (`SetAVTransportURI` + Play/Pause/Stop/Seek,
+    `SetNextAVTransportURI` = gapless) y **RenderingControl** (volumen). El dispositivo (p. ej. un **Eversolo**)
+    **descarga** la música de `/api/stream` (que ya hace Range), así que no se reencodea nada: FLAC/WAV van tal
+    cual con metadatos DIDL-Lite y carátula. El servidor expone `/api/upnp/{devices,state,play,pause,resume,stop,
+    seek,volume}` (construye la URL con la **IP de la LAN** que ve el aparato); el **player** lista los renderers
+    en el panel 🔈 bajo "Salida de red" y enruta el transporte allí. Es la vía ABIERTA a dispositivos "Roon Ready"
+    (RAAT es cerrado/certificado, no replicable — ver `docs/dispositivos-de-red-y-roon.md`). Nota: en red el
+    ReplayGain y el EQ no se aplican (el aparato reproduce el fichero y gestiona su volumen).
 
 Todo usa `node:sqlite` (Node ≥ 22.5 / 24), **sin paquetes externos**. El motor nativo añade, solo para la
 salida local nativa, **MSVC + Windows SDK** (compilación) y **ffmpeg** en el PATH (decodificación); la app web

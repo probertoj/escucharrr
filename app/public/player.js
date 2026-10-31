@@ -18,7 +18,7 @@ window.player = (function () {
   let vol = 1; try { const v = parseFloat(localStorage.getItem(VKEY)); if (v >= 0 && v <= 1) vol = v; } catch (e) {}
   try { const s = JSON.parse(localStorage.getItem(KEY)); if (s) { q = s.q || []; idx = (s.idx == null ? -1 : s.idx); } } catch (e) {}
   // zona de salida: nombre + dispositivo (base para multi-sala al estilo Roon; hoy = salida de este equipo)
-  let zone = { name: 'Este equipo', deviceId: '', label: '', native: false, nativeDeviceId: '', nativeExclusive: false };
+  let zone = { name: 'Este equipo', deviceId: '', label: '', native: false, nativeDeviceId: '', nativeExclusive: false, upnp: false, upnpDeviceId: '', upnpName: '' };
   try { const z = JSON.parse(localStorage.getItem(ZKEY)); if (z && typeof z === 'object') zone = Object.assign(zone, z); } catch (e) {}
   const persistZone = () => { try { localStorage.setItem(ZKEY, JSON.stringify(zone)); } catch (e) {} };
   // ── motor nativo (salida WASAPI del servidor, fuera del navegador) ──
@@ -26,6 +26,9 @@ window.player = (function () {
   // y los decks se silencian para no duplicar el sonido. La posición se sondea del servidor.
   let nativeMode = !!zone.native, nativeDeviceId = zone.nativeDeviceId || '', nativeExclusive = !!zone.nativeExclusive;
   let nativePos = 0, nativeBusy = false, nativeMiss = 0, nativePollTimer = null, nativeVolTimer = null, nativeEqTimer = null, nativeStartedIdx = -1;
+  // ── salida de RED (UPnP/DLNA, p. ej. Eversolo): otra zona-servidor; el servidor controla el renderer ──
+  let upnpMode = !!zone.upnp, upnpDeviceId = zone.upnpDeviceId || '', upnpDevName = zone.upnpName || '';
+  let upnpPos = 0, upnpBusy = false, upnpMiss = 0, upnpPollTimer = null, upnpVolTimer = null, upnpStartedIdx = -1;
   // ecualizador + crossfade (persistentes)
   let eqOn = false, eqGains = [0, 0, 0, 0, 0, 0, 0];
   try { const e = JSON.parse(localStorage.getItem(EQKEY)); if (e) { eqOn = !!e.on; if (Array.isArray(e.g) && e.g.length === 7) eqGains = e.g.map(Number); } } catch (e) {}
@@ -89,7 +92,7 @@ window.player = (function () {
   const mmss = ms => { ms = ms || 0; if (!isFinite(ms)) ms = 0; return Math.floor(ms / 60000) + ':' + String(Math.floor(ms % 60000 / 1000)).padStart(2, '0'); };
   const loadedCur = () => active().trackIdx === idx;
   const lenMs = () => { const c = cur(); if (nativeMode) return (c && c.length_ms) || 0; const d = active().el.duration; return (loadedCur() && isFinite(d) && d > 0) ? d * 1000 : (c && c.length_ms) || 0; };
-  const posMs = () => nativeMode ? nativePos * 1000 : (loadedCur() ? active().el.currentTime * 1000 : 0);
+  const posMs = () => nativeMode ? nativePos * 1000 : upnpMode ? upnpPos * 1000 : (loadedCur() ? active().el.currentTime * 1000 : 0);
   function cover(id, s) { return `<img src="/api/cover?rg=${id || 0}" alt="" draggable="false" style="width:${s}px;height:${s}px;object-fit:cover;border-radius:7px;display:block">`; }
   function logPlay() { const c = cur(); if (c && c.trackId && loggedIdx !== idx) { loggedIdx = idx; fetch('/api/play', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ track_id: c.trackId, zone: zone.name }) }).catch(() => {}); } }
   const spost = (p, b) => fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).catch(() => {});
@@ -213,6 +216,7 @@ window.player = (function () {
   function setNativeMode(on) {
     on = !!on; if (on === nativeMode) return;
     const wasPlaying = playing, posSec = posMs() / 1000;
+    if (upnpMode) { upnpStop(); upnpMode = false; zone.upnp = false; }   // zonas mutuamente excluyentes
     if (nativeMode) nativeStop(); else { cancelFade(); decks.forEach(d => d.el.pause()); }
     nativeMode = on; zone.native = on; persistZone(); updateZoneBtn();
     if (cur() && wasPlaying) { if (on) nativePlay(idx, { seekSec: posSec }); else start(idx, posSec); }
@@ -222,8 +226,60 @@ window.player = (function () {
   function setNativeDevice(id) { nativeDeviceId = id || ''; zone.nativeDeviceId = nativeDeviceId; persistZone(); if (nativeMode && playing) nativePlay(idx, { seekSec: nativePos }); renderZPanel(); }
   function setNativeExclusive(on) { nativeExclusive = !!on; zone.nativeExclusive = nativeExclusive; persistZone(); if (nativeMode && playing) nativePlay(idx, { seekSec: nativePos }); renderZPanel(); }
 
+  // ── transporte por la salida de RED (UPnP/DLNA): el servidor manda al renderer (Eversolo…) ──
+  function ujson(path, body) { return fetch('/api/upnp/' + path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}).then(r => r.json()); }
+  function startUpnpPoll() { stopUpnpPoll(); upnpPollTimer = setInterval(pollUpnp, 900); }
+  function stopUpnpPoll() { if (upnpPollTimer) { clearInterval(upnpPollTimer); upnpPollTimer = null; } }
+  function pollUpnp() {
+    ujson('state').then(j => {
+      if (!j || !j.ok || !j.state) return;
+      upnpPos = j.state.positionSec || 0;
+      if (j.state.playing) upnpMiss = 0;
+      else if (playing && !upnpBusy && ++upnpMiss >= 2) { upnpMiss = 0; onUpnpEnded(); return; }
+      progress();
+    }).catch(() => {});
+  }
+  function onUpnpEnded() { if (idx < q.length - 1) upnpPlay(idx + 1); else if (radioOn) maybeRadio(); else { playing = false; stopUpnpPoll(); render(); } }
+  function upnpPlay(i, opts) {
+    idx = i; save(); const c = cur(); if (!c) return;
+    if (c.playable === false) { playing = false; upnpStartedIdx = -1; render(); return; }
+    upnpBusy = true; playing = true; loggedIdx = idx; upnpMiss = 0; upnpStartedIdx = idx; upnpPos = (opts && opts.seekSec) || 0; trackStarted(); render();
+    const body = { track_id: c.trackId, deviceId: upnpDeviceId || null, zone: upnpDevName || zone.name };
+    if (opts && opts.seekSec) body.seekSec = opts.seekSec;
+    ujson('play', body).then(j => {
+      upnpBusy = false;
+      if (!j || !j.ok) { playing = false; upnpStartedIdx = -1; render(); if (j && j.error) console.warn('[upnp]', j.error); return; }
+      startUpnpPoll();
+    }).catch(() => { upnpBusy = false; playing = false; render(); });
+  }
+  function upnpToggle() {
+    const c = cur(); if (!c || c.playable === false) return;
+    if (playing) { upnpBusy = true; playing = false; render(); ujson('pause', {}).then(() => { upnpBusy = false; stopUpnpPoll(); }); }
+    else if (upnpStartedIdx === idx) { upnpBusy = true; playing = true; render(); ujson('resume', {}).then(() => { upnpBusy = false; startUpnpPoll(); }); }
+    else upnpPlay(idx);
+  }
+  function upnpSeek(f) { const c = cur(); if (!c) return; const lenS = (c.length_ms || 0) / 1000; if (!lenS) return; const sec = Math.max(0, Math.min(1, f)) * lenS; upnpPos = sec; upnpBusy = true; ujson('seek', { sec }).then(() => upnpBusy = false); }
+  function upnpStop() { playing = false; upnpStartedIdx = -1; stopUpnpPoll(); ujson('stop', {}).catch(() => {}); }
+  function upnpVolumeApply() { clearTimeout(upnpVolTimer); upnpVolTimer = setTimeout(() => { ujson('volume', { v: vol }).catch(() => {}); }, 300); }
+  function setUpnpMode(on, deviceId, name) {
+    on = !!on;
+    if (deviceId !== undefined) { upnpDeviceId = deviceId || ''; zone.upnpDeviceId = upnpDeviceId; }
+    if (name) { upnpDevName = name; zone.upnpName = name; }
+    const deviceChange = on && upnpMode && deviceId !== undefined;
+    if (on === upnpMode && !deviceChange) return;
+    const wasNative = nativeMode, wasUpnp = upnpMode, wasPlaying = playing, posSec = posMs() / 1000;
+    if (wasNative) { nativeStop(); nativeMode = false; zone.native = false; }
+    if (wasUpnp) upnpStop();
+    if (!wasNative && !wasUpnp && on) { cancelFade(); decks.forEach(d => d.el.pause()); }   // venía del navegador
+    upnpMode = on; zone.upnp = on; persistZone(); updateZoneBtn();
+    if (cur() && wasPlaying) { if (on) upnpPlay(idx, { seekSec: posSec }); else start(idx, posSec); }
+    else render();
+    if (zpanel && zpanel.style.display === 'block') renderZPanel();
+  }
+
   function start(i, atSec) {
     if (nativeMode) return nativePlay(i);
+    if (upnpMode) return upnpPlay(i, atSec ? { seekSec: atSec } : undefined);
     cancelFade();
     idx = i; save(); const c = cur(); if (!c) return;
     const d = active();
@@ -240,11 +296,11 @@ window.player = (function () {
     render();
   }
   function onEnded() { if (fading) return; next(); }
-  function next() { if (nativeMode) { if (idx < q.length - 1) nativePlay(idx + 1); else if (radioOn) maybeRadio(); else { playing = false; stopNativePoll(); render(); } return; } if (idx < q.length - 1) start(idx + 1); else if (radioOn) maybeRadio(); else { playing = false; active().el.pause(); render(); } }
-  function prev() { if (nativeMode) { if (nativePos > 3 || idx <= 0) nativePlay(idx, { seekSec: 0 }); else nativePlay(idx - 1); return; } const d = active(); if (d.trackIdx === idx && d.el.currentTime > 3) { d.el.currentTime = 0; } else if (idx > 0) start(idx - 1); else d.el.currentTime = 0; }
-  function toggle() { if (nativeMode) return nativeToggle(); const c = cur(); if (!c || c.playable === false) return; const d = active(); if (d.trackIdx !== idx) return start(idx); if (d.el.paused) { ensureGraph(); if (ctx && ctx.state === 'suspended') ctx.resume(); d.el.play().catch(() => {}); } else d.el.pause(); }
-  function seekFrac(f) { if (nativeMode) return nativeSeek(f); const len = lenMs(); if (loadedCur() && len) active().el.currentTime = Math.max(0, Math.min(1, f)) * len / 1000; }
-  function setVol(v) { vol = Math.max(0, Math.min(1, v)); applyVol(); if (nativeMode) nativeVolumeApply(); render(); }
+  function next() { if (nativeMode) { if (idx < q.length - 1) nativePlay(idx + 1); else if (radioOn) maybeRadio(); else { playing = false; stopNativePoll(); render(); } return; } if (upnpMode) { if (idx < q.length - 1) upnpPlay(idx + 1); else if (radioOn) maybeRadio(); else { playing = false; stopUpnpPoll(); render(); } return; } if (idx < q.length - 1) start(idx + 1); else if (radioOn) maybeRadio(); else { playing = false; active().el.pause(); render(); } }
+  function prev() { if (nativeMode) { if (nativePos > 3 || idx <= 0) nativePlay(idx, { seekSec: 0 }); else nativePlay(idx - 1); return; } if (upnpMode) { if (upnpPos > 3 || idx <= 0) upnpPlay(idx, { seekSec: 0 }); else upnpPlay(idx - 1); return; } const d = active(); if (d.trackIdx === idx && d.el.currentTime > 3) { d.el.currentTime = 0; } else if (idx > 0) start(idx - 1); else d.el.currentTime = 0; }
+  function toggle() { if (nativeMode) return nativeToggle(); if (upnpMode) return upnpToggle(); const c = cur(); if (!c || c.playable === false) return; const d = active(); if (d.trackIdx !== idx) return start(idx); if (d.el.paused) { ensureGraph(); if (ctx && ctx.state === 'suspended') ctx.resume(); d.el.play().catch(() => {}); } else d.el.pause(); }
+  function seekFrac(f) { if (nativeMode) return nativeSeek(f); if (upnpMode) return upnpSeek(f); const len = lenMs(); if (loadedCur() && len) active().el.currentTime = Math.max(0, Math.min(1, f)) * len / 1000; }
+  function setVol(v) { vol = Math.max(0, Math.min(1, v)); applyVol(); if (nativeMode) nativeVolumeApply(); else if (upnpMode) upnpVolumeApply(); render(); }
 
   function playTracks(tracks, i) { if (!tracks || !tracks.length) return; q = tracks; start(i || 0); }
   function playAlbum(id, i) { fetch('/api/album?id=' + id).then(r => r.json()).then(a => { const tr = (a.tracks || []).map(t => ({ trackId: t.trackId, recording_id: t.recording_id, title: t.title, artist: a.artist, albumId: a.id, length_ms: t.length_ms, playable: t.playable !== 0, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs })); if (!tr.length) { alert('Este álbum aún no tiene pistas en tu biblioteca.'); return; } playTracks(tr, i || 0); }); }
@@ -259,17 +315,17 @@ window.player = (function () {
   // eventos de audio -> estado real (ambos decks; sólo cuenta el activo)
   decks.forEach(d => {
     // en modo nativo los decks están en silencio: sus eventos no deben tocar el estado de la UI
-    d.el.addEventListener('play', () => { if (nativeMode || active() !== d) return; playing = true; logPlay(); render(); });
-    d.el.addEventListener('pause', () => { if (nativeMode || active() !== d) return; playing = false; render(); });
-    d.el.addEventListener('ended', () => { if (nativeMode || active() !== d) return; onEnded(); });
-    d.el.addEventListener('timeupdate', () => { if (nativeMode || active() !== d) return; progress(); maybeCrossfade(); });
-    d.el.addEventListener('durationchange', () => { if (nativeMode || active() !== d) return; render(); });
-    d.el.addEventListener('error', () => { if (nativeMode || active() !== d) return; playing = false; render(); });
+    d.el.addEventListener('play', () => { if (nativeMode || upnpMode || active() !== d) return; playing = true; logPlay(); render(); });
+    d.el.addEventListener('pause', () => { if (nativeMode || upnpMode || active() !== d) return; playing = false; render(); });
+    d.el.addEventListener('ended', () => { if (nativeMode || upnpMode || active() !== d) return; onEnded(); });
+    d.el.addEventListener('timeupdate', () => { if (nativeMode || upnpMode || active() !== d) return; progress(); maybeCrossfade(); });
+    d.el.addEventListener('durationchange', () => { if (nativeMode || upnpMode || active() !== d) return; render(); });
+    d.el.addEventListener('error', () => { if (nativeMode || upnpMode || active() !== d) return; playing = false; render(); });
   });
 
   // ── selector de salida / zona (popover anclado a la barra) ──
   let zpanel = null;
-  const zoneLabel = () => esc(zone.name || 'Este equipo') + (nativeMode ? ' · nativo' : '');
+  const zoneLabel = () => nativeMode ? esc(zone.name || 'Este equipo') + ' · nativo' : upnpMode ? esc(upnpDevName || 'Red') : esc(zone.name || 'Este equipo');
   function updateZoneBtn() { const b = document.querySelector('#nowbar [data-act="zone"]'); if (b) b.innerHTML = '🔈 ' + zoneLabel(); }
   function ensureZPanel() {
     if (zpanel) return;
@@ -323,7 +379,23 @@ window.player = (function () {
       if (!labeled && list.length) h += '<div data-act="unlock" style="margin-top:6px;color:var(--accent);cursor:pointer">Mostrar nombres de los dispositivos…</div>';
       if (!list.length) h += '<div style="color:var(--text-2)">No se detectaron dispositivos de salida.</div>';
     }
+    // ── salida de RED (UPnP/DLNA): renderers de la LAN (Eversolo, etc.) — se rellena async ──
+    h += '<div style="border-top:1px solid var(--border);margin:10px -14px 0;padding:10px 14px 0">';
+    h += '<div style="font-weight:600;margin-bottom:6px">Salida de red</div>';
+    h += '<div id="upnplist" style="color:var(--text-2);font-size:12px">Buscando dispositivos de red…</div>';
+    if (upnpMode) h += '<div data-act="uoff" style="margin-top:7px;color:var(--accent);cursor:pointer;font-size:12px">↩ Volver a este equipo</div>';
+    h += '<div style="font-size:11px;color:var(--text-2);margin-top:6px">El dispositivo descarga la música; el volumen va al aparato. ReplayGain y EQ no se aplican en red.</div></div>';
     zpanel.innerHTML = h;
+    fillUpnpList();
+  }
+  async function fillUpnpList() {
+    const box = document.getElementById('upnplist'); if (!box) return;
+    let ur = null; try { ur = await ujson('devices'); } catch (e) {}
+    if (!document.getElementById('upnplist')) return;                 // el panel se cerró mientras buscaba
+    const urs = (ur && ur.ok && ur.items) ? ur.items : [];
+    if (!urs.length) { box.textContent = 'No se encontraron dispositivos de red (UPnP/DLNA).'; return; }
+    box.style.color = 'var(--text)';
+    box.innerHTML = urs.map(d => { const on = upnpMode && (upnpDeviceId === d.id); return `<div class="udev" data-id="${esc(d.id)}" data-name="${esc(d.name)}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer;${on ? 'background:var(--accent-bg);color:var(--accent)' : ''}"><span>${on ? '◉' : '○'}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(d.name)}${d.model ? ' · ' + esc(d.model) : ''}</span></div>`; }).join('');
   }
 
   // ── letra de la pista (LRCLIB, con resaltado sincronizado tipo karaoke) ──
@@ -414,6 +486,8 @@ window.player = (function () {
     if (e.target.closest('#zonepanel [data-act="ntoggle"]')) { setNativeMode(!nativeMode); return; }
     const nd = e.target.closest('#zonepanel .ndev'); if (nd) { setNativeDevice(nd.dataset.id); return; }
     if (e.target.matches('#zonepanel [data-act="nexcl"]')) { setNativeExclusive(e.target.checked); return; }
+    const ud = e.target.closest('#zonepanel .udev'); if (ud) { setUpnpMode(true, ud.dataset.id, ud.dataset.name); return; }
+    if (e.target.closest('#zonepanel [data-act="uoff"]')) { setUpnpMode(false); return; }
     const rg = e.target.closest('#eqpanel [data-rg]'); if (rg) { setRgMode(rg.dataset.rg); return; }
     const pre = e.target.closest('#eqpanel [data-pre]'); if (pre) { setPreset(pre.dataset.pre); return; }
     if (e.target.closest('#eqpanel [data-act="eqtoggle"]')) { setEqEnabled(!eqOn); return; }
@@ -444,7 +518,7 @@ window.player = (function () {
   const getAudio = () => ({ eqOn, eqGains: eqGains.slice(), xfade, rgMode });
   const getNative = () => ({ nativeMode, nativeDeviceId, nativeExclusive, nativePos, playing, startedIdx: nativeStartedIdx });
   // instantánea de ajustes para la página de Configuración (misma fuente que los paneles)
-  function getSettings() { return { xfade, rgMode, radio: radioOn, eqOn, eqGains: eqGains.slice(), eqFreqs: EQLAB.slice(), presets: Object.keys(EQPRE), volume: vol, zone: Object.assign({}, zone), nativeMode }; }
+  function getSettings() { return { xfade, rgMode, radio: radioOn, eqOn, eqGains: eqGains.slice(), eqFreqs: EQLAB.slice(), presets: Object.keys(EQPRE), volume: vol, zone: Object.assign({}, zone), nativeMode, upnpMode, upnpName: upnpDevName }; }
 
   return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain, getZone, getAudio, getNative, setNativeMode, setRadio, undo,
     getSettings, setXfade, setRgMode, setEqEnabled, setEqBand, setPreset, openOutput: toggleZPanel, openEq: toggleEqPanel };

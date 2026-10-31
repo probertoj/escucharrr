@@ -13,6 +13,9 @@ const cp = require('child_process');
 // servidor — el "core" posee la zona, la UI es un mando (modelo Roon). Si el
 // binario no está compilado, las rutas /api/native/* lo avisan sin romper nada.
 const NATIVE = (() => { try { return require('../engine/native-player'); } catch (e) { return null; } })();
+// Salida de RED (UPnP/DLNA): el servidor controla un renderer (p. ej. Eversolo) que descarga
+// la música de /api/stream. Ver engine/upnp.js y docs/dispositivos-de-red-y-roon.md.
+const UPNP = (() => { try { return require('../engine/upnp'); } catch (e) { return null; } })();
 let _np = null;
 function np() {
   if (!NATIVE) return null;
@@ -55,6 +58,7 @@ const Q = {
   about: db.prepare(`SELECT value v FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='about'`),
   aboutExt: db.prepare(`SELECT about v FROM release_group WHERE id=?`),   // reseña editorial externa (Wikipedia)
   coverOf: db.prepare(`SELECT cover_path, cover_mime FROM release_group WHERE id=?`),   // carátula cacheada (Cover Art Archive)
+  albumIdOf: db.prepare(`SELECT rel.release_group_id aid FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE tr.id=?`),
   prov: db.prepare(`SELECT field,source,source_ref FROM provenance WHERE subject_type='release_group' AND subject_id=?`),
   editions: db.prepare(`SELECT format,date,country FROM "release" WHERE release_group_id=? ORDER BY date`),
   tracks: db.prepare(`SELECT tr.id trackId, tr.recording_id, m.position disc, tr.position pos, tr.title, tr.length_ms,
@@ -363,6 +367,62 @@ async function handleNative(req, res, u) {
   } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 
+// ── salida de red UPnP/DLNA: el servidor controla el renderer (mismo patrón que la zona nativa) ──
+let _upnpDevs = { at: 0, items: [] };
+let _upnp = { renderer: null, dev: null, trackId: null, startedAt: 0, baseOffset: 0, paused: false, durationSec: 0 };
+async function upnpDevices(force) {
+  if (!UPNP) return [];
+  if (!force && Date.now() - _upnpDevs.at < 8000 && _upnpDevs.items.length) return _upnpDevs.items;
+  let items = []; try { items = await UPNP.discover({ timeoutMs: 3000 }); } catch (e) {}
+  if (items.length || force) _upnpDevs = { at: Date.now(), items };
+  return items.length ? items : _upnpDevs.items;
+}
+function upnpMetaOf(trackId) {
+  const row = resolveFileByTrack(trackId); if (!row || !fs.existsSync(row.path)) return null;
+  const m = Q.scrobbleMeta.get(trackId) || {};
+  const a = Q.albumIdOf.get(trackId);
+  return { title: m.title || path.basename(row.path), artist: m.artist || '', album: m.album || '', durationSec: Math.round((m.duration_ms || 0) / 1000), mime: AUDIO_MIME[path.extname(row.path).toLowerCase()] || 'application/octet-stream', albumId: a ? a.aid : null };
+}
+function upnpState() {
+  const s = _upnp;
+  let pos = s.baseOffset || 0;
+  if (s.trackId && !s.paused && s.startedAt) pos += (Date.now() - s.startedAt) / 1000;
+  return { kind: 'upnp', playing: !!s.trackId && !s.paused, paused: !!s.paused, device: s.dev ? s.dev.name : null, deviceId: s.dev ? s.dev.id : null, trackId: s.trackId, durationSec: s.durationSec, positionSec: Math.max(0, pos) };
+}
+async function handleUpnp(req, res, u) {
+  const sub = u.pathname.slice('/api/upnp/'.length);
+  if (!UPNP) return sendJSON(res, { ok: false, error: 'salida de red no disponible en esta build' });
+  try {
+    if (req.method === 'GET' && sub === 'devices') {
+      const items = await upnpDevices(u.searchParams.get('refresh') === '1');
+      return sendJSON(res, { ok: true, items: items.map(d => ({ id: d.id, name: d.name, manufacturer: d.manufacturer, model: d.model, ip: d.ip })) });
+    }
+    if (req.method === 'GET' && sub === 'state') return sendJSON(res, { ok: true, state: upnpState() });
+    const body = req.method === 'POST' ? await readBody(req) : {};
+    if (sub === 'play') {
+      const items = await upnpDevices(false);
+      const dev = (body.deviceId && items.find(d => d.id === body.deviceId)) || _upnp.dev || items[0];
+      if (!dev) return sendJSON(res, { ok: false, error: 'no hay ningún dispositivo de red' });
+      const meta = upnpMetaOf(body.track_id);
+      if (!meta) return sendJSON(res, { ok: false, error: 'pista sin fichero local' });
+      const ip = UPNP.lanIp(dev.ip), base = 'http://' + ip + ':' + PORT, seek = body.seekSec || 0;
+      const r = new UPNP.UpnpRenderer(dev);
+      await r.setUriAndPlay({ url: base + '/api/stream?track=' + body.track_id, mime: meta.mime, title: meta.title, artist: meta.artist, album: meta.album, durationSec: meta.durationSec, coverUrl: meta.albumId ? base + '/api/cover?rg=' + meta.albumId : '' });
+      if (seek) { try { await r.seek(seek); } catch (e) {} }
+      _upnp = { renderer: r, dev, trackId: body.track_id, startedAt: Date.now(), baseOffset: seek, paused: false, durationSec: meta.durationSec };
+      logPlay({ track_id: body.track_id, source: 'upnp', zone: dev.name });
+      return sendJSON(res, { ok: true, state: upnpState() });
+    }
+    const R = _upnp.renderer;
+    if (sub === 'pause') { if (R) { _upnp.baseOffset = upnpState().positionSec; _upnp.paused = true; _upnp.startedAt = 0; try { await R.pause(); } catch (e) {} } return sendJSON(res, { ok: true, state: upnpState() }); }
+    if (sub === 'resume') { if (R) { _upnp.paused = false; _upnp.startedAt = Date.now(); try { await R.play(); } catch (e) {} } return sendJSON(res, { ok: true, state: upnpState() }); }
+    if (sub === 'stop') { if (R) { try { await R.stop(); } catch (e) {} } _upnp = { renderer: null, dev: _upnp.dev, trackId: null, startedAt: 0, baseOffset: 0, paused: false, durationSec: 0 }; return sendJSON(res, { ok: true, state: upnpState() }); }
+    if (sub === 'seek') { const sec = Number(body.sec) || 0; if (R) { try { await R.seek(sec); } catch (e) {} _upnp.baseOffset = sec; _upnp.startedAt = Date.now(); _upnp.paused = false; } return sendJSON(res, { ok: true, state: upnpState() }); }
+    if (sub === 'volume') { const pct = body.pct != null ? Number(body.pct) : (body.v != null ? Math.round(Number(body.v) * 100) : null); if (R && pct != null) { try { await R.setVolume(pct); } catch (e) {} } return sendJSON(res, { ok: true, state: upnpState() }); }
+    res.writeHead(404); res.end('{}');
+  } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
+}
+
 // ── scrobbling: now-playing (efímero) + submit (cola) + estado ──────────────
 function scrobbleMetaOf(trackId) { const m = Q.scrobbleMeta.get(trackId); if (!m || !m.artist || !m.title) return null; m.track_id = trackId; return m; }
 async function handleScrobble(req, res, u) {
@@ -528,6 +588,7 @@ http.createServer((req, res) => {
     return;
   }
   if (u.pathname.startsWith('/api/native/')) return void handleNative(req, res, u);
+  if (u.pathname.startsWith('/api/upnp/')) return void handleUpnp(req, res, u);
   if (u.pathname.startsWith('/api/scrobble/')) return void handleScrobble(req, res, u);
   if (u.pathname === '/api/lyrics') return void getLyrics(parseInt(u.searchParams.get('track'), 10)).then(r => sendJSON(res, r)).catch(() => sendJSON(res, { found: false }));
   if (u.pathname === '/api/playlists' || u.pathname === '/api/playlist' || u.pathname.startsWith('/api/playlist/')) return void handlePlaylists(req, res, u);

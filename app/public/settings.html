@@ -64,7 +64,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   const lib = info.library || {}, watch = info.watch || {}, scr = info.scrobble || {}, nat = info.native || {}, ap = info.app || {};
   const theme = (window.escunav && escunav.getTheme) ? escunav.getTheme() : 'auto';
-  const zoneName = S.nativeMode ? ((S.zone && S.zone.name) || 'Este equipo') + ' · WASAPI nativo' : ((S.zone && S.zone.label) || (S.zone && S.zone.name) || 'Este equipo (navegador)');
+  const zoneName = S.nativeMode ? ((S.zone && S.zone.name) || 'Este equipo') + ' · WASAPI nativo' : S.upnpMode ? (S.upnpName || 'Dispositivo de red') + ' · UPnP/DLNA' : ((S.zone && S.zone.label) || (S.zone && S.zone.name) || 'Este equipo (navegador)');
 
   const rgSeg = m => `<div class="seg" id="rgseg">${['track','album','off'].map(k => `<button data-rg="${k}" class="${S.rgMode===k?'on':''}">${k==='track'?'Por pista':k==='album'?'Por álbum':'Desactivado'}</button>`).join('')}</div>`;
   const themeSeg = `<div class="seg" id="thseg">${['auto','light','dark'].map(k => `<button data-th="${k}" class="${theme===k?'on':''}">${k==='auto'?'Automático':k==='light'?'Claro':'Oscuro'}</button>`).join('')}</div>`;
@@ -88,7 +88,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     <div class="row"><div class="lbl"><div class="k">Zona de salida actual</div><div class="d">${esc(zoneName)}</div></div>
       <button id="chooseout">Elegir salida / zona…</button></div>
     <div class="row"><div class="lbl"><div class="k">Motor nativo (WASAPI)</div><div class="d">${nat.available?(nat.built?'compilado y disponible · resample sinc Kaiser, dither TPDF, EQ propio':'disponible pero sin compilar (ejecuta <span class="mono">engine/build.ps1</span>)'):'no disponible en esta build'}</div></div></div>
-    <div class="row"><div class="lbl"><div class="k">Salida de red (UPnP/DLNA, p. ej. Eversolo)</div><div class="d soon">próximamente — ver <span class="mono">docs/dispositivos-de-red-y-roon.md</span></div></div></div>
+    <div class="row"><div class="lbl"><div class="k">Salida de red (UPnP/DLNA, p. ej. Eversolo)</div><div class="d">descubre renderers de la LAN y les envía la música (el aparato la descarga de /api/stream); elígelo en «Elegir salida / zona»</div></div>
+      <button id="chooseout2">Elegir salida…</button></div>
   </div></div>
 
   <div class="grp"><h2><span class="gi">▶</span> Reproducción</h2><div class="body">
@@ -139,7 +140,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('eqbands').addEventListener('input', e => { const s = e.target.closest('.eqband'); if (!s || !P || !P.setEqBand) return; const i = +s.dataset.i, v = parseInt(s.value, 10); P.setEqBand(i, v); const g = document.getElementById('eqg'+i); if (g) g.textContent = (v>0?'+':'') + v; });
   function refreshEq() { if (!P || !P.getSettings) return; const s = P.getSettings(); const on = document.getElementById('eqon'); if (on) on.checked = s.eqOn; s.eqGains.forEach((v,i) => { const sl = document.querySelector('.eqband[data-i="'+i+'"]'); if (sl) sl.value = v; const g = document.getElementById('eqg'+i); if (g) g.textContent = (v>0?'+':'') + v; }); }
 
-  const co = document.getElementById('chooseout'); if (co) co.addEventListener('click', () => { if (P && P.openOutput) P.openOutput(); });
+  ['chooseout', 'chooseout2'].forEach(id => { const co = document.getElementById(id); if (co) co.addEventListener('click', () => { if (P && P.openOutput) P.openOutput(); }); });
 });
 </script>
 </body>
