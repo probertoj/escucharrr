@@ -90,7 +90,9 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     abierta, sin clave), con **sincronización** (karaoke: la línea en curso se resalta y centra según la
     reproducción) cuando LRCLIB la tiene, o texto plano si no. Cacheada en local (tabla `lyrics`, con caché
     negativa para no repetir consultas). Panel 📝 en la barra del player, en cualquier página.
-  - `public/` — biblioteca (Focus por tier/género/**etiqueta**/década/tipo/formato/valoración, orden, filtro),
+  - `public/` — biblioteca (Focus por tier/género/**etiqueta**/década/tipo/formato/valoración, orden, filtro;
+    **marcadores**: guarda un Focus con nombre y recupéralo de un clic — tabla `bookmark`, rutas `/api/bookmarks`
+    y `/api/bookmark/delete`),
     **etiquetas de usuario** (tags libres estilo Roon: se añaden/quitan en cada álbum y filtran la biblioteca;
     tablas `tag`/`tag_item`, rutas `/api/tags`, `/api/tag`, `/api/tag/{add,remove}`, página `tag.html`),
     pantalla **"Ahora suena" a pantalla completa** (carátula grande, barra de onda, transporte, volumen y

@@ -41,7 +41,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS scrobble_queue (
   CREATE TABLE IF NOT EXISTS lyrics (recording_id INTEGER PRIMARY KEY, found INTEGER DEFAULT 0, instrumental INTEGER DEFAULT 0, plain TEXT, synced TEXT, source TEXT, fetched_at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS tag (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, created_at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS tag_item (tag_id INTEGER NOT NULL REFERENCES tag(id) ON DELETE CASCADE, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, created_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (tag_id, subject_type, subject_id));
-  CREATE INDEX IF NOT EXISTS ix_tag_item ON tag_item(subject_type, subject_id);`);
+  CREATE INDEX IF NOT EXISTS ix_tag_item ON tag_item(subject_type, subject_id);
+  CREATE TABLE IF NOT EXISTS bookmark (id INTEGER PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));`);
 const lyrics = require('../data-layer/lyrics');
 let scrobCfg = null;
 function loadScrobbleCfg() { const p = path.join(__dirname, 'scrobble.json'); try { scrobCfg = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null; } catch (e) { scrobCfg = null; } return scrobCfg; }
@@ -94,6 +95,10 @@ const Q = {
   tagLink: db.prepare(`INSERT OR IGNORE INTO tag_item(tag_id, subject_type, subject_id) VALUES((SELECT id FROM tag WHERE name=?), 'release_group', ?)`),
   tagUnlink: db.prepare(`DELETE FROM tag_item WHERE tag_id=(SELECT id FROM tag WHERE name=?) AND subject_type='release_group' AND subject_id=?`),
   tagGc: db.prepare(`DELETE FROM tag WHERE NOT EXISTS (SELECT 1 FROM tag_item ti WHERE ti.tag_id=tag.id)`),
+  // ── marcadores: un Focus guardado (estado de facetas) con nombre, estilo Roon ──
+  bmList: db.prepare(`SELECT id, name, state FROM bookmark ORDER BY name`),
+  bmCreate: db.prepare(`INSERT INTO bookmark(name, state) VALUES(?, ?)`),
+  bmDelete: db.prepare(`DELETE FROM bookmark WHERE id=?`),
   prov: db.prepare(`SELECT field,source,source_ref FROM provenance WHERE subject_type='release_group' AND subject_id=?`),
   editions: db.prepare(`SELECT format,date,country FROM "release" WHERE release_group_id=? ORDER BY date`),
   tracks: db.prepare(`SELECT tr.id trackId, tr.recording_id, m.position disc, tr.position pos, tr.title, tr.length_ms,
@@ -743,6 +748,18 @@ http.createServer((req, res) => {
     });
     return;
   }
+  if (req.method === 'POST' && (u.pathname === '/api/bookmarks' || u.pathname === '/api/bookmark/delete')) {
+    let body = ''; req.on('data', c => { body += c; if (body.length > 1e5) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const b = JSON.parse(body || '{}');
+        if (u.pathname === '/api/bookmark/delete') { Q.bmDelete.run(parseInt(b.id, 10)); return sendJSON(res, { ok: true }); }
+        const name = String(b.name || '').trim().slice(0, 60); if (!name) { res.writeHead(400); return res.end('{}'); }
+        const r = Q.bmCreate.run(name, JSON.stringify(b.state || {})); return sendJSON(res, { ok: true, id: Number(r.lastInsertRowid) });
+      } catch (e) { res.writeHead(400); res.end(String(e.message)); }
+    });
+    return;
+  }
   if (u.pathname.startsWith('/api/native/')) return void handleNative(req, res, u);
   if (u.pathname.startsWith('/api/upnp/')) return void handleUpnp(req, res, u);
   if (u.pathname.startsWith('/api/spotify/')) return void handleSpotify(req, res, u);
@@ -760,6 +777,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/artist') { const a = artist(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/genre') { const g = genre(u.searchParams.get('name')); return g ? sendJSON(res, g) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/genres') return sendJSON(res, Q.allGenres.all());
+    if (u.pathname === '/api/bookmarks') return sendJSON(res, { items: Q.bmList.all().map(b => ({ id: b.id, name: b.name, state: (() => { try { return JSON.parse(b.state || '{}'); } catch (e) { return {}; } })() })) });
     if (u.pathname === '/api/tags') return sendJSON(res, Q.allTags.all());
     if (u.pathname === '/api/tag') { const name = u.searchParams.get('name'); const albums = Q.tagAlbums.all(name); return albums.length ? sendJSON(res, { name, albums }) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/discover') return sendJSON(res, discover());

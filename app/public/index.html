@@ -15,6 +15,7 @@
   <div class="toolbar">
     <button class="btn-accent">▶ Reproducir</button>
     <button id="focusbtn">▸ Focus</button>
+    <button id="savefocus" title="Guardar el Focus actual como marcador">★ Guardar Focus</button>
     <div class="spacer"></div>
     <label style="color:var(--text-2);font-size:13px">Ordenar</label>
     <select id="sort">
@@ -27,6 +28,7 @@
     <input id="filter" type="search" placeholder="Filtrar">
   </div>
 
+  <div class="chips" id="bmbar" style="margin:4px 0"></div>
   <div class="focus" id="focus" hidden><div class="facets" id="facets"></div></div>
   <div class="chips" id="chips"></div>
   <div class="grid" id="grid"></div>
@@ -103,6 +105,15 @@ sort.onchange=render; filter.oninput=()=>{txt=filter.value.toLowerCase().trim();
 function load(){fetch('/api/library').then(r=>r.json()).then(d=>{ALBUMS=d;render();}).catch(e=>count.textContent='error: '+e.message);}
 load();
 document.addEventListener('escucharrr:changed',load);   // biblioteca en vivo
+
+// ── marcadores: guardar/aplicar un Focus (estilo Roon) ──
+const esc0=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function currentFocus(){const a={};for(const k in active)if(active[k].length)a[k]=active[k].slice();return{active:a,minR,sort:sort.value};}
+function applyFocus(s){for(const k in active)active[k]=((s&&s.active&&s.active[k])||[]).slice();minR=(s&&s.minR!=null)?s.minR:null;if(s&&s.sort){sort.value=s.sort;}txt='';filter.value='';render();if(focus.hidden)focusbtn.click();}
+function loadBookmarks(){fetch('/api/bookmarks').then(r=>r.json()).then(j=>{const bms=j.items||[];const bar=document.getElementById('bmbar');bar._bms=bms;bar.innerHTML=bms.length?'<span style="color:var(--text-2);font-size:12px;margin-right:4px">Marcadores:</span>'+bms.map(b=>`<span class="chip bm" data-id="${b.id}" style="cursor:pointer">★ ${esc0(b.name)} <span class="bmx" data-del="${b.id}" title="Borrar" style="color:var(--text-2)">✕</span></span>`).join(''):'';}).catch(()=>{});}
+document.getElementById('savefocus').addEventListener('click',()=>{const n=prompt('Nombre del marcador (guarda el Focus actual):');if(n&&n.trim())fetch('/api/bookmarks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n.trim(),state:currentFocus()})}).then(r=>r.json()).then(()=>loadBookmarks());});
+document.getElementById('bmbar').addEventListener('click',e=>{const del=e.target.closest('.bmx');if(del){e.stopPropagation();fetch('/api/bookmark/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:+del.dataset.del})}).then(()=>loadBookmarks());return;}const bm=e.target.closest('.bm');if(bm){const bar=document.getElementById('bmbar');const b=(bar._bms||[]).find(x=>x.id===+bm.dataset.id);if(b)applyFocus(b.state);}});
+loadBookmarks();
 
 // Buscador instantáneo (FTS5 por prefijo)
 (function(){
