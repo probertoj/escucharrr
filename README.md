@@ -48,6 +48,10 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     `app/scrobble.json` (copia de `scrobble.example.json`); credenciales con `node data-layer/scrobble-auth.js`
     (`--listenbrainz --token …`, o `--lastfm` → autorizar en el navegador → `--lastfm-finish`). Sin claves,
     desactivado. Rutas `/api/scrobble/{nowplaying,submit,status}`.
+  - **Letras** (`data-layer/lyrics.js` + `/api/lyrics?track=`): letra de la pista desde **LRCLIB** (fuente
+    abierta, sin clave), con **sincronización** (karaoke: la línea en curso se resalta y centra según la
+    reproducción) cuando LRCLIB la tiene, o texto plano si no. Cacheada en local (tabla `lyrics`, con caché
+    negativa para no repetir consultas). Panel 📝 en la barra del player, en cualquier página.
   - `public/` — biblioteca (Focus por tier/género/década/tipo/formato/valoración, orden, filtro),
     página de álbum (tier, valoración, créditos por rol, bio con procedencia), **página de artista**
     (avatar, géneros, discografía propia y "aparece en" con sus roles), **página de género**

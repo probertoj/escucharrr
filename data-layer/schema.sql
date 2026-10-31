@@ -196,6 +196,18 @@ CREATE TABLE IF NOT EXISTS scrobble_queue (
   last_error     TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_scrobble_pending ON scrobble_queue(lastfm_done, lbz_done);
+
+-- Caché de letras (de LRCLIB, fuente abierta sin clave). Se guarda por grabación; `found=0`
+-- es una caché negativa para no repetir la consulta. `synced` es LRC con marcas de tiempo.
+CREATE TABLE IF NOT EXISTS lyrics (
+  recording_id INTEGER PRIMARY KEY,
+  found        INTEGER DEFAULT 0,
+  instrumental INTEGER DEFAULT 0,
+  plain        TEXT,
+  synced       TEXT,
+  source       TEXT,
+  fetched_at   TEXT DEFAULT (datetime('now'))
+);
 CREATE INDEX IF NOT EXISTS ix_file_recording ON local_file(recording_id);
 CREATE INDEX IF NOT EXISTS ix_file_track ON local_file(track_id);
 

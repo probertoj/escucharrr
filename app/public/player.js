@@ -93,7 +93,7 @@ window.player = (function () {
   function cover(id, s) { const p = PAIRS[(id || 0) % PAIRS.length]; return `<svg width="${s}" height="${s}" viewBox="0 0 46 46" style="border-radius:7px;display:block"><rect width="46" height="46" fill="${p[0]}"/><rect y="30" width="46" height="16" fill="${p[1]}"/><circle cx="33" cy="16" r="10" fill="#FAC775"/></svg>`; }
   function logPlay() { const c = cur(); if (c && c.trackId && loggedIdx !== idx) { loggedIdx = idx; fetch('/api/play', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ track_id: c.trackId, zone: zone.name }) }).catch(() => {}); } }
   const spost = (p, b) => fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).catch(() => {});
-  function trackStarted() { trackStartEpoch = Math.floor(Date.now() / 1000); const c = cur(); if (c && c.trackId) spost('/api/scrobble/nowplaying', { track_id: c.trackId }); }   // "sonando ahora"
+  function trackStarted() { trackStartEpoch = Math.floor(Date.now() / 1000); const c = cur(); if (c && c.trackId) spost('/api/scrobble/nowplaying', { track_id: c.trackId }); if (lypanel && lypanel.style.display === 'block') loadLyrics(); }   // "sonando ahora" + recargar letra si el panel está abierto
   // scrobble al superar el umbral (mitad de la pista o 4 min; pistas ≥ 30 s), una sola vez
   function maybeScrobble() {
     const c = cur(); if (!c || !c.trackId || scrobbledIdx === idx) return;
@@ -139,12 +139,13 @@ window.player = (function () {
        </div>
        <span data-act="mute" style="cursor:pointer;font-size:15px" title="Silenciar">${volIcon()}</span>
        <input data-act="vol" type="range" min="0" max="1" step="0.01" value="${vol}" title="Volumen" style="width:72px;accent-color:var(--accent)">
+       <span data-act="lyrics" title="Letra" style="cursor:pointer;font-size:14px;color:var(--text-2)">📝</span>
        <span data-act="eq" title="Ecualizador y crossfade" style="cursor:pointer;font-size:15px;${eqOn || xfade > 0 ? 'color:var(--accent)' : 'color:var(--text-2)'}">🎚</span>
        <span data-act="zone" title="Salida / zona" style="cursor:pointer;font-size:12px;color:${nativeMode ? 'var(--accent)' : 'var(--text-2)'};display:inline-flex;align-items:center;gap:4px;max-width:150px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">🔈 ${zoneLabel()}</span>
        <a href="queue.html" title="Cola" style="font-size:16px;color:var(--text-2);text-decoration:none">☰ ${idx + 1}/${q.length}</a>`;
     emit();
   }
-  function progress() { const c = cur(); if (!c) return; const len = lenMs(), p = posMs(); const pr = document.getElementById('npprog'), el = document.getElementById('npel'); if (pr && len) pr.style.width = Math.min(100, p / len * 100) + '%'; if (el) el.textContent = mmss(p); maybeScrobble(); maybeRadio(); }
+  function progress() { const c = cur(); if (!c) return; const len = lenMs(), p = posMs(); const pr = document.getElementById('npprog'), el = document.getElementById('npel'); if (pr && len) pr.style.width = Math.min(100, p / len * 100) + '%'; if (el) el.textContent = mmss(p); maybeScrobble(); maybeRadio(); syncLy(); }
   const emit = () => document.dispatchEvent(new Event('player:change'));
 
   // ── crossfade: al acercarse el final de la pista activa, solapa con la siguiente ──
@@ -325,6 +326,59 @@ window.player = (function () {
     zpanel.innerHTML = h;
   }
 
+  // ── letra de la pista (LRCLIB, con resaltado sincronizado tipo karaoke) ──
+  let lypanel = null, lyIdx = -1, lyData = null, lyActive = -1, lyCache = {};
+  function parseLRC(s) {
+    const out = [];
+    for (const line of String(s || '').split('\n')) {
+      const times = [...line.matchAll(/\[(\d+):(\d+)(?:[.:](\d+))?\]/g)];
+      if (!times.length) continue;
+      const text = line.replace(/\[[^\]]*\]/g, '').trim();
+      for (const m of times) out.push({ t: (+m[1]) * 60000 + (+m[2]) * 1000 + (m[3] ? +((m[3] + '000').slice(0, 3)) : 0), text });
+    }
+    return out.sort((a, b) => a.t - b.t);
+  }
+  function ensureLyPanel() {
+    if (lypanel) return;
+    lypanel = document.createElement('div'); lypanel.id = 'lyricspanel';
+    lypanel.setAttribute('style', 'position:fixed;right:16px;bottom:62px;z-index:60;width:340px;max-width:calc(100vw - 32px);max-height:60vh;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:14px 16px;display:none;font-size:14px;line-height:1.5');
+    document.body.appendChild(lypanel);
+    document.addEventListener('click', e => { if (lypanel.style.display === 'block' && !e.target.closest('#lyricspanel') && !e.target.closest('[data-act="lyrics"]')) lypanel.style.display = 'none'; });
+  }
+  function toggleLyPanel() { ensureLyPanel(); if (lypanel.style.display === 'block') { lypanel.style.display = 'none'; return; } if (eqpanel) eqpanel.style.display = 'none'; if (zpanel) zpanel.style.display = 'none'; lypanel.style.display = 'block'; loadLyrics(); }
+  function loadLyrics() {
+    const c = cur(); ensureLyPanel();
+    if (!c || !c.trackId) { lypanel.innerHTML = '<div style="color:var(--text-2)">No hay nada sonando.</div>'; return; }
+    lyIdx = idx; lyActive = -1;
+    if (lyCache[c.trackId]) { lyData = lyCache[c.trackId]; renderLy(); return; }
+    lyData = null; lypanel.innerHTML = '<div style="color:var(--text-2)">Buscando letra…</div>';
+    fetch('/api/lyrics?track=' + c.trackId).then(r => r.json()).then(j => {
+      j.syncedArr = j.synced ? parseLRC(j.synced) : null;
+      lyCache[c.trackId] = j; if (idx === lyIdx) { lyData = j; renderLy(); }
+    }).catch(() => { lypanel.innerHTML = '<div style="color:var(--text-2)">No se pudo cargar la letra.</div>'; });
+  }
+  function renderLy() {
+    ensureLyPanel(); const c = cur();
+    let h = `<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><span style="font-weight:600">${esc(c ? c.title : '')}</span><span style="font-size:11px;color:var(--text-2)">${lyData && lyData.found ? 'LRCLIB' : ''}</span></div>`;
+    if (!lyData || !lyData.found) h += '<div style="color:var(--text-2)">' + (lyData && lyData.instrumental ? 'Instrumental.' : 'Sin letra para esta pista.') + '</div>';
+    else if (lyData.syncedArr && lyData.syncedArr.length) h += '<div id="lylines">' + lyData.syncedArr.map((l, i) => `<div class="lyline" data-i="${i}" style="padding:2px 0;color:var(--text-2);transition:color .1s">${esc(l.text) || '♪'}</div>`).join('') + '</div>';
+    else if (lyData.plain) h += '<div style="white-space:pre-wrap">' + esc(lyData.plain) + '</div>';
+    else h += '<div style="color:var(--text-2)">Sin letra para esta pista.</div>';
+    lypanel.innerHTML = h;
+    if (lyData && lyData.syncedArr) { lyActive = -1; syncLy(); }
+  }
+  // resalta la línea en curso según la posición de reproducción y la centra
+  function syncLy() {
+    if (!lypanel || lypanel.style.display !== 'block' || !lyData || !lyData.syncedArr || idx !== lyIdx) return;
+    const p = posMs(); const arr = lyData.syncedArr;
+    let a = -1; for (let i = 0; i < arr.length; i++) { if (arr[i].t <= p) a = i; else break; }
+    if (a === lyActive) return;
+    lyActive = a;
+    const lines = lypanel.querySelectorAll('.lyline');
+    lines.forEach((el, i) => { const on = i === a; el.style.color = on ? 'var(--accent)' : 'var(--text-2)'; el.style.fontWeight = on ? '600' : '400'; });
+    if (a >= 0 && lines[a]) lines[a].scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+
   // ── ajustes de audio: ecualizador + crossfade (popover) ──
   let eqpanel = null;
   function ensureEqPanel() {
@@ -369,6 +423,7 @@ window.player = (function () {
     else if (k === 'next') next();
     else if (k === 'toggle') toggle();
     else if (k === 'eq') toggleEqPanel();
+    else if (k === 'lyrics') toggleLyPanel();
     else if (k === 'zone') toggleZPanel();
     else if (k === 'mute') setVol(vol === 0 ? (parseFloat(localStorage.getItem(VKEY + '.last')) || 0.8) : (localStorage.setItem(VKEY + '.last', vol), 0));
     else if (k === 'seek') { const box = a.getBoundingClientRect(); seekFrac((e.clientX - box.left) / box.width); }

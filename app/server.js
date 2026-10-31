@@ -34,7 +34,9 @@ db.exec(`CREATE TABLE IF NOT EXISTS scrobble_queue (
   album TEXT, album_artist TEXT, recording_mbid TEXT, release_mbid TEXT, duration_ms INTEGER,
   listened_at INTEGER NOT NULL, created_at TEXT DEFAULT (datetime('now')),
   lastfm_done INTEGER DEFAULT 0, lbz_done INTEGER DEFAULT 0, attempts INTEGER DEFAULT 0, next_try TEXT, last_error TEXT);
-  CREATE INDEX IF NOT EXISTS ix_scrobble_pending ON scrobble_queue(lastfm_done, lbz_done);`);
+  CREATE INDEX IF NOT EXISTS ix_scrobble_pending ON scrobble_queue(lastfm_done, lbz_done);
+  CREATE TABLE IF NOT EXISTS lyrics (recording_id INTEGER PRIMARY KEY, found INTEGER DEFAULT 0, instrumental INTEGER DEFAULT 0, plain TEXT, synced TEXT, source TEXT, fetched_at TEXT DEFAULT (datetime('now')));`);
+const lyrics = require('../data-layer/lyrics');
 let scrobCfg = null;
 function loadScrobbleCfg() { const p = path.join(__dirname, 'scrobble.json'); try { scrobCfg = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null; } catch (e) { scrobCfg = null; } return scrobCfg; }
 loadScrobbleCfg();
@@ -159,6 +161,10 @@ const Q = {
   // ── radio (auto-extensión de la cola desde el grafo local) ──
   trackAlbum: db.prepare(`SELECT rel.release_group_id id FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE tr.id=? LIMIT 1`),
   albumGenreIds: db.prepare('SELECT genre_id FROM release_group_genre WHERE release_group_id=?'),
+  // ── letras (caché de LRCLIB) ──
+  lyricsGet: db.prepare('SELECT * FROM lyrics WHERE recording_id=?'),
+  lyricsUpsert: db.prepare(`INSERT INTO lyrics(recording_id,found,instrumental,plain,synced,source,fetched_at) VALUES(?,?,?,?,?,?,datetime('now'))
+     ON CONFLICT(recording_id) DO UPDATE SET found=excluded.found,instrumental=excluded.instrumental,plain=excluded.plain,synced=excluded.synced,source=excluded.source,fetched_at=datetime('now')`),
 };
 function logPlay(j) {
   let recId = j.recording_id || null, trackId = j.track_id || null, ms = j.ms_played;
@@ -191,6 +197,18 @@ function radio(seedTrackId, excludeRecIds, n) {
      ORDER BY shared DESC, COALESCE((SELECT tier_rank FROM v_album WHERE id=rg.id),0) DESC, RANDOM() LIMIT ?`;
   const rows = db.prepare(sql).all(...genreIds, ...ex, n);
   return rows.map(t => ({ trackId: t.trackId, recording_id: t.recording_id, title: t.title, artist: t.artist, albumId: t.albumId, length_ms: t.length_ms, playable: true, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs }));
+}
+// Letra de una pista: caché local (incl. caché negativa) y, si no, LRCLIB.
+async function getLyrics(trackId) {
+  const meta = Q.scrobbleMeta.get(trackId);
+  if (!meta || !meta.recording_id) return { found: false };
+  const rec = meta.recording_id;
+  const c = Q.lyricsGet.get(rec);
+  const recent = c && c.fetched_at && (Date.now() - Date.parse(c.fetched_at.replace(' ', 'T') + 'Z') < 7 * 864e5);
+  if (c && (c.found || recent)) return { found: !!c.found, instrumental: !!c.instrumental, plain: c.plain, synced: c.synced, source: c.source, cached: true };
+  const r = await lyrics.fetchLyrics(meta);
+  try { Q.lyricsUpsert.run(rec, r.found ? 1 : 0, r.instrumental ? 1 : 0, r.plain, r.synced, 'lrclib'); } catch (e) {}
+  return { found: r.found, instrumental: r.instrumental, plain: r.plain, synced: r.synced, source: 'lrclib', cached: false };
 }
 function home() {
   return {
@@ -459,6 +477,7 @@ http.createServer((req, res) => {
   }
   if (u.pathname.startsWith('/api/native/')) return void handleNative(req, res, u);
   if (u.pathname.startsWith('/api/scrobble/')) return void handleScrobble(req, res, u);
+  if (u.pathname === '/api/lyrics') return void getLyrics(parseInt(u.searchParams.get('track'), 10)).then(r => sendJSON(res, r)).catch(() => sendJSON(res, { found: false }));
   if (u.pathname === '/api/playlists' || u.pathname === '/api/playlist' || u.pathname.startsWith('/api/playlist/')) return void handlePlaylists(req, res, u);
   try {
     if (u.pathname === '/api/stream') return streamAudio(req, res, parseInt(u.searchParams.get('track'), 10));
