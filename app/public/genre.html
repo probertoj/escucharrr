@@ -35,6 +35,7 @@ fetch('/api/genre?name='+encodeURIComponent(name)).then(r=>r.json()).then(g=>{
     <div class="grid" style="margin-top:16px">${g.albums.map(albumCard).join('')}</div>`;
 }).catch(e=>app.innerHTML='error: '+e.message);
 </script>
+<script src="nav.js" defer></script>
 <script src="player.js" defer></script>
 </body>
 </html>

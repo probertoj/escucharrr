@@ -457,6 +457,32 @@ function serveCover(res, id) {
   res.end(coverSvg(id));
 }
 
+// ── estado para la página de Configuración (solo lectura; lo editable va por sus propias rutas) ──
+function settingsInfo() {
+  const n = sql => { try { return db.prepare(sql).get().n; } catch (e) { return 0; } };
+  const library = {
+    albums: n('SELECT COUNT(*) n FROM release_group'), artists: n('SELECT COUNT(*) n FROM artist'),
+    tracks: n('SELECT COUNT(*) n FROM track'), genres: n('SELECT COUNT(*) n FROM genre'),
+    files: n('SELECT COUNT(*) n FROM local_file'), covers: n('SELECT COUNT(*) n FROM release_group WHERE cover_path IS NOT NULL'),
+  };
+  const watch = { active: false, folders: [], obsidian: null };
+  try {
+    const wp = path.join(__dirname, 'watch.json');
+    if (fs.existsSync(wp)) {
+      const w = JSON.parse(fs.readFileSync(wp, 'utf8'));
+      watch.active = true; watch.folders = Array.isArray(w.music) ? w.music : [];
+      if (w.obsidianConfig) {
+        const oc = path.resolve(__dirname, w.obsidianConfig);
+        if (fs.existsSync(oc)) { const o = JSON.parse(fs.readFileSync(oc, 'utf8')); watch.obsidian = { vault: path.resolve(path.dirname(oc), o.vault), albumsFolder: o.albumsFolder || '' }; }
+      }
+    }
+  } catch (e) {}
+  const scr = { enabled: [], pending: 0 };
+  try { scr.enabled = scrobble.enabledServices(scrobCfg || {}); scr.pending = scrobble.pendingCount(db, scrobCfg || {}); } catch (e) {}
+  const native = { available: !!NATIVE, built: !!(NATIVE && fs.existsSync(NATIVE.ENGINE)) };
+  return { app: { version: '0.1', port: PORT, db: DB_PATH }, library, watch, scrobble: scr, native };
+}
+
 // ── biblioteca en vivo: watcher de carpetas + eventos SSE a la UI ───────────────
 const sseClients = new Set();
 function sseBroadcast(type) { const line = `data: ${JSON.stringify({ type, t: Date.now() })}\n\n`; for (const r of sseClients) { try { r.write(line); } catch (e) {} } }
@@ -508,6 +534,7 @@ http.createServer((req, res) => {
   try {
     if (u.pathname === '/api/stream') return streamAudio(req, res, parseInt(u.searchParams.get('track'), 10));
     if (u.pathname === '/api/cover') return serveCover(res, parseInt(u.searchParams.get('rg'), 10));
+    if (u.pathname === '/api/settings') return sendJSON(res, settingsInfo());
     if (u.pathname === '/api/library') return sendJSON(res, libraryList());
     if (u.pathname === '/api/album') { const a = album(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/search') return sendJSON(res, search(u.searchParams.get('q'), Math.min(parseInt(u.searchParams.get('n') || '20', 10) || 20, 100)));

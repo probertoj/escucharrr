@@ -40,6 +40,7 @@ function run(v){
 let t; q.addEventListener('input',()=>{clearTimeout(t);t=setTimeout(()=>{const v=q.value.trim();history.replaceState(0,'','search.html?q='+encodeURIComponent(v));run(v);},150);});
 const q0=new URLSearchParams(location.search).get('q')||''; q.value=q0; run(q0); q.focus();
 </script>
+<script src="nav.js" defer></script>
 <script src="player.js" defer></script>
 </body>
 </html>

@@ -19,7 +19,6 @@ nav.top a{color:var(--text-2)} nav.top a.on{color:var(--text);font-weight:600}
 </head>
 <body>
 <div class="wrap">
-  <nav class="top"><a href="home.html">Inicio</a><a href="/">Biblioteca</a><a href="discover.html">Descubrir</a><a href="genres.html">Géneros</a><a href="playlists.html" class="on">Listas</a><a href="search.html">Buscar</a></nav>
   <h1>Listas de reproducción</h1>
   <div class="newpl">
     <input id="name" placeholder="Nueva lista…" maxlength="80">
@@ -46,6 +45,7 @@ name_.addEventListener('keydown',e=>{if(e.key==='Enter')create();});
 load();
 document.addEventListener('escucharrr:changed',load);
 </script>
+<script src="nav.js" defer></script>
 <script src="player.js" defer></script>
 </body>
 </html>

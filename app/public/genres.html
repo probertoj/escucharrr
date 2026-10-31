@@ -16,7 +16,6 @@ nav.top a{color:var(--text-2)} nav.top a.on{color:var(--text);font-weight:600}
 </head>
 <body>
 <div class="wrap">
-  <nav class="top"><a href="home.html">Inicio</a><a href="/">Biblioteca</a><a href="discover.html">Descubrir</a><a href="genres.html" class="on">Géneros</a><a href="playlists.html">Listas</a><a href="search.html">Buscar</a></nav>
   <h1>Géneros</h1>
   <div class="count" id="count">cargando…</div>
   <div class="gcloud" id="cloud"></div>
@@ -33,6 +32,7 @@ function load(){fetch('/api/genres').then(r=>r.json()).then(gs=>{
 load();
 document.addEventListener('escucharrr:changed',load);   // biblioteca en vivo
 </script>
+<script src="nav.js" defer></script>
 <script src="player.js" defer></script>
 </body>
 </html>

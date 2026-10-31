@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — configuración</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.set h1{margin-bottom:4px}
+.set .lead{color:var(--text-2);font-size:14px;margin-bottom:18px}
+.grp{border:1px solid var(--border);border-radius:14px;margin:0 0 16px;overflow:hidden;background:var(--surface)}
+.grp>h2{font-family:var(--serif);font-size:19px;font-weight:600;margin:0;padding:13px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.grp>h2 .gi{font-size:17px}
+.grp .body{padding:14px 16px}
+.row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:9px 0;border-bottom:1px solid var(--border)}
+.row:last-child{border-bottom:none}
+.row .lbl{flex:1;min-width:160px}
+.row .lbl .k{font-size:14px}
+.row .lbl .d{color:var(--text-2);font-size:12.5px;margin-top:2px}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:9px;overflow:hidden}
+.seg button{border:none;border-radius:0;border-left:1px solid var(--border);padding:7px 13px;font-size:13px;background:var(--surface)}
+.seg button:first-child{border-left:none}
+.seg button.on{background:var(--accent);color:#fff}
+.val{color:var(--text-2);font-size:13px;min-width:74px;text-align:right}
+input[type=range]{accent-color:var(--accent)}
+.eqbands{display:flex;gap:10px;justify-content:space-between;margin-top:6px}
+.eqbands .b{display:flex;flex-direction:column;align-items:center;gap:6px;flex:1}
+.eqbands .b input{writing-mode:vertical-lr;direction:rtl;width:22px;height:90px}
+.eqbands .b .f{font-size:11px;color:var(--text-2)}
+.eqbands .b .g{font-size:11px;color:var(--text-2)}
+.pre{display:flex;gap:7px;flex-wrap:wrap}
+.pre button{font-size:12.5px;padding:5px 11px;border-radius:999px}
+.stat{display:flex;flex-wrap:wrap;gap:8px 22px}
+.stat .s{font-size:13px}
+.stat .s b{font-size:18px;font-family:var(--serif);font-weight:600}
+.mono{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--text-2);word-break:break-all}
+.tag{display:inline-block;font-size:11px;background:var(--surface-2);color:var(--text-2);border-radius:999px;padding:2px 9px;margin-left:6px}
+.soon{color:var(--muted);font-size:13px;font-style:italic}
+.sw{position:relative;width:42px;height:24px;flex:none}
+.sw input{opacity:0;width:100%;height:100%;margin:0;cursor:pointer}
+.sw .t{position:absolute;inset:0;background:var(--surface-2);border:1px solid var(--border);border-radius:999px;transition:background .15s;pointer-events:none}
+.sw .t::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:var(--muted);transition:transform .15s,background .15s}
+.sw input:checked+.t{background:var(--accent-bg);border-color:var(--accent)}
+.sw input:checked+.t::after{transform:translateX(18px);background:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap set">
+  <h1>Configuración</h1>
+  <div class="lead">Lo que se puede cambiar aquí se aplica al instante. Lo marcado como <i>próximamente</i> aún no está cableado.</div>
+  <div id="app">cargando…</div>
+</div>
+
+<script src="player.js" defer></script>
+<script src="nav.js" defer></script>
+<script>
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+window.addEventListener('DOMContentLoaded', async () => {
+  const P = window.player;
+  let info = {}; try { info = await fetch('/api/settings').then(r => r.json()); } catch (e) {}
+  const S = (P && P.getSettings) ? P.getSettings() : { xfade: 0, rgMode: 'track', radio: false, eqOn: false, eqGains: [0,0,0,0,0,0,0], eqFreqs: ['60','150','400','1k','2.4k','6k','15k'], presets: [], zone: {}, nativeMode: false };
+  const app = document.getElementById('app');
+
+  const lib = info.library || {}, watch = info.watch || {}, scr = info.scrobble || {}, nat = info.native || {}, ap = info.app || {};
+  const theme = (window.escunav && escunav.getTheme) ? escunav.getTheme() : 'auto';
+  const zoneName = S.nativeMode ? ((S.zone && S.zone.name) || 'Este equipo') + ' · WASAPI nativo' : ((S.zone && S.zone.label) || (S.zone && S.zone.name) || 'Este equipo (navegador)');
+
+  const rgSeg = m => `<div class="seg" id="rgseg">${['track','album','off'].map(k => `<button data-rg="${k}" class="${S.rgMode===k?'on':''}">${k==='track'?'Por pista':k==='album'?'Por álbum':'Desactivado'}</button>`).join('')}</div>`;
+  const themeSeg = `<div class="seg" id="thseg">${['auto','light','dark'].map(k => `<button data-th="${k}" class="${theme===k?'on':''}">${k==='auto'?'Automático':k==='light'?'Claro':'Oscuro'}</button>`).join('')}</div>`;
+  const presets = (S.presets||[]).map(p => `<button data-pre="${p}">${esc(p)}</button>`).join('');
+  const bands = S.eqGains.map((g,i) => `<div class="b"><span class="g" id="eqg${i}">${g>0?'+':''}${g}</span><input class="eqband" type="range" min="-12" max="12" step="1" value="${g}" data-i="${i}"><span class="f">${esc(S.eqFreqs[i]||'')}</span></div>`).join('');
+
+  app.innerHTML = `
+  <div class="grp"><h2><span class="gi">📚</span> Biblioteca</h2><div class="body">
+    <div class="row"><div class="stat">
+      <span class="s"><b>${lib.albums||0}</b> álbumes</span><span class="s"><b>${lib.artists||0}</b> artistas</span>
+      <span class="s"><b>${lib.tracks||0}</b> pistas</span><span class="s"><b>${lib.files||0}</b> ficheros</span>
+      <span class="s"><b>${lib.genres||0}</b> géneros</span><span class="s"><b>${lib.covers||0}</b> carátulas</span>
+    </div></div>
+    <div class="row"><div class="lbl"><div class="k">Carpetas vigiladas ${watch.active?'<span class="tag">en vivo</span>':''}</div>
+      <div class="d">${(watch.folders&&watch.folders.length)?watch.folders.map(f=>`<span class="mono">${esc(f)}</span>`).join('<br>'):'ninguna (crea <span class="mono">app/watch.json</span>)'}</div></div></div>
+    ${watch.obsidian?`<div class="row"><div class="lbl"><div class="k">Fuente Obsidian</div><div class="d"><span class="mono">${esc(watch.obsidian.vault)}</span> · carpeta «${esc(watch.obsidian.albumsFolder)}»</div></div></div>`:''}
+    <div class="row"><div class="lbl"><div class="k">Escaneo, metadatos y análisis</div><div class="d">Por ahora desde las herramientas de <span class="mono">data-layer/</span> (scan, enrich, editorial, covers, analyze). El watcher reescanea al vuelo.</div></div></div>
+  </div></div>
+
+  <div class="grp"><h2><span class="gi">🔈</span> Audio — salida</h2><div class="body">
+    <div class="row"><div class="lbl"><div class="k">Zona de salida actual</div><div class="d">${esc(zoneName)}</div></div>
+      <button id="chooseout">Elegir salida / zona…</button></div>
+    <div class="row"><div class="lbl"><div class="k">Motor nativo (WASAPI)</div><div class="d">${nat.available?(nat.built?'compilado y disponible · resample sinc Kaiser, dither TPDF, EQ propio':'disponible pero sin compilar (ejecuta <span class="mono">engine/build.ps1</span>)'):'no disponible en esta build'}</div></div></div>
+    <div class="row"><div class="lbl"><div class="k">Salida de red (UPnP/DLNA, p. ej. Eversolo)</div><div class="d soon">próximamente — ver <span class="mono">docs/dispositivos-de-red-y-roon.md</span></div></div></div>
+  </div></div>
+
+  <div class="grp"><h2><span class="gi">▶</span> Reproducción</h2><div class="body">
+    <div class="row"><div class="lbl"><div class="k">Crossfade</div><div class="d">solapa el final de una pista con el inicio de la siguiente</div></div>
+      <input id="xf" type="range" min="0" max="12" step="0.5" value="${S.xfade}" style="width:160px"><span class="val" id="xfval"></span></div>
+    <div class="row"><div class="lbl"><div class="k">Normalización de volumen (ReplayGain)</div><div class="d">por pista (−18 LUFS) · por álbum (conserva la dinámica del disco) · desactivada</div></div>${rgSeg()}</div>
+    <div class="row"><div class="lbl"><div class="k">Radio / autoplay</div><div class="d">extiende la cola automáticamente al terminar</div></div>
+      <label class="sw"><input type="checkbox" id="radio" ${S.radio?'checked':''}><span class="t"></span></label></div>
+  </div></div>
+
+  <div class="grp"><h2><span class="gi">🎚</span> Ecualizador</h2><div class="body">
+    <div class="row"><div class="lbl"><div class="k">Ecualizador de 7 bandas</div><div class="d">se aplica a la salida del navegador y, si está activo, al motor nativo</div></div>
+      <label class="sw"><input type="checkbox" id="eqon" ${S.eqOn?'checked':''}><span class="t"></span></label></div>
+    <div class="row" style="display:block"><div class="pre" id="pre">${presets}</div>
+      <div class="eqbands" id="eqbands">${bands}</div></div>
+  </div></div>
+
+  <div class="grp"><h2><span class="gi">↻</span> Servicios y scrobbling</h2><div class="body">
+    <div class="row"><div class="lbl"><div class="k">Scrobbling</div><div class="d">${(scr.enabled&&scr.enabled.length)?'activo: '+scr.enabled.map(esc).join(', ')+(scr.pending?` · ${scr.pending} en cola`:''):'desactivado (crea <span class="mono">app/scrobble.json</span> a partir de <span class="mono">scrobble.example.json</span>)'}</div></div></div>
+    <div class="row"><div class="lbl"><div class="k">Spotify / Tidal / Qobuz</div><div class="d soon">próximamente — ver <span class="mono">docs/ajustes-vs-roon.md</span></div></div></div>
+  </div></div>
+
+  <div class="grp"><h2><span class="gi">🎨</span> Interfaz</h2><div class="body">
+    <div class="row"><div class="lbl"><div class="k">Tema</div><div class="d">automático sigue al sistema; el fondo claro es blanco por diseño</div></div>${themeSeg}</div>
+    <div class="row"><div class="lbl"><div class="k">Menú lateral</div><div class="d">fijo a la izquierda en escritorio, barra superior en móvil</div></div><span class="val">activo</span></div>
+  </div></div>
+
+  <div class="grp"><h2><span class="gi">⚙</span> Avanzado</h2><div class="body">
+    <div class="row"><div class="lbl"><div class="k">Versión</div></div><span class="val">escucharrr ${esc(ap.version||'0.1')}</span></div>
+    <div class="row"><div class="lbl"><div class="k">Servidor</div></div><span class="val">puerto ${esc(String(ap.port||''))}</span></div>
+    <div class="row"><div class="lbl"><div class="k">Base de datos</div><div class="d mono">${esc(ap.db||'')}</div></div></div>
+    <div class="row"><div class="lbl"><div class="k">Perfiles y acceso · Atajos de teclado</div><div class="d soon">próximamente</div></div></div>
+  </div></div>`;
+
+  // ── cableado (reusa la lógica del player) ──
+  const setXfLabel = v => { const l = document.getElementById('xfval'); if (l) l.textContent = (+v === 0) ? 'desactivado' : (+v).toFixed(1).replace('.0','') + ' s'; };
+  setXfLabel(S.xfade);
+  const xf = document.getElementById('xf');
+  if (xf) xf.addEventListener('input', e => { const v = parseFloat(e.target.value); setXfLabel(v); if (P && P.setXfade) P.setXfade(v); });
+
+  document.getElementById('rgseg').addEventListener('click', e => { const b = e.target.closest('[data-rg]'); if (!b) return; if (P && P.setRgMode) P.setRgMode(b.dataset.rg); [...e.currentTarget.children].forEach(c => c.classList.toggle('on', c === b)); });
+  document.getElementById('thseg').addEventListener('click', e => { const b = e.target.closest('[data-th]'); if (!b) return; if (window.escunav) escunav.setTheme(b.dataset.th); [...e.currentTarget.children].forEach(c => c.classList.toggle('on', c === b)); });
+
+  const radio = document.getElementById('radio'); if (radio) radio.addEventListener('change', e => { if (P && P.setRadio) P.setRadio(e.target.checked); });
+  const eqon = document.getElementById('eqon'); if (eqon) eqon.addEventListener('change', e => { if (P && P.setEqEnabled) P.setEqEnabled(e.target.checked); });
+
+  document.getElementById('pre').addEventListener('click', e => { const b = e.target.closest('[data-pre]'); if (!b || !P || !P.setPreset) return; P.setPreset(b.dataset.pre); refreshEq(); });
+  document.getElementById('eqbands').addEventListener('input', e => { const s = e.target.closest('.eqband'); if (!s || !P || !P.setEqBand) return; const i = +s.dataset.i, v = parseInt(s.value, 10); P.setEqBand(i, v); const g = document.getElementById('eqg'+i); if (g) g.textContent = (v>0?'+':'') + v; });
+  function refreshEq() { if (!P || !P.getSettings) return; const s = P.getSettings(); const on = document.getElementById('eqon'); if (on) on.checked = s.eqOn; s.eqGains.forEach((v,i) => { const sl = document.querySelector('.eqband[data-i="'+i+'"]'); if (sl) sl.value = v; const g = document.getElementById('eqg'+i); if (g) g.textContent = (v>0?'+':'') + v; }); }
+
+  const co = document.getElementById('chooseout'); if (co) co.addEventListener('click', () => { if (P && P.openOutput) P.openOutput(); });
+});
+</script>
+</body>
+</html>

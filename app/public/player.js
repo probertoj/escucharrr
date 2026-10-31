@@ -443,5 +443,9 @@ window.player = (function () {
   const getZone = () => ({ name: zone.name, deviceId: zone.deviceId, label: zone.label });
   const getAudio = () => ({ eqOn, eqGains: eqGains.slice(), xfade, rgMode });
   const getNative = () => ({ nativeMode, nativeDeviceId, nativeExclusive, nativePos, playing, startedIdx: nativeStartedIdx });
-  return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain, getZone, getAudio, getNative, setNativeMode, setRadio, undo };
+  // instantánea de ajustes para la página de Configuración (misma fuente que los paneles)
+  function getSettings() { return { xfade, rgMode, radio: radioOn, eqOn, eqGains: eqGains.slice(), eqFreqs: EQLAB.slice(), presets: Object.keys(EQPRE), volume: vol, zone: Object.assign({}, zone), nativeMode }; }
+
+  return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain, getZone, getAudio, getNative, setNativeMode, setRadio, undo,
+    getSettings, setXfade, setRgMode, setEqEnabled, setEqBand, setPreset, openOutput: toggleZPanel, openEq: toggleEqPanel };
 })();
