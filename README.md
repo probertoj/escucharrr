@@ -39,6 +39,13 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     del servidor (`/api/native/*`) en vez del navegador, silenciando los decks para no duplicar el sonido.
   - **Biblioteca en vivo**: con `app/watch.json` (copia de `watch.example.json`), el servidor vigila
     tus carpetas de música y el vault de Obsidian, reescanea/sincroniza al vuelo y refresca la UI por SSE.
+  - **Scrobbling local-first** (`data-layer/scrobble.js`): cada escucha que supera el umbral (mitad de la
+    pista o 4 min; ≥ 30 s) se encola en SQLite (`scrobble_queue`, instantánea de metadata con MBIDs) y un
+    drenador la envía a **Last.fm** y **ListenBrainz** con reintentos + backoff, tolerando estar sin conexión;
+    "sonando ahora" al empezar cada pista. Sin paquetes externos (firma md5 de Last.fm propia). Con
+    `app/scrobble.json` (copia de `scrobble.example.json`); credenciales con `node data-layer/scrobble-auth.js`
+    (`--listenbrainz --token …`, o `--lastfm` → autorizar en el navegador → `--lastfm-finish`). Sin claves,
+    desactivado. Rutas `/api/scrobble/{nowplaying,submit,status}`.
   - `public/` — biblioteca (Focus por tier/género/década/tipo/formato/valoración, orden, filtro),
     página de álbum (tier, valoración, créditos por rol, bio con procedencia), **página de artista**
     (avatar, géneros, discografía propia y "aparece en" con sus roles), **página de género**

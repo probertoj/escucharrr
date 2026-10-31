@@ -12,6 +12,7 @@ window.player = (function () {
   const EQLAB = ['60', '150', '400', '1k', '2.4k', '6k', '15k'];
   const EQPRE = { plano: [0, 0, 0, 0, 0, 0, 0], graves: [6, 4, 1, 0, 0, 0, 1], voz: [-2, -1, 1, 3, 3, 1, 0], brillo: [0, 0, 0, 0, 2, 4, 5], loudness: [5, 3, 0, -1, 0, 3, 5] };
   let q = [], idx = -1, playing = false, loggedIdx = -1, bar = null;
+  let scrobbledIdx = -1, trackStartEpoch = 0;   // scrobbling: una vez por pista, con la hora de inicio
   let vol = 1; try { const v = parseFloat(localStorage.getItem(VKEY)); if (v >= 0 && v <= 1) vol = v; } catch (e) {}
   try { const s = JSON.parse(localStorage.getItem(KEY)); if (s) { q = s.q || []; idx = (s.idx == null ? -1 : s.idx); } } catch (e) {}
   // zona de salida: nombre + dispositivo (base para multi-sala al estilo Roon; hoy = salida de este equipo)
@@ -89,6 +90,14 @@ window.player = (function () {
   const posMs = () => nativeMode ? nativePos * 1000 : (loadedCur() ? active().el.currentTime * 1000 : 0);
   function cover(id, s) { const p = PAIRS[(id || 0) % PAIRS.length]; return `<svg width="${s}" height="${s}" viewBox="0 0 46 46" style="border-radius:7px;display:block"><rect width="46" height="46" fill="${p[0]}"/><rect y="30" width="46" height="16" fill="${p[1]}"/><circle cx="33" cy="16" r="10" fill="#FAC775"/></svg>`; }
   function logPlay() { const c = cur(); if (c && c.trackId && loggedIdx !== idx) { loggedIdx = idx; fetch('/api/play', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ track_id: c.trackId, zone: zone.name }) }).catch(() => {}); } }
+  const spost = (p, b) => fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).catch(() => {});
+  function trackStarted() { trackStartEpoch = Math.floor(Date.now() / 1000); const c = cur(); if (c && c.trackId) spost('/api/scrobble/nowplaying', { track_id: c.trackId }); }   // "sonando ahora"
+  // scrobble al superar el umbral (mitad de la pista o 4 min; pistas ≥ 30 s), una sola vez
+  function maybeScrobble() {
+    const c = cur(); if (!c || !c.trackId || scrobbledIdx === idx) return;
+    const len = lenMs(); if (!len || len < 30000) return;
+    if (posMs() >= Math.min(len / 2, 240000)) { scrobbledIdx = idx; spost('/api/scrobble/submit', { track_id: c.trackId, listened_at: trackStartEpoch || Math.floor(Date.now() / 1000) }); }
+  }
 
   function ensureBar() { if (bar) return; bar = document.createElement('div'); bar.id = 'nowbar'; bar.setAttribute('style', 'position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);border-top:1px solid var(--border);padding:8px 16px;display:none;align-items:center;gap:14px'); document.body.appendChild(bar); }
   const volIcon = () => vol === 0 ? '🔇' : vol < 0.5 ? '🔉' : '🔊';
@@ -119,7 +128,7 @@ window.player = (function () {
        <a href="queue.html" title="Cola" style="font-size:16px;color:var(--text-2);text-decoration:none">☰ ${idx + 1}/${q.length}</a>`;
     emit();
   }
-  function progress() { const c = cur(); if (!c) return; const len = lenMs(), p = posMs(); const pr = document.getElementById('npprog'), el = document.getElementById('npel'); if (pr && len) pr.style.width = Math.min(100, p / len * 100) + '%'; if (el) el.textContent = mmss(p); }
+  function progress() { const c = cur(); if (!c) return; const len = lenMs(), p = posMs(); const pr = document.getElementById('npprog'), el = document.getElementById('npel'); if (pr && len) pr.style.width = Math.min(100, p / len * 100) + '%'; if (el) el.textContent = mmss(p); maybeScrobble(); }
   const emit = () => document.dispatchEvent(new Event('player:change'));
 
   // ── crossfade: al acercarse el final de la pista activa, solapa con la siguiente ──
@@ -140,7 +149,7 @@ window.player = (function () {
     od.gain.gain.cancelScheduledValues(now); od.gain.gain.setValueAtTime(Math.max(0.0001, od.gain.gain.value), now); od.gain.gain.linearRampToValueAtTime(0.0001, now + xfade);
     if (ctx.state === 'suspended') ctx.resume();
     nd.el.play().catch(() => {});
-    cur0 = 1 - cur0; idx = ni; save(); loggedIdx = -1;                 // la entrante pasa a ser la actual (su 'play' registrará la escucha)
+    cur0 = 1 - cur0; idx = ni; save(); loggedIdx = -1; trackStarted();  // la entrante pasa a ser la actual (su 'play' registrará la escucha)
     fadeTimer = setTimeout(() => { od.el.pause(); od.el.removeAttribute('src'); od.trackIdx = -1; fading = false; }, Math.round(xfade * 1000) + 150);
     render();
   }
@@ -164,7 +173,7 @@ window.player = (function () {
   function nativePlay(i, opts) {
     idx = i; save(); const c = cur(); if (!c) return;
     if (c.playable === false) { playing = false; nativeStartedIdx = -1; render(); return; }
-    nativeBusy = true; playing = true; loggedIdx = idx; nativeMiss = 0; nativeStartedIdx = idx; render();
+    nativeBusy = true; playing = true; loggedIdx = idx; nativeMiss = 0; nativeStartedIdx = idx; trackStarted(); render();
     const body = { track_id: c.trackId, deviceId: nativeDeviceId || null, exclusive: !!nativeExclusive, gainDb: nativeGainDb(c), zone: zone.name, eq: { on: eqOn, gains: eqGains } };
     if (opts && opts.seekSec) body.seekSec = opts.seekSec;
     njson('play', body).then(j => {
@@ -209,6 +218,7 @@ window.player = (function () {
     d.el.src = '/api/stream?track=' + c.trackId;
     applyVol();
     d.el.play().catch(() => {});
+    trackStarted();
     render();
   }
   function onEnded() { if (fading) return; next(); }

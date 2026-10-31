@@ -171,6 +171,31 @@ CREATE TABLE IF NOT EXISTS local_file (
   match_by     TEXT,                          -- mb-tag | isrc | acoustid | tags | manual
   match_conf   REAL
 );
+
+-- Cola de scrobbles (local-first): cada escucha que supera el umbral se guarda aquí como
+-- instantánea y un drenador la envía a Last.fm / ListenBrainz con reintentos (tolera estar
+-- sin conexión). Sin claves configuradas, no se encola nada. Se guarda la metadata copiada
+-- para que el scrobble sobreviva a cambios posteriores del grafo.
+CREATE TABLE IF NOT EXISTS scrobble_queue (
+  id             INTEGER PRIMARY KEY,
+  recording_id   INTEGER,
+  track_id       INTEGER,
+  artist         TEXT NOT NULL,
+  title          TEXT NOT NULL,
+  album          TEXT,
+  album_artist   TEXT,
+  recording_mbid TEXT,
+  release_mbid   TEXT,
+  duration_ms    INTEGER,
+  listened_at    INTEGER NOT NULL,             -- epoch (segundos) del inicio de la escucha
+  created_at     TEXT DEFAULT (datetime('now')),
+  lastfm_done    INTEGER DEFAULT 0,
+  lbz_done       INTEGER DEFAULT 0,
+  attempts       INTEGER DEFAULT 0,
+  next_try       TEXT,                          -- datetime para backoff tras un fallo
+  last_error     TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_scrobble_pending ON scrobble_queue(lastfm_done, lbz_done);
 CREATE INDEX IF NOT EXISTS ix_file_recording ON local_file(recording_id);
 CREATE INDEX IF NOT EXISTS ix_file_track ON local_file(track_id);
 

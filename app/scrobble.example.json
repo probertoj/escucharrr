@@ -1,0 +1,11 @@
+{
+  "_comment": "Copia esto a app/scrobble.json (gitignored) y rellena lo que uses. Sin claves, el scrobbling queda desactivado.",
+  "listenbrainz": {
+    "token": ""
+  },
+  "lastfm": {
+    "apiKey": "",
+    "apiSecret": "",
+    "sessionKey": ""
+  }
+}

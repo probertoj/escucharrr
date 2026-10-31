@@ -27,6 +27,18 @@ if (!fs.existsSync(DB_PATH)) { console.error('No existe', DB_PATH, '\nGenera la 
 const db = new DatabaseSync(DB_PATH);
 try { db.exec('PRAGMA journal_mode=WAL'); db.exec('PRAGMA busy_timeout=5000'); } catch (e) {}
 
+// Scrobbling local-first (Last.fm + ListenBrainz): cola en SQLite + drenador con reintentos.
+const scrobble = require('../data-layer/scrobble');
+db.exec(`CREATE TABLE IF NOT EXISTS scrobble_queue (
+  id INTEGER PRIMARY KEY, recording_id INTEGER, track_id INTEGER, artist TEXT NOT NULL, title TEXT NOT NULL,
+  album TEXT, album_artist TEXT, recording_mbid TEXT, release_mbid TEXT, duration_ms INTEGER,
+  listened_at INTEGER NOT NULL, created_at TEXT DEFAULT (datetime('now')),
+  lastfm_done INTEGER DEFAULT 0, lbz_done INTEGER DEFAULT 0, attempts INTEGER DEFAULT 0, next_try TEXT, last_error TEXT);
+  CREATE INDEX IF NOT EXISTS ix_scrobble_pending ON scrobble_queue(lastfm_done, lbz_done);`);
+let scrobCfg = null;
+function loadScrobbleCfg() { const p = path.join(__dirname, 'scrobble.json'); try { scrobCfg = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null; } catch (e) { scrobCfg = null; } return scrobCfg; }
+loadScrobbleCfg();
+
 const genresOf = db.prepare(`SELECT group_concat(g.name,'|') gs FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id WHERE rgg.release_group_id=?`);
 const formatOf = db.prepare(`SELECT rel.format f FROM "release" rel WHERE rel.release_group_id=? LIMIT 1`);
 const Q = {
@@ -113,6 +125,13 @@ const Q = {
      ORDER BY a.tier_rank DESC, RANDOM() LIMIT 12`),
   discRandom: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
      FROM v_album a ORDER BY RANDOM() LIMIT 6`),
+  // metadatos para scrobble (por track_id)
+  scrobbleMeta: db.prepare(`SELECT tr.recording_id, COALESCE(tr.title, r.title) title, r.mbid recording_mbid,
+       COALESCE(tr.length_ms, r.length_ms) duration_ms, rel.mbid release_mbid, rg.title album,
+       (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id, r.artist_credit_id) ORDER BY acn.position LIMIT 1) artist,
+       (SELECT acn2.name FROM artist_credit_name acn2 WHERE acn2.artist_credit_id=rg.artist_credit_id ORDER BY acn2.position LIMIT 1) album_artist
+     FROM track tr JOIN recording r ON r.id=tr.recording_id JOIN medium m ON m.id=tr.medium_id
+     JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id WHERE tr.id=?`),
 };
 function logPlay(j) {
   let recId = j.recording_id || null, trackId = j.track_id || null, ms = j.ms_played;
@@ -270,6 +289,26 @@ async function handleNative(req, res, u) {
     res.writeHead(404); res.end('{}');
   } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }
+
+// ── scrobbling: now-playing (efímero) + submit (cola) + estado ──────────────
+function scrobbleMetaOf(trackId) { const m = Q.scrobbleMeta.get(trackId); if (!m || !m.artist || !m.title) return null; m.track_id = trackId; return m; }
+async function handleScrobble(req, res, u) {
+  const sub = u.pathname.slice('/api/scrobble/'.length);
+  const services = scrobble.enabledServices(scrobCfg || {});
+  if (req.method === 'GET' && sub === 'status') return sendJSON(res, { ok: true, enabled: services, pending: scrobble.pendingCount(db, scrobCfg || {}) });
+  const body = req.method === 'POST' ? await readBody(req) : {};
+  if (!services.length) return sendJSON(res, { ok: true, enabled: [] });   // sin claves: no-op
+  const meta = scrobbleMetaOf(body.track_id);
+  if (!meta) return sendJSON(res, { ok: false, error: 'pista sin metadatos' });
+  if (sub === 'nowplaying') { scrobble.nowPlaying(scrobCfg, meta).catch(() => {}); return sendJSON(res, { ok: true, enabled: services }); }
+  if (sub === 'submit') {
+    meta.listened_at = parseInt(body.listened_at, 10) || Math.floor(Date.now() / 1000);
+    scrobble.enqueue(db, meta);
+    scrobble.drain(db, scrobCfg, () => {}).catch(() => {});   // intenta enviar ya; si falla, queda en cola
+    return sendJSON(res, { ok: true, enabled: services });
+  }
+  res.writeHead(404); res.end('{}');
+}
 function sendFile(res, file) {
   const p = path.join(PUB, file);
   if (!p.startsWith(PUB) || !fs.existsSync(p)) { res.writeHead(404); res.end('no'); return; }
@@ -322,6 +361,7 @@ http.createServer((req, res) => {
     return;
   }
   if (u.pathname.startsWith('/api/native/')) return void handleNative(req, res, u);
+  if (u.pathname.startsWith('/api/scrobble/')) return void handleScrobble(req, res, u);
   try {
     if (u.pathname === '/api/stream') return streamAudio(req, res, parseInt(u.searchParams.get('track'), 10));
     if (u.pathname === '/api/library') return sendJSON(res, libraryList());
@@ -335,4 +375,10 @@ http.createServer((req, res) => {
     if (u.pathname === '/' || u.pathname === '') return sendFile(res, 'index.html');
     return sendFile(res, u.pathname.replace(/^\//, ''));
   } catch (e) { res.writeHead(500); res.end(String(e.message)); }
-}).listen(PORT, () => { console.log('escucharrr en http://localhost:' + PORT); startWatching(); });
+}).listen(PORT, () => {
+  console.log('escucharrr en http://localhost:' + PORT);
+  startWatching();
+  const svc = scrobble.enabledServices(scrobCfg || {});
+  if (svc.length) { console.log('scrobbling activo:', svc.join(', ')); setInterval(() => scrobble.drain(db, scrobCfg, console.log).catch(() => {}), 30000); }
+  else console.log('scrobbling: desactivado (crea app/scrobble.json a partir de scrobble.example.json)');
+});
