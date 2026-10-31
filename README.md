@@ -71,7 +71,9 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     en el futuro) y el **transporte** lo lleva el bridge — como el "core" de Roon posee las zonas y la UI es un
     mando. Salida nativa = **zona del servidor**. Volumen y pausa son **inmediatos** (un comando, sin relanzar);
     el **seek** solo hace flush del buffer y reposiciona ffmpeg sobre el mismo pipe (el dispositivo no se corta);
-    el fin real de la pista se detecta por duración (ffmpeg decodifica mucho antes de que acabe el audio).
+    el **cambio de pista reutiliza el motor** (mismo dispositivo en compartido) sin reinicializar WASAPI (casi sin
+    corte); el fin real de la pista se detecta por duración (ffmpeg decodifica mucho antes de que acabe el audio).
+    Al volver de la zona nativa al navegador, la reproducción **reanuda en la posición** (no desde cero).
   - `build.ps1` — compila con MSVC (VS Build Tools + workload C++); `cli.js` — demo: `node engine/cli.js devices|play`.
   - El servidor expone `/api/native/{devices,state,play,pause,resume,stop,seek,volume,eq,output}` para manejarlo
     (aplica ReplayGain × volumen; si el binario no está compilado, lo avisa sin romper nada). El **player** tiene

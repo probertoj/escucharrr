@@ -214,14 +214,14 @@ window.player = (function () {
     const wasPlaying = playing, posSec = posMs() / 1000;
     if (nativeMode) nativeStop(); else { cancelFade(); decks.forEach(d => d.el.pause()); }
     nativeMode = on; zone.native = on; persistZone(); updateZoneBtn();
-    if (cur() && wasPlaying) { if (on) nativePlay(idx, { seekSec: posSec }); else start(idx); }
+    if (cur() && wasPlaying) { if (on) nativePlay(idx, { seekSec: posSec }); else start(idx, posSec); }
     else render();
     if (zpanel && zpanel.style.display === 'block') renderZPanel();
   }
   function setNativeDevice(id) { nativeDeviceId = id || ''; zone.nativeDeviceId = nativeDeviceId; persistZone(); if (nativeMode && playing) nativePlay(idx, { seekSec: nativePos }); renderZPanel(); }
   function setNativeExclusive(on) { nativeExclusive = !!on; zone.nativeExclusive = nativeExclusive; persistZone(); if (nativeMode && playing) nativePlay(idx, { seekSec: nativePos }); renderZPanel(); }
 
-  function start(i) {
+  function start(i, atSec) {
     if (nativeMode) return nativePlay(i);
     cancelFade();
     idx = i; save(); const c = cur(); if (!c) return;
@@ -232,6 +232,7 @@ window.player = (function () {
     setDeckGain(d, c);                           // ReplayGain de esta pista en la ganancia del deck
     const o = other(); if (o.gain) { try { o.gain.gain.cancelScheduledValues(ctx.currentTime); } catch (e) {} o.gain.gain.value = 0.0001; } o.el.pause();
     d.el.src = '/api/stream?track=' + c.trackId;
+    if (atSec > 0) { const onMeta = () => { try { d.el.currentTime = atSec; } catch (e) {} d.el.removeEventListener('loadedmetadata', onMeta); }; d.el.addEventListener('loadedmetadata', onMeta); }   // reanudar en la posición
     applyVol();
     d.el.play().catch(() => {});
     trackStarted();

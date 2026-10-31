@@ -126,9 +126,9 @@ class NativePlayer extends EventEmitter {
     return ff;
   }
 
-  // (Re)inicia la reproducción: motor + pipe + ffmpeg nuevos (cambio de pista/dispositivo).
+  // Reproduce `file`. Si hay un motor vivo compatible (compartido, mismo dispositivo y formato),
+  // lo REUTILIZA (gapless: sin reinicializar WASAPI entre pistas); si no, arranca uno nuevo.
   async play(file, opts = {}) {
-    this._teardown();
     const deviceId = opts.deviceId !== undefined ? (opts.deviceId || null) : this._state.deviceId;
     const exclusive = !!(opts.exclusive !== undefined ? opts.exclusive : this._state.exclusive);
     const gainDb = opts.gainDb != null ? opts.gainDb : this._state.gainDb;
@@ -142,6 +142,23 @@ class NativePlayer extends EventEmitter {
       try { const devs = await this.listDevices(); const dev = deviceId ? devs.find(d => d.id === deviceId) : devs.find(d => d.default); if (dev) { rate = dev.rate || 48000; ch = dev.channels || 2; } }
       catch { rate = 48000; }
     }
+
+    // GAPLESS: motor vivo compatible -> reutilizar (flush + nuevo ffmpeg sobre el mismo pipe y
+    // dispositivo), sin el corte/clic de reinicializar WASAPI. Solo en compartido y mismo formato.
+    if (this._eng && this._state.live && !exclusive && !this._state.exclusive &&
+        (deviceId || null) === (this._state.deviceId || null) && rate === this._state.rate && ch === this._state.channels) {
+      this._ffExpectEnd = true;
+      if (this._ff) { try { if (this._sock) this._ff.stdout.unpipe(this._sock); this._ff.kill(); } catch {} }
+      this._writeCtl({ cmd: 'flush' });
+      if (opts.eq) this._sendEq();
+      this._writeCtl({ cmd: 'gain', v: dbToLinear(gainDb) });   // ReplayGain de la nueva pista, en vivo
+      this._ff = this._spawnFfmpeg(file, offset, rate, ch);
+      Object.assign(this._state, { playing: true, paused: false, file, gainDb, baseOffset: offset, startedAt: Date.now(), durationSec: probe.duration || 0 });
+      clearTimeout(this._endTimer); this._scheduleEnd();
+      this.emit('state', this.state);
+      return this.state;
+    }
+    this._teardown();   // arranque completo: motor + pipe + ffmpeg nuevos
 
     const pipePath = '\\\\.\\pipe\\escucharrr-pcm-' + process.pid + '-' + (++pipeSeq);
     this._pendingFf = null;
