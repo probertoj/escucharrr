@@ -9,6 +9,8 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
 - `docs/` — documentos de diseño: arquitectura y ajustes, cada decisión comparada con Roon.
   - `diseno-vs-roon.md` — datos, página de álbum, motor de audio, transporte, local-first.
   - `ajustes-vs-roon.md` — auditoría de ajustes (qué se puede replicar y qué no), Spotify/scrobbling.
+  - `dispositivos-de-red-y-roon.md` — cómo hace Roon el multi-dispositivo (RAAT, ingeniería inversa) y
+    el plan de salida de red de escucharrr (UPnP/DLNA al Eversolo; RAAT es cerrado/certificado).
 - `data-layer/` — modelo de datos y herramientas de ingesta (**funcionando**, sin dependencias).
   - `schema.sql` — esquema SQLite (grafo estilo MusicBrainz; `tier` y `rating` de primera
     clase e indexados; créditos tipados; mapeo de ficheros; procedencia; FTS5; vistas).
