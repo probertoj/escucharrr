@@ -6,7 +6,7 @@
 // Cola persistente (localStorage) + barra fija de "ahora suena" en todas las páginas.
 // Al empezar una pista registra la escucha vía POST /api/play (con la zona de salida).
 window.player = (function () {
-  const KEY = 'escucharrr.queue', VKEY = 'escucharrr.volume', ZKEY = 'escucharrr.zone', EQKEY = 'escucharrr.eq', XKEY = 'escucharrr.xfade';
+  const KEY = 'escucharrr.queue', VKEY = 'escucharrr.volume', ZKEY = 'escucharrr.zone', EQKEY = 'escucharrr.eq', XKEY = 'escucharrr.xfade', RGKEY = 'escucharrr.rg';
   const PAIRS = [['#0F6E56', '#1D9E75'], ['#534AB7', '#7F77DD'], ['#185FA5', '#378ADD'], ['#854F0B', '#BA7517'], ['#72243E', '#D4537E'], ['#5F5E5A', '#888780'], ['#3B6D11', '#639922'], ['#993C1D', '#D85A30']];
   const EQF = [60, 150, 400, 1000, 2400, 6000, 15000];                 // bandas del ecualizador (Hz)
   const EQLAB = ['60', '150', '400', '1k', '2.4k', '6k', '15k'];
@@ -29,6 +29,9 @@ window.player = (function () {
   let xfade = 0; try { const x = parseFloat(localStorage.getItem(XKEY)); if (x >= 0 && x <= 12) xfade = x; } catch (e) {}
   const persistEq = () => { try { localStorage.setItem(EQKEY, JSON.stringify({ on: eqOn, g: eqGains })); } catch (e) {} };
   const persistX = () => { try { localStorage.setItem(XKEY, String(xfade)); } catch (e) {} };
+  // normalización ReplayGain: 'track' (cada tema a -18 LUFS) | 'album' (misma ganancia por disco, conserva dinámica) | 'off'
+  let rgMode = 'track'; try { const m = localStorage.getItem(RGKEY); if (m === 'track' || m === 'album' || m === 'off') rgMode = m; } catch (e) {}
+  const persistRg = () => { try { localStorage.setItem(RGKEY, rgMode); } catch (e) {} };
 
   // ── dos decks de audio + grafo Web Audio (se crea tras el primer gesto del usuario) ──
   const mkEl = () => { const a = new Audio(); a.preload = 'metadata'; a.volume = vol; return a; };
@@ -63,8 +66,17 @@ window.player = (function () {
   function sinkSupported() { return (window.AudioContext && 'setSinkId' in AudioContext.prototype) || typeof (new Audio()).setSinkId === 'function'; }
   function applyEq() { if (ctx) eqBands.forEach((b, i) => { b.gain.value = eqOn ? eqGains[i] : 0; }); }
 
-  // ReplayGain: ganancia lineal de una pista, limitada por el pico para no saturar
-  function rgLinear(c) { if (!c || c.gain_db == null) return 1; let g = c.gain_db; if (c.peak_dbfs != null) { const ceil = -1 - c.peak_dbfs; if (g > ceil) g = ceil; } return Math.pow(10, g / 20); }
+  // ReplayGain: ganancia lineal según el modo (pista/álbum/off), limitada por el pico.
+  // En 'album' usa la ganancia y el pico del disco (si faltan, cae a los de pista).
+  function rgLinear(c) {
+    if (!c || rgMode === 'off') return 1;
+    let g, peak;
+    if (rgMode === 'album' && c.album_gain_db != null) { g = c.album_gain_db; peak = c.album_peak_dbfs; }
+    else { g = c.gain_db; peak = c.peak_dbfs; }
+    if (g == null) return 1;
+    if (peak != null) { const ceil = -1 - peak; if (g > ceil) g = ceil; }
+    return Math.pow(10, g / 20);
+  }
   function setDeckGain(d, track) { const g = Math.max(0.0001, rgLinear(track)); if (d.gain) { try { d.gain.gain.cancelScheduledValues(ctx.currentTime); } catch (e) {} d.gain.gain.value = g; } }
   function applyVol() { if (ctx) masterGain.gain.value = vol; else { active().el.volume = Math.min(1, vol * rgLinear(cur())); other().el.volume = 0; } try { localStorage.setItem(VKEY, String(vol)); } catch (e) {} }
 
@@ -205,7 +217,10 @@ window.player = (function () {
   function setVol(v) { vol = Math.max(0, Math.min(1, v)); applyVol(); if (nativeMode) nativeVolumeApply(); render(); }
 
   function playTracks(tracks, i) { if (!tracks || !tracks.length) return; q = tracks; start(i || 0); }
-  function playAlbum(id, i) { fetch('/api/album?id=' + id).then(r => r.json()).then(a => { const tr = (a.tracks || []).map(t => ({ trackId: t.trackId, title: t.title, artist: a.artist, albumId: a.id, length_ms: t.length_ms, playable: t.playable !== 0, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs })); if (!tr.length) { alert('Este álbum aún no tiene pistas en tu biblioteca.'); return; } playTracks(tr, i || 0); }); }
+  function playAlbum(id, i) { fetch('/api/album?id=' + id).then(r => r.json()).then(a => { const tr = (a.tracks || []).map(t => ({ trackId: t.trackId, title: t.title, artist: a.artist, albumId: a.id, length_ms: t.length_ms, playable: t.playable !== 0, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs })); if (!tr.length) { alert('Este álbum aún no tiene pistas en tu biblioteca.'); return; } playTracks(tr, i || 0); }); }
+  // cambia el modo de normalización y lo re-aplica en caliente (navegador o nativo)
+  function applyRgMode() { if (nativeMode) { if (playing) nativeVolumeApply(); } else { const d = active(); if (d && d.gain && loadedCur()) setDeckGain(d, cur()); applyVol(); } }
+  function setRgMode(m) { if (m !== 'track' && m !== 'album' && m !== 'off') return; if (m !== rgMode) { rgMode = m; persistRg(); applyRgMode(); } renderEqPanel(); }
   function jumpTo(i) { if (i >= 0 && i < q.length) start(i); }
   function removeAt(i) { const wasCur = i === idx; q.splice(i, 1); if (i < idx) idx--; if (idx >= q.length) idx = q.length - 1; save(); if (wasCur) { if (q.length) start(idx); else { idx = -1; cancelFade(); active().el.pause(); active().el.removeAttribute('src'); active().trackIdx = -1; render(); } } else render(); }
   function clearUpcoming() { q = q.slice(0, idx + 1); save(); render(); }
@@ -295,9 +310,14 @@ window.player = (function () {
   function setEqBand(i, v) { eqGains[i] = v; if (ctx && eqOn && eqBands[i]) eqBands[i].gain.value = v; persistEq(); const lab = document.getElementById('eqval' + i); if (lab) lab.textContent = (v > 0 ? '+' : '') + v + ' dB'; }
   function setPreset(name) { const p = EQPRE[name]; if (!p) return; eqGains = p.slice(); if (!eqOn) eqOn = true; applyEq(); persistEq(); renderEqPanel(); const b = document.querySelector('#nowbar [data-act="eq"]'); if (b) b.style.color = 'var(--accent)'; }
   function setXfade(v) { xfade = Math.max(0, Math.min(12, v)); persistX(); const lab = document.getElementById('xfadeval'); if (lab) lab.textContent = xfade === 0 ? 'desactivado' : xfade.toFixed(1).replace('.0', '') + ' s'; const b = document.querySelector('#nowbar [data-act="eq"]'); if (b) b.style.color = (eqOn || xfade > 0) ? 'var(--accent)' : 'var(--text-2)'; }
+  const RGLAB = [['track', 'Pista'], ['album', 'Álbum'], ['off', 'No']];
   function renderEqPanel() {
     ensureEqPanel();
-    let h = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px"><span style="font-weight:600">Ecualizador</span><span data-act="eqtoggle" style="cursor:pointer;font-size:12px;padding:2px 10px;border-radius:999px;background:${eqOn ? 'var(--accent)' : 'var(--surface-2)'};color:${eqOn ? '#fff' : 'var(--text-2)'}">${eqOn ? 'Activado' : 'Desactivado'}</span></div>`;
+    // normalización ReplayGain (pista / álbum / off)
+    let h = `<div style="margin-bottom:12px;border-bottom:1px solid var(--border);padding-bottom:10px"><div style="font-weight:600;margin-bottom:6px">Normalización (ReplayGain)</div><div style="display:flex;gap:6px">` +
+      RGLAB.map(([k, lab]) => `<span data-rg="${k}" style="cursor:pointer;font-size:12px;padding:4px 12px;border-radius:999px;background:${rgMode === k ? 'var(--accent)' : 'var(--surface-2)'};color:${rgMode === k ? '#fff' : 'var(--text-2)'}">${lab}</span>`).join('') +
+      `</div><div style="font-size:11px;color:var(--text-2);margin-top:5px">Álbum conserva la dinámica entre pistas del disco; pista iguala cada tema.</div></div>`;
+    h += `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px"><span style="font-weight:600">Ecualizador</span><span data-act="eqtoggle" style="cursor:pointer;font-size:12px;padding:2px 10px;border-radius:999px;background:${eqOn ? 'var(--accent)' : 'var(--surface-2)'};color:${eqOn ? '#fff' : 'var(--text-2)'}">${eqOn ? 'Activado' : 'Desactivado'}</span></div>`;
     h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">' + Object.keys(EQPRE).map(k => `<span data-pre="${k}" style="cursor:pointer;font-size:12px;padding:3px 9px;border-radius:999px;background:var(--surface-2);text-transform:capitalize">${k}</span>`).join('') + '</div>';
     h += EQF.map((f, i) => `<div style="display:flex;align-items:center;gap:8px;margin:4px 0;opacity:${eqOn ? 1 : .5}"><span style="width:38px;font-size:11px;color:var(--text-2);text-align:right">${EQLAB[i]}</span><input class="eqband" data-i="${i}" type="range" min="-12" max="12" step="1" value="${eqGains[i]}" style="flex:1;accent-color:var(--accent)"><span id="eqval${i}" style="width:48px;font-size:11px;text-align:right">${(eqGains[i] > 0 ? '+' : '') + eqGains[i]} dB</span></div>`).join('');
     h += `<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px"><span style="font-weight:600">Crossfade</span><span id="xfadeval" style="font-size:12px;color:var(--text-2)">${xfade === 0 ? 'desactivado' : xfade.toFixed(1).replace('.0', '') + ' s'}</span></div><input data-act="xfade" type="range" min="0" max="12" step="0.5" value="${xfade}" style="width:100%;accent-color:var(--accent)"><div style="font-size:11px;color:var(--text-2);margin-top:3px">Fundido entre pistas al cambiar automáticamente.</div></div>`;
@@ -311,6 +331,7 @@ window.player = (function () {
     if (e.target.closest('#zonepanel [data-act="ntoggle"]')) { setNativeMode(!nativeMode); return; }
     const nd = e.target.closest('#zonepanel .ndev'); if (nd) { setNativeDevice(nd.dataset.id); return; }
     if (e.target.matches('#zonepanel [data-act="nexcl"]')) { setNativeExclusive(e.target.checked); return; }
+    const rg = e.target.closest('#eqpanel [data-rg]'); if (rg) { setRgMode(rg.dataset.rg); return; }
     const pre = e.target.closest('#eqpanel [data-pre]'); if (pre) { setPreset(pre.dataset.pre); return; }
     if (e.target.closest('#eqpanel [data-act="eqtoggle"]')) { setEqEnabled(!eqOn); return; }
     const a = e.target.closest('#nowbar [data-act]'); if (!a) return;
@@ -336,7 +357,7 @@ window.player = (function () {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', render); else render();
   const getGain = () => (ctx ? masterGain.gain.value * (active().gain ? active().gain.gain.value : 1) : active().el.volume);  // ganancia efectiva (vol × ReplayGain)
   const getZone = () => ({ name: zone.name, deviceId: zone.deviceId, label: zone.label });
-  const getAudio = () => ({ eqOn, eqGains: eqGains.slice(), xfade });
+  const getAudio = () => ({ eqOn, eqGains: eqGains.slice(), xfade, rgMode });
   const getNative = () => ({ nativeMode, nativeDeviceId, nativeExclusive, nativePos, playing, startedIdx: nativeStartedIdx });
   return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain, getZone, getAudio, getNative, setNativeMode };
 })();

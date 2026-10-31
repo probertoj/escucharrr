@@ -20,8 +20,10 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
   - `enrich.js` — enriquece desde MusicBrainz: mbid, tipo, fecha, géneros y **créditos por rol**.
   - `discogs.js` — **créditos por pista desde Discogs** (intérpretes/roles/instrumentos que MB no
     cubre en sellos pequeños); mapea por posición a nuestras grabaciones. Funciona sin token.
-  - `analyze.js` — **loudness EBU R128 / ReplayGain** con ffmpeg (`ebur128`): mide LUFS integrado y
-    pico, guarda `gain_db` (ref −18 LUFS) + `peak_dbfs`; el player normaliza el volumen con ello.
+  - `analyze.js` — **loudness EBU R128 / ReplayGain** con ffmpeg (`ebur128`): por pista mide LUFS integrado y
+    pico → `gain_db` (ref −18 LUFS) + `peak_dbfs`; y **por álbum** mide el disco entero como un solo programa
+    (concatena sus ficheros con el demuxer `concat`) → `album_gain_db` + `album_peak_dbfs`, iguales para todas
+    sus pistas (conserva la dinámica relativa del disco). El player normaliza con ello (modo pista/álbum/off).
   - `config.example.json`, `obsidian-mapping.md`, `sample-vault/` — configuración, spec y ejemplo.
 - `app/` — vista web mínima que lee de la BD (**funcionando**): servidor + biblioteca + página de álbum.
   - `server.js` — API JSON (`/api/library`, `/api/album?id=`, …) desde SQLite y **streaming de
@@ -30,7 +32,8 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     (ganancia por pista con ReplayGain → **EQ** de 7 bandas `BiquadFilter` → ganancia maestra → salida),
     **crossfade** real entre pistas al auto-avanzar (solapa los dos decks con rampas de ganancia),
     cola persistente, barra de "ahora suena" con progreso/seek/volumen y auto-avance, panel de
-    ecualizador (presets) + crossfade, y **selector de salida/zona** (`AudioContext.setSinkId`;
+    ecualizador (presets) + crossfade + **normalización ReplayGain pista/álbum/off**,
+    y **selector de salida/zona** (`AudioContext.setSinkId`;
     la "zona" es nombrable y persistente, base para el multi-sala futuro; cada reproducción se registra con su zona),
     con un **conmutador de motor nativo** que enruta el transporte (play/pausa/seek/volumen) a la salida WASAPI
     del servidor (`/api/native/*`) en vez del navegador, silenciando los decks para no duplicar el sonido.

@@ -24,6 +24,8 @@ function migrate(db) {
   if (addCol(db, 'local_file', 'fingerprint', 'TEXT')) added.push('local_file.fingerprint');
   if (addCol(db, 'credit', 'source', 'TEXT')) added.push('credit.source');
   if (addCol(db, 'local_file', 'peak_dbfs', 'REAL')) added.push('local_file.peak_dbfs');
+  if (addCol(db, 'local_file', 'album_gain_db', 'REAL')) added.push('local_file.album_gain_db');
+  if (addCol(db, 'local_file', 'album_peak_dbfs', 'REAL')) added.push('local_file.album_peak_dbfs');
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_isrc ON recording(isrc)');
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_acoustid ON recording(acoustid)');
   return added;

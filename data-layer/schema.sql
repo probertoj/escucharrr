@@ -157,8 +157,10 @@ CREATE TABLE IF NOT EXISTS local_file (
   mtime        TEXT,
   -- resultado del análisis de audio (R128 / ReplayGain / waveform)
   loudness_lufs REAL,                          -- loudness integrado (LUFS, EBU R128)
-  gain_db       REAL,                          -- ganancia ReplayGain a aplicar (ref -18 LUFS)
+  gain_db       REAL,                          -- ganancia ReplayGain de PISTA (ref -18 LUFS)
   peak_dbfs     REAL,                          -- pico real (dBFS) para limitar sin clipping
+  album_gain_db   REAL,                        -- ganancia ReplayGain de ÁLBUM (igual para todo el disco)
+  album_peak_dbfs REAL,                         -- pico máximo del álbum (dBFS) para limitar
   -- identificadores leídos del fichero (tags) o calculados (fpcalc)
   isrc         TEXT,                          -- ISRC del tag
   acoustid     TEXT,                          -- AcoustID (del tag ACOUSTID_ID o de la consulta)
