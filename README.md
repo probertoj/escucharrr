@@ -115,8 +115,10 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     un conmutador "Motor nativo (este equipo)" en el panel 🔈 que enruta el transporte a esas rutas, con selector
     de dispositivo y casilla **exclusivo (bit-perfect)**; el cambio de modo hace handoff en la posición actual.
   - `upnp.js` — **salida de red UPnP/DLNA** (sin dependencias: `node:dgram` + `node:http`). Descubre MediaRenderers
-    por **SSDP**, lee su `description.xml` y controla **AVTransport** (`SetAVTransportURI` + Play/Pause/Stop/Seek,
-    `SetNextAVTransportURI` = gapless) y **RenderingControl** (volumen). El dispositivo (p. ej. un **Eversolo**)
+    por **SSDP**, lee su `description.xml` y controla **AVTransport** (`SetAVTransportURI` + Play/Pause/Stop/Seek) y
+    **RenderingControl** (volumen). **Gapless real**: encola la siguiente pista con `SetNextAVTransportURI` y el
+    aparato transiciona SOLO al acabar; el servidor lo detecta comparando la `TrackURI` que reporta con la que cebó,
+    avanza la cola y ceba la próxima (`/api/upnp/setnext`). El dispositivo (p. ej. un **Eversolo**)
     **descarga** la música de `/api/stream` (que ya hace Range), así que no se reencodea nada: FLAC/WAV van tal
     cual con metadatos DIDL-Lite y carátula. El servidor expone `/api/upnp/{devices,state,play,pause,resume,stop,
     seek,volume}` (construye la URL con la **IP de la LAN** que ve el aparato); el **player** lista los renderers

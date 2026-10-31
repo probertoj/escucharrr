@@ -369,7 +369,7 @@ async function handleNative(req, res, u) {
 
 // ── salida de red UPnP/DLNA: el servidor controla el renderer (mismo patrón que la zona nativa) ──
 let _upnpDevs = { at: 0, items: [] };
-let _upnp = { renderer: null, dev: null, trackId: null, startedAt: 0, baseOffset: 0, paused: false, durationSec: 0 };
+let _upnp = { renderer: null, dev: null, trackId: null, nextTrackId: null, nextUrl: '', durationSec: 0, playing: false, paused: false };
 async function upnpDevices(force) {
   if (!UPNP) return [];
   if (!force && Date.now() - _upnpDevs.at < 8000 && _upnpDevs.items.length) return _upnpDevs.items;
@@ -383,11 +383,32 @@ function upnpMetaOf(trackId) {
   const a = Q.albumIdOf.get(trackId);
   return { title: m.title || path.basename(row.path), artist: m.artist || '', album: m.album || '', durationSec: Math.round((m.duration_ms || 0) / 1000), mime: AUDIO_MIME[path.extname(row.path).toLowerCase()] || 'application/octet-stream', albumId: a ? a.aid : null };
 }
-function upnpState() {
+function upnpStreamBase(dev) { return 'http://' + UPNP.lanIp(dev.ip) + ':' + PORT; }
+function upnpLight() {   // estado optimista (sin consultar al aparato) para las respuestas de mutación
   const s = _upnp;
-  let pos = s.baseOffset || 0;
-  if (s.trackId && !s.paused && s.startedAt) pos += (Date.now() - s.startedAt) / 1000;
-  return { kind: 'upnp', playing: !!s.trackId && !s.paused, paused: !!s.paused, device: s.dev ? s.dev.name : null, deviceId: s.dev ? s.dev.id : null, trackId: s.trackId, durationSec: s.durationSec, positionSec: Math.max(0, pos) };
+  return { kind: 'upnp', playing: !!s.trackId && s.playing && !s.paused, paused: !!s.paused, device: s.dev ? s.dev.name : null, deviceId: s.dev ? s.dev.id : null, trackId: s.trackId, durationSec: s.durationSec, positionSec: 0, advanced: false };
+}
+// verdad del aparato: posición/estado reales y DETECCIÓN del salto gapless (el aparato pasó solo a la
+// pista que cebamos con SetNextAVTransportURI → avanzamos nuestro "actual" y lo registramos).
+async function upnpState() {
+  const s = _upnp;
+  if (!s.renderer || !s.trackId) return { kind: 'upnp', playing: false, paused: false, device: s.dev ? s.dev.name : null, deviceId: s.dev ? s.dev.id : null, trackId: s.trackId, durationSec: s.durationSec, positionSec: 0, advanced: false };
+  let st = {}; try { st = await s.renderer.getState(); } catch (e) {}
+  let advanced = false;
+  if (s.nextUrl && st.trackUri && st.trackUri === s.nextUrl) {
+    s.trackId = s.nextTrackId; s.nextTrackId = null; s.nextUrl = ''; advanced = true;
+    try { logPlay({ track_id: s.trackId, source: 'upnp', zone: s.dev.name }); } catch (e) {}   // la pista auto-avanzada cuenta en el historial
+  }
+  s.playing = !!st.playing; s.paused = !!st.paused;
+  return { kind: 'upnp', playing: s.playing, paused: s.paused, device: s.dev.name, deviceId: s.dev.id, trackId: s.trackId, durationSec: st.durationSec || s.durationSec, positionSec: st.positionSec || 0, state: st.state, advanced };
+}
+// ceba (o limpia) la siguiente pista en el aparato para el gapless
+async function upnpPrimeNext(trackId) {
+  const s = _upnp; if (!s.renderer || !s.dev) return false;
+  if (!trackId) { s.nextTrackId = null; s.nextUrl = ''; return true; }
+  const meta = upnpMetaOf(trackId); if (!meta) return false;
+  const base = upnpStreamBase(s.dev), url = base + '/api/stream?track=' + trackId;
+  try { await s.renderer.setNextUri({ url, mime: meta.mime, title: meta.title, artist: meta.artist, album: meta.album, durationSec: meta.durationSec, coverUrl: meta.albumId ? base + '/api/cover?rg=' + meta.albumId : '' }); s.nextTrackId = trackId; s.nextUrl = url; return true; } catch (e) { return false; }
 }
 async function handleUpnp(req, res, u) {
   const sub = u.pathname.slice('/api/upnp/'.length);
@@ -397,7 +418,7 @@ async function handleUpnp(req, res, u) {
       const items = await upnpDevices(u.searchParams.get('refresh') === '1');
       return sendJSON(res, { ok: true, items: items.map(d => ({ id: d.id, name: d.name, manufacturer: d.manufacturer, model: d.model, ip: d.ip })) });
     }
-    if (req.method === 'GET' && sub === 'state') return sendJSON(res, { ok: true, state: upnpState() });
+    if (req.method === 'GET' && sub === 'state') return sendJSON(res, { ok: true, state: await upnpState() });
     const body = req.method === 'POST' ? await readBody(req) : {};
     if (sub === 'play') {
       const items = await upnpDevices(false);
@@ -409,16 +430,18 @@ async function handleUpnp(req, res, u) {
       const r = new UPNP.UpnpRenderer(dev);
       await r.setUriAndPlay({ url: base + '/api/stream?track=' + body.track_id, mime: meta.mime, title: meta.title, artist: meta.artist, album: meta.album, durationSec: meta.durationSec, coverUrl: meta.albumId ? base + '/api/cover?rg=' + meta.albumId : '' });
       if (seek) { try { await r.seek(seek); } catch (e) {} }
-      _upnp = { renderer: r, dev, trackId: body.track_id, startedAt: Date.now(), baseOffset: seek, paused: false, durationSec: meta.durationSec };
+      _upnp = { renderer: r, dev, trackId: body.track_id, nextTrackId: null, nextUrl: '', durationSec: meta.durationSec, playing: true, paused: false };
+      if (body.next_track_id) { try { await upnpPrimeNext(body.next_track_id); } catch (e) {} }   // ceba la siguiente → gapless
       logPlay({ track_id: body.track_id, source: 'upnp', zone: dev.name });
-      return sendJSON(res, { ok: true, state: upnpState() });
+      return sendJSON(res, { ok: true, state: upnpLight() });
     }
+    if (sub === 'setnext') { const ok = await upnpPrimeNext(body.track_id || null); return sendJSON(res, { ok }); }
     const R = _upnp.renderer;
-    if (sub === 'pause') { if (R) { _upnp.baseOffset = upnpState().positionSec; _upnp.paused = true; _upnp.startedAt = 0; try { await R.pause(); } catch (e) {} } return sendJSON(res, { ok: true, state: upnpState() }); }
-    if (sub === 'resume') { if (R) { _upnp.paused = false; _upnp.startedAt = Date.now(); try { await R.play(); } catch (e) {} } return sendJSON(res, { ok: true, state: upnpState() }); }
-    if (sub === 'stop') { if (R) { try { await R.stop(); } catch (e) {} } _upnp = { renderer: null, dev: _upnp.dev, trackId: null, startedAt: 0, baseOffset: 0, paused: false, durationSec: 0 }; return sendJSON(res, { ok: true, state: upnpState() }); }
-    if (sub === 'seek') { const sec = Number(body.sec) || 0; if (R) { try { await R.seek(sec); } catch (e) {} _upnp.baseOffset = sec; _upnp.startedAt = Date.now(); _upnp.paused = false; } return sendJSON(res, { ok: true, state: upnpState() }); }
-    if (sub === 'volume') { const pct = body.pct != null ? Number(body.pct) : (body.v != null ? Math.round(Number(body.v) * 100) : null); if (R && pct != null) { try { await R.setVolume(pct); } catch (e) {} } return sendJSON(res, { ok: true, state: upnpState() }); }
+    if (sub === 'pause') { if (R) { try { await R.pause(); } catch (e) {} _upnp.paused = true; _upnp.playing = false; } return sendJSON(res, { ok: true, state: upnpLight() }); }
+    if (sub === 'resume') { if (R) { try { await R.play(); } catch (e) {} _upnp.paused = false; _upnp.playing = true; } return sendJSON(res, { ok: true, state: upnpLight() }); }
+    if (sub === 'stop') { if (R) { try { await R.stop(); } catch (e) {} } _upnp = { renderer: null, dev: _upnp.dev, trackId: null, nextTrackId: null, nextUrl: '', durationSec: 0, playing: false, paused: false }; return sendJSON(res, { ok: true, state: upnpLight() }); }
+    if (sub === 'seek') { const sec = Number(body.sec) || 0; if (R) { try { await R.seek(sec); } catch (e) {} } return sendJSON(res, { ok: true, state: upnpLight() }); }
+    if (sub === 'volume') { const pct = body.pct != null ? Number(body.pct) : (body.v != null ? Math.round(Number(body.v) * 100) : null); if (R && pct != null) { try { await R.setVolume(pct); } catch (e) {} } return sendJSON(res, { ok: true, state: upnpLight() }); }
     res.writeHead(404); res.end('{}');
   } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }

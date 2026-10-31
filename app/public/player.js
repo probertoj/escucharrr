@@ -230,12 +230,19 @@ window.player = (function () {
   function ujson(path, body) { return fetch('/api/upnp/' + path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}).then(r => r.json()); }
   function startUpnpPoll() { stopUpnpPoll(); upnpPollTimer = setInterval(pollUpnp, 900); }
   function stopUpnpPoll() { if (upnpPollTimer) { clearInterval(upnpPollTimer); upnpPollTimer = null; } }
+  function primeUpnpNext() { const nx = q[idx + 1]; ujson('setnext', { track_id: (nx && nx.playable !== false) ? nx.trackId : null }).catch(() => {}); }
   function pollUpnp() {
     ujson('state').then(j => {
       if (!j || !j.ok || !j.state) return;
-      upnpPos = j.state.positionSec || 0;
-      if (j.state.playing) upnpMiss = 0;
-      else if (playing && !upnpBusy && ++upnpMiss >= 2) { upnpMiss = 0; onUpnpEnded(); return; }
+      const s = j.state;
+      if (s.advanced && idx < q.length - 1) {          // el aparato saltó solo a la pista cebada (gapless)
+        idx++; save(); loggedIdx = -1; scrobbledIdx = -1; upnpStartedIdx = idx; upnpPos = 0; trackStarted(); render();
+        primeUpnpNext();                                // ceba la siguiente-siguiente
+      }
+      upnpPos = s.positionSec || 0;
+      if (s.playing) { upnpMiss = 0; if (!playing) { playing = true; render(); } }
+      else if (s.paused) { upnpMiss = 0; if (playing) { playing = false; render(); } }
+      else if (playing && !upnpBusy && (s.state === 'STOPPED' || s.state === '' || s.state == null) && ++upnpMiss >= 2) { upnpMiss = 0; onUpnpEnded(); return; }
       progress();
     }).catch(() => {});
   }
@@ -245,6 +252,7 @@ window.player = (function () {
     if (c.playable === false) { playing = false; upnpStartedIdx = -1; render(); return; }
     upnpBusy = true; playing = true; loggedIdx = idx; upnpMiss = 0; upnpStartedIdx = idx; upnpPos = (opts && opts.seekSec) || 0; trackStarted(); render();
     const body = { track_id: c.trackId, deviceId: upnpDeviceId || null, zone: upnpDevName || zone.name };
+    const nx = q[i + 1]; if (nx && nx.playable !== false) body.next_track_id = nx.trackId;   // ceba la siguiente → gapless
     if (opts && opts.seekSec) body.seekSec = opts.seekSec;
     ujson('play', body).then(j => {
       upnpBusy = false;
