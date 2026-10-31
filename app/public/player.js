@@ -131,6 +131,47 @@ window.player = (function () {
     for (let i = 0; i < n; i++) { const h = Math.max(3, peaks[i] / 255 * 100); const y = ((100 - h) / 2).toFixed(1); b += '<rect x="' + (i + 0.12).toFixed(2) + '" y="' + y + '" width="0.76" height="' + h.toFixed(1) + '" rx="0.3"/>'; }
     return '<svg viewBox="0 0 ' + n + ' 100" preserveAspectRatio="none" width="100%" height="100%" style="display:block">' + b + '</svg>';
   }
+  // ── pantalla "ahora suena" a pantalla completa (estilo Roon) ──
+  let npfs = null;
+  function ensureNpFs() { if (npfs) return; npfs = document.createElement('div'); npfs.id = 'npfs'; npfs.setAttribute('style', 'position:fixed;inset:0;z-index:75;background:var(--bg);display:none;flex-direction:column;overflow:auto'); document.body.appendChild(npfs); }
+  function toggleNpFs() { ensureNpFs(); if (npfs.style.display === 'flex') { npfs.style.display = 'none'; return; } renderNpFs(); npfs.style.display = 'flex'; }
+  function renderNpFs() {
+    if (!npfs) return; const c = cur(); if (!c) { npfs.style.display = 'none'; return; }
+    const len = lenMs(), p = posMs(), frac = len ? Math.min(100, p / len * 100) : 0, wf = curPeaks && curPeaksTrack === c.trackId;
+    const up = q.slice(idx + 1, idx + 6);
+    npfs.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 20px">
+        <span style="color:var(--text-2);font-size:13px">Ahora suena${nativeMode ? ' · nativo' : upnpMode ? ' · ' + esc(upnpDevName || 'red') : ''}</span>
+        <span data-act="npclose" title="Cerrar" style="cursor:pointer;font-size:22px;color:var(--text-2)">✕</span>
+      </div>
+      <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:0 20px 36px;max-width:680px;margin:0 auto;width:100%">
+        <div style="width:min(54vh,320px);aspect-ratio:1;border-radius:16px;overflow:hidden;box-shadow:0 12px 44px rgba(0,0,0,.28)"><img src="/api/cover?rg=${c.albumId}" alt="" style="width:100%;height:100%;object-fit:cover;display:block"></div>
+        <div style="text-align:center">
+          <div style="font-family:var(--serif);font-size:27px;font-weight:600;line-height:1.2">${esc(c.title)}</div>
+          <div style="font-size:16px;color:var(--text-2);margin-top:5px">${esc(c.artist || '')}${c.album ? ` · <a href="album.html?id=${c.albumId}" style="color:var(--text-2)">${esc(c.album)}</a>` : ''}</div>
+        </div>
+        <div style="width:100%;display:flex;align-items:center;gap:10px">
+          <span id="npfsel" style="font-size:12px;color:var(--muted);width:40px;text-align:right">${mmss(p)}</span>
+          ${wf
+            ? `<div data-act="seek" title="Buscar" style="position:relative;flex:1;height:48px;cursor:pointer"><div style="position:absolute;inset:0;fill:var(--surface-2)">${wfSvg(curPeaks)}</div><div id="npfswf" style="position:absolute;inset:0;fill:var(--accent);clip-path:inset(0 ${100 - frac}% 0 0)">${wfSvg(curPeaks)}</div></div>`
+            : `<div data-act="seek" title="Buscar" style="flex:1;height:10px;display:flex;align-items:center;cursor:pointer"><div style="width:100%;height:5px;background:var(--surface-2);border-radius:999px;overflow:hidden"><div id="npfsprog" style="width:${frac}%;height:100%;background:var(--accent)"></div></div></div>`}
+          <span style="font-size:12px;color:var(--muted);width:40px">${mmss(len)}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:34px;font-size:26px;color:var(--text)">
+          <span data-act="prev" style="cursor:pointer" title="Anterior">⏮</span>
+          <span data-act="toggle" style="cursor:pointer;font-size:42px" title="Play/Pausa">${playing ? '⏸' : '▶'}</span>
+          <span data-act="next" style="cursor:pointer" title="Siguiente">⏭</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:22px;color:var(--text-2);font-size:15px">
+          <span data-act="mute" style="cursor:pointer" title="Silenciar">${volIcon()}</span>
+          <input data-act="vol" type="range" min="0" max="1" step="0.01" value="${vol}" title="Volumen" style="width:120px;accent-color:var(--accent)">
+          <span data-act="lyrics" title="Letra" style="cursor:pointer">📝</span>
+          <span data-act="eq" title="Ecualizador y crossfade" style="cursor:pointer;${eqOn || xfade > 0 ? 'color:var(--accent)' : ''}">🎚</span>
+          <span data-act="zone" title="Salida / zona" style="cursor:pointer;${nativeMode || upnpMode ? 'color:var(--accent)' : ''}">🔈</span>
+        </div>
+        ${up.length ? `<div style="width:100%;margin-top:6px"><div style="font-size:12px;color:var(--text-2);margin-bottom:6px">A continuación</div>${up.map((t, i) => `<div data-act="npjump" data-i="${idx + 1 + i}" style="display:flex;gap:10px;padding:7px 8px;border-radius:7px;cursor:pointer;font-size:14px"><span style="color:var(--text-2);width:18px;text-align:right">${idx + 2 + i}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(t.title)}</span><span style="color:var(--text-2);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:40%">${esc(t.artist || '')}</span></div>`).join('')}</div>` : ''}
+      </div>`;
+  }
   function ensureBar() { if (bar) return; bar = document.createElement('div'); bar.id = 'nowbar'; bar.setAttribute('style', 'position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);border-top:1px solid var(--border);padding:8px 16px;display:none;align-items:center;gap:14px'); document.body.appendChild(bar); }
   const volIcon = () => vol === 0 ? '🔇' : vol < 0.5 ? '🔉' : '🔊';
   function render() {
@@ -140,7 +181,7 @@ window.player = (function () {
     bar.style.display = 'flex';
     bar.innerHTML =
       `<a href="album.html?id=${c.albumId}" style="flex:none">${cover(c.albumId, 46)}</a>
-       <div style="min-width:110px"><div style="font-size:14px;font-weight:600">${esc(c.title)}</div><div style="font-size:12px;color:var(--text-2)">${esc(c.artist)}${noAudio ? ' · sin audio local' : ''}</div></div>
+       <div data-act="npopen" title="Ahora suena" style="min-width:110px;cursor:pointer"><div style="font-size:14px;font-weight:600">${esc(c.title)}</div><div style="font-size:12px;color:var(--text-2)">${esc(c.artist)}${noAudio ? ' · sin audio local' : ''}</div></div>
        <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px">
          <div style="display:flex;align-items:center;gap:20px;font-size:15px;color:var(--text)">
            <span data-act="prev" style="cursor:pointer" title="Anterior">⏮</span>
@@ -162,9 +203,12 @@ window.player = (function () {
        <span data-act="eq" title="Ecualizador y crossfade" style="cursor:pointer;font-size:15px;${eqOn || xfade > 0 ? 'color:var(--accent)' : 'color:var(--text-2)'}">🎚</span>
        <span data-act="zone" title="Salida / zona" style="cursor:pointer;font-size:12px;color:${nativeMode ? 'var(--accent)' : 'var(--text-2)'};display:inline-flex;align-items:center;gap:4px;max-width:150px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">🔈 ${zoneLabel()}</span>
        <a href="queue.html" title="Cola" style="font-size:16px;color:var(--text-2);text-decoration:none">☰ ${idx + 1}/${q.length}</a>`;
+    if (npfs && npfs.style.display === 'flex') renderNpFs();
     emit();
   }
-  function progress() { const c = cur(); if (!c) return; const len = lenMs(), p = posMs(); const frac = len ? Math.min(100, p / len * 100) : 0; const pr = document.getElementById('npprog'), wf = document.getElementById('npwf'), el = document.getElementById('npel'); if (pr && len) pr.style.width = frac + '%'; if (wf && len) wf.style.clipPath = 'inset(0 ' + (100 - frac) + '% 0 0)'; if (el) el.textContent = mmss(p); maybeScrobble(); maybeRadio(); syncLy(); }
+  function progress() { const c = cur(); if (!c) return; const len = lenMs(), p = posMs(); const frac = len ? Math.min(100, p / len * 100) : 0; const pr = document.getElementById('npprog'), wf = document.getElementById('npwf'), el = document.getElementById('npel'); if (pr && len) pr.style.width = frac + '%'; if (wf && len) wf.style.clipPath = 'inset(0 ' + (100 - frac) + '% 0 0)'; if (el) el.textContent = mmss(p);
+    const pr2 = document.getElementById('npfsprog'), wf2 = document.getElementById('npfswf'), el2 = document.getElementById('npfsel'); if (pr2 && len) pr2.style.width = frac + '%'; if (wf2 && len) wf2.style.clipPath = 'inset(0 ' + (100 - frac) + '% 0 0)'; if (el2) el2.textContent = mmss(p);
+    maybeScrobble(); maybeRadio(); syncLy(); }
   const emit = () => document.dispatchEvent(new Event('player:change'));
 
   // ── crossfade: al acercarse el final de la pista activa, solapa con la siguiente ──
@@ -515,11 +559,13 @@ window.player = (function () {
     const rg = e.target.closest('#eqpanel [data-rg]'); if (rg) { setRgMode(rg.dataset.rg); return; }
     const pre = e.target.closest('#eqpanel [data-pre]'); if (pre) { setPreset(pre.dataset.pre); return; }
     if (e.target.closest('#eqpanel [data-act="eqtoggle"]')) { setEqEnabled(!eqOn); return; }
-    const a = e.target.closest('#nowbar [data-act]'); if (!a) return;
+    const a = e.target.closest('#nowbar [data-act], #npfs [data-act]'); if (!a) return;
     const k = a.dataset.act;
     if (k === 'prev') prev();
     else if (k === 'next') next();
     else if (k === 'toggle') toggle();
+    else if (k === 'npopen' || k === 'npclose') toggleNpFs();
+    else if (k === 'npjump') jumpTo(+a.dataset.i);
     else if (k === 'eq') toggleEqPanel();
     else if (k === 'lyrics') toggleLyPanel();
     else if (k === 'zone') toggleZPanel();
@@ -527,7 +573,7 @@ window.player = (function () {
     else if (k === 'seek') { const box = a.getBoundingClientRect(); seekFrac((e.clientX - box.left) / box.width); }
   });
   document.addEventListener('input', e => {
-    const v = e.target.closest('#nowbar [data-act="vol"]'); if (v) { setVol(parseFloat(v.value)); return; }
+    const v = e.target.closest('#nowbar [data-act="vol"], #npfs [data-act="vol"]'); if (v) { setVol(parseFloat(v.value)); return; }
     const zn = e.target.closest('#zonepanel #zname'); if (zn) { zone.name = zn.value; persistZone(); updateZoneBtn(); return; }
     const eb = e.target.closest('#eqpanel .eqband'); if (eb) { setEqBand(+eb.dataset.i, parseInt(eb.value, 10)); return; }
     const xf = e.target.closest('#eqpanel [data-act="xfade"]'); if (xf) { setXfade(parseFloat(xf.value)); }
