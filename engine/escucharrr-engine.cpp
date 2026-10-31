@@ -24,6 +24,8 @@
 #include <functiondiscoverykeys_devpkey.h>
 #include <avrt.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <io.h>
 #include <fcntl.h>
 #include <string>
@@ -217,11 +219,17 @@ struct Ring {
     void setEof() { EnterCriticalSection(&cs); eof = true; WakeAllConditionVariable(&notEmpty); LeaveCriticalSection(&cs); }
     void cancel() { EnterCriticalSection(&cs); cancelled = true; WakeAllConditionVariable(&notEmpty); WakeAllConditionVariable(&notFull); LeaveCriticalSection(&cs); }
     bool isDrained() { EnterCriticalSection(&cs); bool d = (used == 0 && eof); LeaveCriticalSection(&cs); return d; }
+    void clear() { EnterCriticalSection(&cs); head = tail = used = 0; WakeAllConditionVariable(&notFull); LeaveCriticalSection(&cs); }   // descarta lo pendiente (seek)
 
     volatile bool cancelled = false;
 };
 
 static Ring* g_ring = nullptr;
+// ── control en vivo (modo named pipe): el hilo de control escribe, el de audio lee ──
+static volatile float g_gainLive = 1.0f;   // ganancia maestra en vivo (compartido/float)
+static volatile long  g_paused = 0;         // 1 = silencio sin consumir el anillo
+static volatile long  g_stop = 0;           // 1 = terminar
+static std::wstring   g_pcmPipe;            // ruta del named pipe de PCM (vacío = PCM por stdin)
 
 static DWORD WINAPI stdin_reader(LPVOID) {
     const size_t CH = 1 << 15; // 32 KiB
@@ -233,6 +241,39 @@ static DWORD WINAPI stdin_reader(LPVOID) {
         if (!g_ring->write(tmp.data(), (size_t)got)) break;
     }
     g_ring->setEof();
+    return 0;
+}
+// Lee PCM de un named pipe (el bridge es el servidor; aquí conectamos como cliente).
+// El pipe queda abierto toda la sesión aunque el que alimenta (ffmpeg) se reinicie en un seek.
+static DWORD WINAPI pipe_reader(LPVOID) {
+    HANDLE h = INVALID_HANDLE_VALUE;
+    for (int i = 0; i < 200 && !g_stop; i++) {
+        h = CreateFileW(g_pcmPipe.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (h != INVALID_HANDLE_VALUE) break;
+        if (GetLastError() == ERROR_PIPE_BUSY) WaitNamedPipeW(g_pcmPipe.c_str(), 2000);
+        else Sleep(50);
+    }
+    if (h == INVALID_HANDLE_VALUE) { emit_error("no se pudo abrir el named pipe de PCM"); g_ring->setEof(); return 1; }
+    const DWORD CH = 1 << 15;
+    std::vector<char> tmp(CH); DWORD got = 0;
+    while (!g_stop && ReadFile(h, tmp.data(), CH, &got, nullptr) && got > 0)
+        if (!g_ring->write(tmp.data(), (size_t)got)) break;
+    CloseHandle(h);
+    g_ring->setEof();
+    return 0;
+}
+// Lee comandos de control (una línea JSON por comando) por stdin:
+//   {"cmd":"gain","v":<lineal>} {"cmd":"pause"} {"cmd":"resume"} {"cmd":"flush"} {"cmd":"stop"}
+static DWORD WINAPI control_reader(LPVOID) {
+    char line[512];
+    while (!g_stop && fgets(line, sizeof(line), stdin)) {
+        if (!strstr(line, "\"cmd\"")) continue;
+        if (strstr(line, "\"gain\"")) { const char* v = strstr(line, "\"v\""); if (v) { v = strchr(v, ':'); if (v) g_gainLive = (float)atof(v + 1); } }
+        else if (strstr(line, "\"pause\""))  g_paused = 1;
+        else if (strstr(line, "\"resume\"")) g_paused = 0;
+        else if (strstr(line, "\"flush\""))  { if (g_ring) g_ring->clear(); }
+        else if (strstr(line, "\"stop\""))   { g_stop = 1; if (g_ring) g_ring->cancel(); break; }
+    }
     return 0;
 }
 
@@ -267,7 +308,7 @@ static void make_float_format(WAVEFORMATEXTENSIBLE& wf, unsigned rate, unsigned 
 }
 
 static int play_stream(unsigned reqRate, unsigned reqCh, bool exclusive,
-                       float gain, const std::string& deviceId) {
+                       float gain, const std::string& deviceId, bool liveControl) {
     IMMDeviceEnumerator* en = nullptr;
     HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
                                   CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),
@@ -363,7 +404,7 @@ static int play_stream(unsigned reqRate, unsigned reqCh, bool exclusive,
 
     const WORD frameBytes = useFmt->nBlockAlign;
     const WORD channels = useFmt->nChannels;
-    const bool applyGain = !bitPerfect && outIsFloat && (gain != 1.0f);
+    const bool canGain = !bitPerfect && outIsFloat;   // en bit-perfect la muestra sale intacta
 
     // formato de salida resuelto
     emit("{\"event\":\"started\",\"device\":\"" + json_escape(devName) +
@@ -372,6 +413,7 @@ static int play_stream(unsigned reqRate, unsigned reqCh, bool exclusive,
          ",\"rate\":" + std::to_string(useFmt->nSamplesPerSec) +
          ",\"channels\":" + std::to_string(channels) +
          ",\"bufferFrames\":" + std::to_string(bufFrames) +
+         ",\"live\":" + (liveControl ? "true" : "false") +
          ",\"gain\":" + std::to_string(bitPerfect ? 1.0f : gain) + "}");
 
     // Subimos la prioridad del hilo de audio (MMCSS) como hace un motor serio.
@@ -384,10 +426,11 @@ static int play_stream(unsigned reqRate, unsigned reqCh, bool exclusive,
     std::vector<char> scratch;
     bool running = true;
     while (running) {
+        if (liveControl && g_stop) break;
         DWORD w = WaitForSingleObject(hEvent, 200);
         if (w != WAIT_OBJECT_0) {
-            // timeout: si el stream terminó y el anillo está vacío, salimos
-            if (g_ring->isDrained()) break;
+            // timeout: en modo stdin, si el stream terminó y el anillo está vacío, salimos
+            if (!liveControl && g_ring->isDrained()) break;
             continue;
         }
         UINT32 padding = 0;
@@ -398,29 +441,33 @@ static int play_stream(unsigned reqRate, unsigned reqCh, bool exclusive,
         BYTE* out = nullptr;
         if (!HR_OK(rc->GetBuffer(avail, &out))) break;
 
+        if (liveControl && g_paused) {   // en pausa: silencio sin consumir el anillo (el feeder hace backpressure)
+            memset(out, 0, (size_t)avail * frameBytes);
+            rc->ReleaseBuffer(avail, 0);
+            continue;
+        }
+
         size_t wantBytes = (size_t)avail * frameBytes;
         if (scratch.size() < wantBytes) scratch.resize(wantBytes);
         size_t got = g_ring->read(scratch.data(), wantBytes);
 
-        // frames completos realmente disponibles
-        UINT32 gotFrames = (UINT32)(got / frameBytes);
+        UINT32 gotFrames = (UINT32)(got / frameBytes);   // frames completos disponibles
         if (gotFrames > 0) {
             memcpy(out, scratch.data(), (size_t)gotFrames * frameBytes);
-            if (applyGain) {
+            const float gnow = liveControl ? g_gainLive : gain;
+            if (canGain && gnow != 1.0f) {
                 float* f = (float*)out;
                 size_t samples = (size_t)gotFrames * channels;
-                for (size_t i = 0; i < samples; i++) f[i] *= gain;
+                for (size_t i = 0; i < samples; i++) f[i] *= gnow;
             }
         }
-        // rellenar el resto con silencio si hubo underrun / fin de stream
-        if (gotFrames < avail) {
-            memset(out + (size_t)gotFrames * frameBytes, 0,
-                   (size_t)(avail - gotFrames) * frameBytes);
-        }
+        // silencio en el resto si hubo underrun / fin de stream (en live esperamos más PCM)
+        if (gotFrames < avail)
+            memset(out + (size_t)gotFrames * frameBytes, 0, (size_t)(avail - gotFrames) * frameBytes);
         rc->ReleaseBuffer(avail, 0);
         totalFrames += gotFrames;
 
-        if (gotFrames == 0 && g_ring->isDrained()) running = false;
+        if (!liveControl && gotFrames == 0 && g_ring->isDrained()) running = false;
     }
 
     // drenar el buffer del dispositivo antes de parar
@@ -458,6 +505,7 @@ int main(int argc, char** argv) {
         else if (a == "--channels" && i + 1 < argc) channels = (unsigned)atoi(argv[++i]);
         else if (a == "--gain" && i + 1 < argc) gain = (float)atof(argv[++i]);
         else if (a == "--device-id" && i + 1 < argc) deviceId = argv[++i];
+        else if (a == "--pcm-pipe" && i + 1 < argc) g_pcmPipe = utf8_to_wide(argv[++i]);
     }
 
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -467,13 +515,22 @@ int main(int argc, char** argv) {
     if (doList) {
         rc = list_devices();
     } else if (doPlay) {
-        _setmode(_fileno(stdin), _O_BINARY);     // PCM crudo por stdin
         Ring ring(1 << 21);                       // 2 MiB de colchón
         g_ring = &ring;
-        HANDLE hReader = CreateThread(nullptr, 0, stdin_reader, nullptr, 0, nullptr);
-        rc = play_stream(rate, channels, exclusive, gain, deviceId);
-        ring.cancel();
+        const bool live = !g_pcmPipe.empty();     // con --pcm-pipe: PCM por pipe + control por stdin
+        g_gainLive = gain;
+        HANDLE hReader = nullptr, hCtl = nullptr;
+        if (live) {
+            hReader = CreateThread(nullptr, 0, pipe_reader, nullptr, 0, nullptr);
+            hCtl = CreateThread(nullptr, 0, control_reader, nullptr, 0, nullptr);
+        } else {
+            _setmode(_fileno(stdin), _O_BINARY);  // PCM crudo por stdin
+            hReader = CreateThread(nullptr, 0, stdin_reader, nullptr, 0, nullptr);
+        }
+        rc = play_stream(rate, channels, exclusive, gain, deviceId, live);
+        g_stop = 1; ring.cancel();
         if (hReader) { WaitForSingleObject(hReader, 1000); CloseHandle(hReader); }
+        if (hCtl) { WaitForSingleObject(hCtl, 200); CloseHandle(hCtl); }
         g_ring = nullptr;
     } else {
         emit_error("uso: --list-devices | --play --rate R --channels C [--exclusive] [--gain G] [--device-id ID]");

@@ -50,13 +50,16 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
 - `engine/` — **motor de audio nativo** (esqueleto; §4 del diseño: decode → float32 → DSP → salida).
   Es la parte que SÍ tiene que ser nativa (salida de baja latencia / bit-perfect, fuera del navegador).
   - `escucharrr-engine.cpp` — renderizador **WASAPI** en float32 (C++, solo Windows SDK, **sin libs externas**):
-    enumera dispositivos de salida (con su formato de mezcla), reproduce PCM `f32le` que recibe por stdin
-    en **modo compartido** (con **ganancia maestra** = el nodo DSP de hoy) o **exclusivo = bit-perfect**
-    (sin tocar la muestra), y sube la prioridad del hilo de audio (MMCSS). Las ranuras de resample (soxr),
-    convolución y dither quedan documentadas para más adelante.
+    enumera dispositivos de salida (con su formato de mezcla) y reproduce PCM `f32le` en **modo compartido**
+    (con **ganancia maestra** = el nodo DSP de hoy) o **exclusivo = bit-perfect** (sin tocar la muestra), con
+    prioridad de hilo de audio (MMCSS). Recibe el PCM por un **named pipe** y acepta **control en vivo por stdin**
+    (`gain`/`pause`/`resume`/`flush`/`stop`): así el motor y el dispositivo quedan vivos toda la reproducción.
+    Ranuras de resample (soxr), convolución y dither documentadas para más adelante.
   - `native-player.js` — bridge Node: la **decodificación** la pone **ffmpeg** (ranura de decoder; libFLAC/dr_flac
-    en el futuro) y el **transporte** (pista, posición, pausa/seek/volumen) lo lleva el bridge — como el "core"
-    de Roon posee las zonas y la UI es un mando. Así la salida nativa es **una zona del servidor**, no del navegador.
+    en el futuro) y el **transporte** lo lleva el bridge — como el "core" de Roon posee las zonas y la UI es un
+    mando. Salida nativa = **zona del servidor**. Volumen y pausa son **inmediatos** (un comando, sin relanzar);
+    el **seek** solo hace flush del buffer y reposiciona ffmpeg sobre el mismo pipe (el dispositivo no se corta);
+    el fin real de la pista se detecta por duración (ffmpeg decodifica mucho antes de que acabe el audio).
   - `build.ps1` — compila con MSVC (VS Build Tools + workload C++); `cli.js` — demo: `node engine/cli.js devices|play`.
   - El servidor expone `/api/native/{devices,state,play,pause,resume,stop,seek,volume,output}` para manejarlo
     (aplica ReplayGain × volumen; si el binario no está compilado, lo avisa sin romper nada). El **player** tiene

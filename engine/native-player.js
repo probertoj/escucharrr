@@ -1,27 +1,27 @@
 'use strict';
-// Bridge Node ↔ motor nativo (escucharrr-engine.exe).
+// Bridge Node ↔ motor nativo (escucharrr-engine.exe), con CONTROL EN VIVO.
 //
-// El motor es un renderizador WASAPI float32 "tonto pero bueno": recibe PCM
-// f32le por stdin y lo saca por un dispositivo, en compartido (con ganancia) o
-// exclusivo (bit-perfect). La DECODIFICACIÓN la hace ffmpeg aquí (ranura de
-// decoder; mañana libFLAC/dr_flac), y el TRANSPORTE (qué pista, posición, pausa)
-// lo lleva este bridge — como el "core" de Roon posee las zonas y la UI es un
-// mando. Así la reproducción nativa es una salida del servidor, no del navegador.
+// El motor es un renderizador WASAPI float32 que ahora recibe el PCM por un
+// NAMED PIPE y acepta comandos por stdin (gain/pause/resume/flush/stop). Así el
+// motor y el dispositivo quedan VIVOS durante toda la reproducción: cambiar el
+// volumen o pausar es inmediato (no se relanza ffmpeg ni se reinicia la salida),
+// y un seek solo descarta el buffer (flush) y reposiciona ffmpeg sobre el mismo
+// pipe, sin cortar el dispositivo. La DECODIFICACIÓN la pone ffmpeg (ranura de
+// decoder; libFLAC/dr_flac en el futuro) y el TRANSPORTE lo lleva este bridge.
 //
-// Limitación de esqueleto: pausa / seek / cambio de volumen se hacen
-// RE-LANZANDO el pipeline en el offset actual (ffmpeg -ss es instantáneo), no
-// con control en vivo ni gapless. El protocolo de control en vivo (gain/stop
-// por stdin del motor, PCM por named pipe) es el siguiente refinamiento.
+// Cambiar de dispositivo/exclusivo sí reinicia el motor (el formato de salida es
+// fijo por sesión WASAPI); el cambio de pista también arranca un motor nuevo.
 
 const { spawn, spawnSync } = require('node:child_process');
 const { EventEmitter } = require('node:events');
+const net = require('node:net');
 const path = require('node:path');
 
 const ENGINE = path.join(__dirname, 'escucharrr-engine.exe');
+let pipeSeq = 0;
 
 function dbToLinear(db) { return Math.pow(10, (db || 0) / 20); }
 
-// Lee líneas JSON de un stream y llama cb(obj) por cada una.
 function lineReader(stream, cb) {
   let buf = '';
   stream.on('data', d => {
@@ -39,16 +39,19 @@ function lineReader(stream, cb) {
 class NativePlayer extends EventEmitter {
   constructor() {
     super();
-    this._ff = null;        // proceso ffmpeg
-    this._eng = null;       // proceso motor
+    this._ff = null;          // proceso ffmpeg (el decoder; se reinicia en seek/pista)
+    this._eng = null;         // proceso motor (vivo toda la sesión de reproducción)
+    this._server = null;      // servidor del named pipe de PCM
+    this._sock = null;        // socket conectado (el motor como cliente)
+    this._ffExpectEnd = false;// true = el fin de ffmpeg es esperado (seek/stop), no fin de pista
     this._state = {
       playing: false, paused: false, file: null, deviceId: null,
       exclusive: false, gainDb: 0, baseOffset: 0, startedAt: 0,
-      device: null, mode: null, bitPerfect: false, durationSec: 0,
+      device: null, mode: null, bitPerfect: false, live: false, durationSec: 0,
+      rate: 0, channels: 2,
     };
   }
 
-  // Lista dispositivos de salida vía el motor (--list-devices).
   listDevices() {
     return new Promise((resolve, reject) => {
       const p = spawn(ENGINE, ['--list-devices'], { windowsHide: true });
@@ -60,18 +63,31 @@ class NativePlayer extends EventEmitter {
     });
   }
 
-  // Rate/canales nativos del fichero (para modo exclusivo/bit-perfect).
   _probe(file) {
     try {
       const r = spawnSync('ffprobe', ['-v', 'error', '-select_streams', 'a:0',
-        '-show_entries', 'stream=sample_rate,channels', '-of', 'csv=p=0', file],
-        { encoding: 'utf8' });
+        '-show_entries', 'stream=sample_rate,channels', '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1', file], { encoding: 'utf8' });
       if (r.status === 0 && r.stdout) {
-        const [rate, ch] = r.stdout.trim().split(',');
-        return { rate: parseInt(rate, 10) || 44100, channels: parseInt(ch, 10) || 2 };
+        const g = k => { const m = new RegExp(k + '=([\\d.]+)').exec(r.stdout); return m ? parseFloat(m[1]) : 0; };
+        return { rate: g('sample_rate') || 44100, channels: g('channels') || 2, duration: g('duration') || 0 };
       }
     } catch { /* ffprobe ausente */ }
-    return { rate: 44100, channels: 2 };
+    return { rate: 44100, channels: 2, duration: 0 };
+  }
+  // programa el fin REAL de la pista: el audio acaba cuando la posición llega a la duración
+  // (ffmpeg termina de DECODIFICAR mucho antes; el motor sigue vaciando su buffer).
+  _scheduleEnd() {
+    clearTimeout(this._endTimer);
+    const s = this._state;
+    if (!s.durationSec || s.paused || !s.playing) return;
+    const remain = (s.durationSec - this.state.positionSec) * 1000;
+    const eng = this._eng;
+    this._endTimer = setTimeout(() => {
+      if (this._eng !== eng) return;
+      this._state.playing = false; this.emit('ended');
+      setTimeout(() => { if (this._eng === eng && !this._state.playing) this._teardown(); }, 300);
+    }, Math.max(0, remain) + 150);
   }
 
   get state() {
@@ -81,65 +97,73 @@ class NativePlayer extends EventEmitter {
     return { ...s, positionSec: Math.max(0, pos) };
   }
 
-  _kill() {
+  _writeCtl(obj) { try { if (this._eng && this._eng.stdin.writable) this._eng.stdin.write(JSON.stringify(obj) + '\n'); } catch (e) {} }
+
+  _teardown() {
+    clearTimeout(this._endTimer);
+    this._writeCtl({ cmd: 'stop' });
     for (const p of [this._ff, this._eng]) { if (p) { try { p.kill(); } catch {} } }
-    this._ff = this._eng = null;
+    if (this._server) { try { this._server.close(); } catch {} }
+    this._ff = this._eng = this._server = this._sock = null;
   }
 
-  // Arranca el pipeline ffmpeg → motor en el offset dado.
+  // Arranca ffmpeg decodificando `file` desde `offset` y lo envía al socket del pipe.
+  _spawnFfmpeg(file, offset, rate, ch) {
+    const args = ['-nostdin', '-v', 'error'];
+    if (offset > 0) args.push('-ss', String(offset));
+    args.push('-i', file, '-f', 'f32le', '-ar', String(rate), '-ac', String(ch), '-');
+    const ff = spawn('ffmpeg', args, { windowsHide: true });
+    ff.on('error', e => this.emit('error', e));
+    ff.stdout.on('error', () => {});
+    if (this._sock) ff.stdout.pipe(this._sock, { end: false });   // end:false: no cerrar el pipe al acabar una pista/seek
+    else { ff.stdout.pause(); this._pendingFf = ff; }
+    // el cierre de ffmpeg = fin de la DECODIFICACIÓN, no del audio; el fin real lo marca _scheduleEnd
+    ff.on('close', () => { if (this._ff === ff) this._ffExpectEnd = false; });
+    return ff;
+  }
+
+  // (Re)inicia la reproducción: motor + pipe + ffmpeg nuevos (cambio de pista/dispositivo).
   async play(file, opts = {}) {
-    this._kill();
-    const deviceId = opts.deviceId || this._state.deviceId || null;
-    const exclusive = !!(opts.exclusive ?? this._state.exclusive);
+    this._teardown();
+    const deviceId = opts.deviceId !== undefined ? (opts.deviceId || null) : this._state.deviceId;
+    const exclusive = !!(opts.exclusive !== undefined ? opts.exclusive : this._state.exclusive);
     const gainDb = opts.gainDb != null ? opts.gainDb : this._state.gainDb;
     const offset = opts.seekSec || 0;
 
-    // Rate/canales de destino: en exclusivo = nativos del fichero (bit-perfect);
-    // en compartido = los del formato de mezcla del dispositivo elegido.
-    let rate = 44100, ch = 2;
-    if (exclusive) {
-      const n = this._probe(file); rate = n.rate; ch = n.channels;
-    } else {
-      try {
-        const devs = await this.listDevices();
-        const dev = deviceId ? devs.find(d => d.id === deviceId) : devs.find(d => d.default);
-        if (dev) { rate = dev.rate || 48000; ch = dev.channels || 2; }
-      } catch { rate = 48000; }
+    const probe = this._probe(file);               // rate/canales nativos + duración
+    let rate = 48000, ch = 2;
+    if (exclusive) { rate = probe.rate; ch = probe.channels; }
+    else {
+      try { const devs = await this.listDevices(); const dev = deviceId ? devs.find(d => d.id === deviceId) : devs.find(d => d.default); if (dev) { rate = dev.rate || 48000; ch = dev.channels || 2; } }
+      catch { rate = 48000; }
     }
 
-    const ffArgs = ['-nostdin', '-v', 'error'];
-    if (offset > 0) ffArgs.push('-ss', String(offset));
-    ffArgs.push('-i', file, '-f', 'f32le', '-ar', String(rate), '-ac', String(ch), '-');
-    const ff = spawn('ffmpeg', ffArgs, { windowsHide: true });
+    const pipePath = '\\\\.\\pipe\\escucharrr-pcm-' + process.pid + '-' + (++pipeSeq);
+    this._pendingFf = null;
+    this._server = net.createServer(sock => {
+      this._sock = sock;
+      sock.on('error', () => {});
+      if (this._pendingFf) { this._pendingFf.stdout.pipe(sock, { end: false }); this._pendingFf.stdout.resume(); this._pendingFf = null; }
+    });
+    await new Promise((res, rej) => { this._server.once('error', rej); this._server.listen(pipePath, res); });
 
-    const engArgs = ['--play', '--rate', String(rate), '--channels', String(ch)];
-    if (exclusive) engArgs.push('--exclusive');
-    else engArgs.push('--gain', String(dbToLinear(gainDb)));
+    const engArgs = ['--play', '--rate', String(rate), '--channels', String(ch), '--pcm-pipe', pipePath];
+    if (exclusive) engArgs.push('--exclusive'); else engArgs.push('--gain', String(dbToLinear(gainDb)));
     if (deviceId) engArgs.push('--device-id', deviceId);
     const eng = spawn(ENGINE, engArgs, { windowsHide: true });
-
-    ff.on('error', e => this.emit('error', e));
     eng.on('error', e => this.emit('error', e));
-    ff.stdout.pipe(eng.stdin);
-    ff.stdout.on('error', () => {});   // EPIPE si el motor cierra antes
     eng.stdin.on('error', () => {});
-
     lineReader(eng.stdout, o => {
-      if (o.event === 'started') {
-        Object.assign(this._state, { device: o.device, mode: o.mode, bitPerfect: o.bitPerfect });
-      } else if (o.event === 'ended') {
-        if (this._eng === eng) { this._state.playing = false; this.emit('ended'); }
-      } else if (o.event === 'error' || o.event === 'notice') {
-        this.emit('engine', o);
-      }
+      if (o.event === 'started') Object.assign(this._state, { device: o.device, mode: o.mode, bitPerfect: o.bitPerfect, live: o.live });
+      else if (o.event === 'error' || o.event === 'notice') this.emit('engine', o);
     });
-    eng.on('close', () => { if (this._eng === eng) { this._state.playing = false; this.emit('ended'); } });
+    eng.on('close', () => { if (this._eng === eng) { this._state.playing = false; this._state.live = false; } });
 
-    this._ff = ff; this._eng = eng;
-    Object.assign(this._state, {
-      playing: true, paused: false, file, deviceId, exclusive, gainDb,
-      baseOffset: offset, startedAt: Date.now(),
-    });
+    this._eng = eng;
+    this._ffExpectEnd = false;
+    this._ff = this._spawnFfmpeg(file, offset, rate, ch);
+    Object.assign(this._state, { playing: true, paused: false, file, deviceId, exclusive, gainDb, baseOffset: offset, startedAt: Date.now(), rate, channels: ch, durationSec: probe.duration || 0 });
+    this._scheduleEnd();
     this.emit('state', this.state);
     return this.state;
   }
@@ -147,39 +171,50 @@ class NativePlayer extends EventEmitter {
   pause() {
     const s = this._state;
     if (!s.playing || s.paused) return this.state;
-    s.baseOffset = this.state.positionSec;   // congela la posición
-    s.paused = true; s.playing = false;
-    this._kill();
+    s.baseOffset = this.state.positionSec; s.paused = true; s.playing = false;
+    clearTimeout(this._endTimer);
+    if (s.live && this._eng) this._writeCtl({ cmd: 'pause' });
+    else if (this._ff) { this._ffExpectEnd = true; try { this._ff.kill(); } catch {} }   // sin motor vivo: relanzar al reanudar
     this.emit('state', this.state);
     return this.state;
   }
-
   resume() {
     const s = this._state;
     if (!s.file) return this.state;
-    return this.play(s.file, { seekSec: s.baseOffset });
+    if (!s.live || !this._eng) return this.play(s.file, { seekSec: s.baseOffset });   // sin motor vivo: relanzar
+    s.paused = false; s.playing = true; s.startedAt = Date.now();
+    this._writeCtl({ cmd: 'resume' });
+    this._scheduleEnd();
+    this.emit('state', this.state);
+    return this.state;
   }
-
+  // seek en vivo: flush del buffer + reposicionar ffmpeg sobre el mismo pipe (motor sigue sonando)
   seek(sec) {
     const s = this._state;
     if (!s.file) return this.state;
-    return this.play(s.file, { seekSec: Math.max(0, sec) });
-  }
-
-  // Cambia la ganancia (dB) relanzando en la posición actual (solo compartido).
-  setGainDb(db) {
-    const s = this._state;
-    s.gainDb = db;
-    if (s.playing && !s.exclusive) return this.play(s.file, { seekSec: this.state.positionSec, gainDb: db });
+    sec = Math.max(0, sec);
+    if (!s.live || !this._eng) return this.play(s.file, { seekSec: sec });
+    this._ffExpectEnd = true;
+    if (this._ff) { try { if (this._sock) this._ff.stdout.unpipe(this._sock); this._ff.kill(); } catch {} }
+    this._writeCtl({ cmd: 'flush' });
+    this._ff = this._spawnFfmpeg(s.file, sec, s.rate, s.channels);
+    s.baseOffset = sec; s.startedAt = Date.now(); s.paused = false; s.playing = true;
+    this._scheduleEnd();
+    this.emit('state', this.state);
     return this.state;
   }
-
+  // volumen/ReplayGain en vivo: solo un comando al motor (sin relanzar nada)
+  setGainDb(db) {
+    const s = this._state; s.gainDb = db;
+    if (s.live && this._eng && !s.exclusive) this._writeCtl({ cmd: 'gain', v: dbToLinear(db) });
+    else if (s.playing && !s.exclusive) return this.play(s.file, { seekSec: this.state.positionSec, gainDb: db });
+    return this.state;
+  }
   setExclusive(on) { this._state.exclusive = !!on; }
   setDevice(id) { this._state.deviceId = id || null; }
-
   stop() {
-    this._kill();
-    Object.assign(this._state, { playing: false, paused: false, baseOffset: 0, startedAt: 0 });
+    this._teardown();
+    Object.assign(this._state, { playing: false, paused: false, baseOffset: 0, startedAt: 0, live: false });
     this.emit('state', this.state);
     return this.state;
   }
