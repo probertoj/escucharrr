@@ -255,6 +255,7 @@ async function handleNative(req, res, u) {
       if (body.deviceId !== undefined) opts.deviceId = body.deviceId || null;
       if (body.exclusive !== undefined) opts.exclusive = !!body.exclusive;
       if (body.seekSec) opts.seekSec = body.seekSec;
+      if (body.eq) opts.eq = body.eq;
       const state = await P.play(row.path, opts);
       logPlay({ track_id: body.track_id, source: 'native', zone: body.zone || 'este equipo (nativo)' });
       return sendJSON(res, { ok: true, state });
@@ -264,6 +265,7 @@ async function handleNative(req, res, u) {
     if (sub === 'stop') return sendJSON(res, { ok: true, state: P.stop() });
     if (sub === 'seek') return sendJSON(res, { ok: true, state: await P.seek(Number(body.sec) || 0) });
     if (sub === 'volume') return sendJSON(res, { ok: true, state: await P.setGainDb(Number(body.db) || 0) });
+    if (sub === 'eq') return sendJSON(res, { ok: true, state: P.setEq(!!body.on, Array.isArray(body.gains) ? body.gains : []) });
     if (sub === 'output') { if (body.deviceId !== undefined) P.setDevice(body.deviceId || null); if (body.exclusive !== undefined) P.setExclusive(!!body.exclusive); return sendJSON(res, { ok: true, state: P.state }); }
     res.writeHead(404); res.end('{}');
   } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }

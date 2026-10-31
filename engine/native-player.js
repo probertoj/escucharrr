@@ -44,6 +44,7 @@ class NativePlayer extends EventEmitter {
     this._server = null;      // servidor del named pipe de PCM
     this._sock = null;        // socket conectado (el motor como cliente)
     this._ffExpectEnd = false;// true = el fin de ffmpeg es esperado (seek/stop), no fin de pista
+    this._eq = { on: false, gains: [0, 0, 0, 0, 0, 0, 0] };   // ecualizador (se reenvía al motor en cada play)
     this._state = {
       playing: false, paused: false, file: null, deviceId: null,
       exclusive: false, gainDb: 0, baseOffset: 0, startedAt: 0,
@@ -98,6 +99,9 @@ class NativePlayer extends EventEmitter {
   }
 
   _writeCtl(obj) { try { if (this._eng && this._eng.stdin.writable) this._eng.stdin.write(JSON.stringify(obj) + '\n'); } catch (e) {} }
+  _sendEq() { this._writeCtl({ cmd: 'eq', on: !!this._eq.on, g: this._eq.gains }); }
+  // ecualizador de 7 bandas en el motor (en vivo si hay motor; se reenvía en cada play)
+  setEq(on, gains) { this._eq = { on: !!on, gains: (gains || this._eq.gains).slice(0, 7) }; if (this._eng) this._sendEq(); return this.state; }
 
   _teardown() {
     clearTimeout(this._endTimer);
@@ -129,6 +133,7 @@ class NativePlayer extends EventEmitter {
     const exclusive = !!(opts.exclusive !== undefined ? opts.exclusive : this._state.exclusive);
     const gainDb = opts.gainDb != null ? opts.gainDb : this._state.gainDb;
     const offset = opts.seekSec || 0;
+    if (opts.eq) this._eq = { on: !!opts.eq.on, gains: (opts.eq.gains || this._eq.gains).slice(0, 7) };
 
     const probe = this._probe(file);               // rate/canales nativos + duración
     let rate = 48000, ch = 2;
@@ -154,7 +159,7 @@ class NativePlayer extends EventEmitter {
     eng.on('error', e => this.emit('error', e));
     eng.stdin.on('error', () => {});
     lineReader(eng.stdout, o => {
-      if (o.event === 'started') Object.assign(this._state, { device: o.device, mode: o.mode, bitPerfect: o.bitPerfect, live: o.live });
+      if (o.event === 'started') { Object.assign(this._state, { device: o.device, mode: o.mode, bitPerfect: o.bitPerfect, live: o.live }); this._sendEq(); }
       else if (o.event === 'error' || o.event === 'notice') this.emit('engine', o);
     });
     eng.on('close', () => { if (this._eng === eng) { this._state.playing = false; this._state.live = false; } });

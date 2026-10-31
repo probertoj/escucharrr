@@ -18,7 +18,9 @@
 // Compilar con build.ps1 (MSVC). Sin dependencias externas: solo Windows SDK.
 
 #define WIN32_LEAN_AND_MEAN
+#define _USE_MATH_DEFINES
 #include <windows.h>
+#include <math.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <functiondiscoverykeys_devpkey.h>
@@ -231,6 +233,41 @@ static volatile long  g_paused = 0;         // 1 = silencio sin consumir el anil
 static volatile long  g_stop = 0;           // 1 = terminar
 static std::wstring   g_pcmPipe;            // ruta del named pipe de PCM (vacío = PCM por stdin)
 
+// ── ecualizador de 7 bandas (biquad, mismas frecuencias que el player web) ──
+static const double EQ_FREQ[7] = { 60, 150, 400, 1000, 2400, 6000, 15000 };
+static const double EQ_Q = 1.1;             // Q de las bandas peaking
+static CRITICAL_SECTION g_eqCs;             // protege g_eqGainReq
+static float          g_eqGainReq[7] = { 0, 0, 0, 0, 0, 0, 0 };   // ganancias por banda (dB)
+static volatile long  g_eqOn = 0;
+static volatile long  g_eqDirty = 0;        // 1 = recalcular coeficientes en el hilo de audio
+struct Biquad {                             // forma directa transpuesta II, estado por canal
+    float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0;
+    inline float process(float x) { float y = b0 * x + z1; z1 = b1 * x - a1 * y + z2; z2 = b2 * x - a2 * y; return y; }
+};
+// Coeficientes RBJ (lowshelf / peaking / highshelf) normalizados por a0.
+static void eq_coeffs(Biquad& bq, int band, double gainDb, double Fs) {
+    double A = pow(10.0, gainDb / 40.0);
+    double w0 = 2.0 * M_PI * EQ_FREQ[band] / Fs, cw = cos(w0), sw = sin(w0);
+    double b0, b1, b2, a0, a1, a2;
+    if (band == 0 || band == 6) {                                   // shelf (S=1)
+        double alpha = sw / 2.0 * sqrt(2.0);
+        double tsa = 2.0 * sqrt(A) * alpha;
+        if (band == 0) {                                            // lowshelf
+            b0 = A * ((A + 1) - (A - 1) * cw + tsa);  b1 = 2 * A * ((A - 1) - (A + 1) * cw);  b2 = A * ((A + 1) - (A - 1) * cw - tsa);
+            a0 = (A + 1) + (A - 1) * cw + tsa;        a1 = -2 * ((A - 1) + (A + 1) * cw);     a2 = (A + 1) + (A - 1) * cw - tsa;
+        } else {                                                    // highshelf
+            b0 = A * ((A + 1) + (A - 1) * cw + tsa);  b1 = -2 * A * ((A - 1) + (A + 1) * cw); b2 = A * ((A + 1) + (A - 1) * cw - tsa);
+            a0 = (A + 1) - (A - 1) * cw + tsa;        a1 = 2 * ((A - 1) - (A + 1) * cw);      a2 = (A + 1) - (A - 1) * cw - tsa;
+        }
+    } else {                                                        // peaking
+        double alpha = sw / (2.0 * EQ_Q);
+        b0 = 1 + alpha * A;  b1 = -2 * cw;  b2 = 1 - alpha * A;
+        a0 = 1 + alpha / A;  a1 = -2 * cw;  a2 = 1 - alpha / A;
+    }
+    bq.b0 = (float)(b0 / a0); bq.b1 = (float)(b1 / a0); bq.b2 = (float)(b2 / a0);
+    bq.a1 = (float)(a1 / a0); bq.a2 = (float)(a2 / a0);
+}
+
 static DWORD WINAPI stdin_reader(LPVOID) {
     const size_t CH = 1 << 15; // 32 KiB
     std::vector<char> tmp(CH);
@@ -269,6 +306,12 @@ static DWORD WINAPI control_reader(LPVOID) {
     while (!g_stop && fgets(line, sizeof(line), stdin)) {
         if (!strstr(line, "\"cmd\"")) continue;
         if (strstr(line, "\"gain\"")) { const char* v = strstr(line, "\"v\""); if (v) { v = strchr(v, ':'); if (v) g_gainLive = (float)atof(v + 1); } }
+        else if (strstr(line, "\"eq\"")) {
+            g_eqOn = (strstr(line, "\"on\":true") || strstr(line, "\"on\":1")) ? 1 : 0;
+            const char* g = strstr(line, "\"g\""); if (g) g = strchr(g, '[');
+            if (g) { g++; EnterCriticalSection(&g_eqCs); for (int k = 0; k < 7; k++) { char* end; double v = strtod(g, &end); if (end == g) break; g_eqGainReq[k] = (float)v; g = end; while (*g == ',' || *g == ' ') g++; } LeaveCriticalSection(&g_eqCs); }
+            g_eqDirty = 1;
+        }
         else if (strstr(line, "\"pause\""))  g_paused = 1;
         else if (strstr(line, "\"resume\"")) g_paused = 0;
         else if (strstr(line, "\"flush\""))  { if (g_ring) g_ring->clear(); }
@@ -424,6 +467,8 @@ static int play_stream(unsigned reqRate, unsigned reqCh, bool exclusive,
 
     unsigned long long totalFrames = 0;
     std::vector<char> scratch;
+    Biquad eq[8][7];
+    const int eqCh = (channels <= 8) ? channels : 0;   // EQ hasta 8 canales
     bool running = true;
     while (running) {
         if (liveControl && g_stop) break;
@@ -455,10 +500,22 @@ static int play_stream(unsigned reqRate, unsigned reqCh, bool exclusive,
         if (gotFrames > 0) {
             memcpy(out, scratch.data(), (size_t)gotFrames * frameBytes);
             const float gnow = liveControl ? g_gainLive : gain;
-            if (canGain && gnow != 1.0f) {
+            const bool doGain = canGain && gnow != 1.0f;
+            const bool doEq = canGain && g_eqOn && eqCh > 0;
+            if (doEq && InterlockedExchange(&g_eqDirty, 0)) {       // recalcula coeficientes al cambiar
+                EnterCriticalSection(&g_eqCs);
+                for (int c = 0; c < eqCh; c++) for (int bnd = 0; bnd < 7; bnd++) eq_coeffs(eq[c][bnd], bnd, g_eqGainReq[bnd], (double)useFmt->nSamplesPerSec);
+                LeaveCriticalSection(&g_eqCs);
+            }
+            if (doGain || doEq) {                                   // ganancia (RG×vol) primero, luego EQ
                 float* f = (float*)out;
-                size_t samples = (size_t)gotFrames * channels;
-                for (size_t i = 0; i < samples; i++) f[i] *= gnow;
+                for (UINT32 i = 0; i < gotFrames; i++)
+                    for (int c = 0; c < (int)channels; c++) {
+                        float s = f[i * channels + c];
+                        if (doGain) s *= gnow;
+                        if (doEq) for (int bnd = 0; bnd < 7; bnd++) s = eq[c][bnd].process(s);
+                        f[i * channels + c] = s;
+                    }
             }
         }
         // silencio en el resto si hubo underrun / fin de stream (en live esperamos más PCM)
@@ -508,6 +565,7 @@ int main(int argc, char** argv) {
         else if (a == "--pcm-pipe" && i + 1 < argc) g_pcmPipe = utf8_to_wide(argv[++i]);
     }
 
+    InitializeCriticalSection(&g_eqCs);
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (!HR_OK(hr)) { emit_error("CoInitializeEx falló"); return 1; }
 

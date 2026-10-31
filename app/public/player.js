@@ -22,7 +22,7 @@ window.player = (function () {
   // Cuando está activo, el transporte va a /api/native/* en vez del audio del navegador,
   // y los decks se silencian para no duplicar el sonido. La posición se sondea del servidor.
   let nativeMode = !!zone.native, nativeDeviceId = zone.nativeDeviceId || '', nativeExclusive = !!zone.nativeExclusive;
-  let nativePos = 0, nativeBusy = false, nativeMiss = 0, nativePollTimer = null, nativeVolTimer = null, nativeStartedIdx = -1;
+  let nativePos = 0, nativeBusy = false, nativeMiss = 0, nativePollTimer = null, nativeVolTimer = null, nativeEqTimer = null, nativeStartedIdx = -1;
   // ecualizador + crossfade (persistentes)
   let eqOn = false, eqGains = [0, 0, 0, 0, 0, 0, 0];
   try { const e = JSON.parse(localStorage.getItem(EQKEY)); if (e) { eqOn = !!e.on; if (Array.isArray(e.g) && e.g.length === 7) eqGains = e.g.map(Number); } } catch (e) {}
@@ -165,7 +165,7 @@ window.player = (function () {
     idx = i; save(); const c = cur(); if (!c) return;
     if (c.playable === false) { playing = false; nativeStartedIdx = -1; render(); return; }
     nativeBusy = true; playing = true; loggedIdx = idx; nativeMiss = 0; nativeStartedIdx = idx; render();
-    const body = { track_id: c.trackId, deviceId: nativeDeviceId || null, exclusive: !!nativeExclusive, gainDb: nativeGainDb(c), zone: zone.name };
+    const body = { track_id: c.trackId, deviceId: nativeDeviceId || null, exclusive: !!nativeExclusive, gainDb: nativeGainDb(c), zone: zone.name, eq: { on: eqOn, gains: eqGains } };
     if (opts && opts.seekSec) body.seekSec = opts.seekSec;
     njson('play', body).then(j => {
       nativeBusy = false;
@@ -182,6 +182,8 @@ window.player = (function () {
   function nativeSeek(f) { const c = cur(); if (!c) return; const lenS = (c.length_ms || 0) / 1000; if (!lenS) return; nativeBusy = true; njson('seek', { sec: Math.max(0, Math.min(1, f)) * lenS }).then(() => nativeBusy = false); }
   function nativeStop() { playing = false; nativeStartedIdx = -1; stopNativePoll(); njson('stop', {}).catch(() => {}); }
   function nativeVolumeApply() { clearTimeout(nativeVolTimer); nativeVolTimer = setTimeout(() => { const c = cur(); if (!c || !playing) return; nativeBusy = true; njson('volume', { db: nativeGainDb(c) }).then(() => nativeBusy = false).catch(() => nativeBusy = false); }, 300); }
+  // EQ del motor nativo (en vivo): envía las bandas al servidor
+  function nativeEqApply() { clearTimeout(nativeEqTimer); nativeEqTimer = setTimeout(() => { njson('eq', { on: eqOn, gains: eqGains }).catch(() => {}); }, 200); }
   function setNativeMode(on) {
     on = !!on; if (on === nativeMode) return;
     const wasPlaying = playing, posSec = posMs() / 1000;
@@ -306,9 +308,9 @@ window.player = (function () {
     document.addEventListener('click', e => { if (eqpanel.style.display === 'block' && !e.target.closest('#eqpanel') && !e.target.closest('[data-act="eq"]')) eqpanel.style.display = 'none'; });
   }
   function toggleEqPanel() { ensureEqPanel(); if (eqpanel.style.display === 'block') { eqpanel.style.display = 'none'; return; } if (zpanel) zpanel.style.display = 'none'; eqpanel.style.display = 'block'; renderEqPanel(); }
-  function setEqEnabled(on) { eqOn = on; applyEq(); persistEq(); renderEqPanel(); const b = document.querySelector('#nowbar [data-act="eq"]'); if (b) b.style.color = (eqOn || xfade > 0) ? 'var(--accent)' : 'var(--text-2)'; }
-  function setEqBand(i, v) { eqGains[i] = v; if (ctx && eqOn && eqBands[i]) eqBands[i].gain.value = v; persistEq(); const lab = document.getElementById('eqval' + i); if (lab) lab.textContent = (v > 0 ? '+' : '') + v + ' dB'; }
-  function setPreset(name) { const p = EQPRE[name]; if (!p) return; eqGains = p.slice(); if (!eqOn) eqOn = true; applyEq(); persistEq(); renderEqPanel(); const b = document.querySelector('#nowbar [data-act="eq"]'); if (b) b.style.color = 'var(--accent)'; }
+  function setEqEnabled(on) { eqOn = on; applyEq(); persistEq(); renderEqPanel(); const b = document.querySelector('#nowbar [data-act="eq"]'); if (b) b.style.color = (eqOn || xfade > 0) ? 'var(--accent)' : 'var(--text-2)'; if (nativeMode) nativeEqApply(); }
+  function setEqBand(i, v) { eqGains[i] = v; if (ctx && eqOn && eqBands[i]) eqBands[i].gain.value = v; persistEq(); const lab = document.getElementById('eqval' + i); if (lab) lab.textContent = (v > 0 ? '+' : '') + v + ' dB'; if (nativeMode) nativeEqApply(); }
+  function setPreset(name) { const p = EQPRE[name]; if (!p) return; eqGains = p.slice(); if (!eqOn) eqOn = true; applyEq(); persistEq(); renderEqPanel(); const b = document.querySelector('#nowbar [data-act="eq"]'); if (b) b.style.color = 'var(--accent)'; if (nativeMode) nativeEqApply(); }
   function setXfade(v) { xfade = Math.max(0, Math.min(12, v)); persistX(); const lab = document.getElementById('xfadeval'); if (lab) lab.textContent = xfade === 0 ? 'desactivado' : xfade.toFixed(1).replace('.0', '') + ' s'; const b = document.querySelector('#nowbar [data-act="eq"]'); if (b) b.style.color = (eqOn || xfade > 0) ? 'var(--accent)' : 'var(--text-2)'; }
   const RGLAB = [['track', 'Pista'], ['album', 'Álbum'], ['off', 'No']];
   function renderEqPanel() {
