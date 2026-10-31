@@ -7,6 +7,8 @@ app/watch.json
 # credenciales de scrobbling (tokens/claves propias)
 app/scrobble.json
 app/.lastfm-token
+# carátulas cacheadas en local (Cover Art Archive); se re-descargan con covers.js
+app/cache/
 # node
 node_modules/
 # artefactos de compilación del motor nativo (el código fuente sí se versiona)

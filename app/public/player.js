@@ -90,7 +90,7 @@ window.player = (function () {
   const loadedCur = () => active().trackIdx === idx;
   const lenMs = () => { const c = cur(); if (nativeMode) return (c && c.length_ms) || 0; const d = active().el.duration; return (loadedCur() && isFinite(d) && d > 0) ? d * 1000 : (c && c.length_ms) || 0; };
   const posMs = () => nativeMode ? nativePos * 1000 : (loadedCur() ? active().el.currentTime * 1000 : 0);
-  function cover(id, s) { const p = PAIRS[(id || 0) % PAIRS.length]; return `<svg width="${s}" height="${s}" viewBox="0 0 46 46" style="border-radius:7px;display:block"><rect width="46" height="46" fill="${p[0]}"/><rect y="30" width="46" height="16" fill="${p[1]}"/><circle cx="33" cy="16" r="10" fill="#FAC775"/></svg>`; }
+  function cover(id, s) { return `<img src="/api/cover?rg=${id || 0}" alt="" draggable="false" style="width:${s}px;height:${s}px;object-fit:cover;border-radius:7px;display:block">`; }
   function logPlay() { const c = cur(); if (c && c.trackId && loggedIdx !== idx) { loggedIdx = idx; fetch('/api/play', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ track_id: c.trackId, zone: zone.name }) }).catch(() => {}); } }
   const spost = (p, b) => fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).catch(() => {});
   function trackStarted() { trackStartEpoch = Math.floor(Date.now() / 1000); const c = cur(); if (c && c.trackId) spost('/api/scrobble/nowplaying', { track_id: c.trackId }); if (lypanel && lypanel.style.display === 'block') loadLyrics(); }   // "sonando ahora" + recargar letra si el panel está abierto

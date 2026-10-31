@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS release_group (
   primary_type     TEXT,                     -- album | ep | single | live | compilation | soundtrack
   first_release    TEXT,                     -- fecha de la 1ª edición (YYYY o YYYY-MM-DD)
   about            TEXT,                      -- reseña/contexto editorial externo (Wikipedia); el user_edit 'about' de Obsidian manda
+  cover_path       TEXT,                      -- ruta local (relativa a app/) de la carátula cacheada (Cover Art Archive)
+  cover_mime       TEXT,                      -- tipo MIME de la carátula cacheada (image/jpeg, image/png)
   created_at       TEXT DEFAULT (datetime('now')),
   updated_at       TEXT DEFAULT (datetime('now'))
 );

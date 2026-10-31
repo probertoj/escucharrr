@@ -54,6 +54,7 @@ const Q = {
      FROM v_album a WHERE a.id=?`),
   about: db.prepare(`SELECT value v FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='about'`),
   aboutExt: db.prepare(`SELECT about v FROM release_group WHERE id=?`),   // reseña editorial externa (Wikipedia)
+  coverOf: db.prepare(`SELECT cover_path, cover_mime FROM release_group WHERE id=?`),   // carátula cacheada (Cover Art Archive)
   prov: db.prepare(`SELECT field,source,source_ref FROM provenance WHERE subject_type='release_group' AND subject_id=?`),
   editions: db.prepare(`SELECT format,date,country FROM "release" WHERE release_group_id=? ORDER BY date`),
   tracks: db.prepare(`SELECT tr.id trackId, tr.recording_id, m.position disc, tr.position pos, tr.title, tr.length_ms,
@@ -433,6 +434,29 @@ function sendFile(res, file) {
   fs.createReadStream(p).pipe(res);
 }
 
+// ── carátula: ráster cacheado (Cover Art Archive) o SVG geométrico de respaldo ──
+// Un solo endpoint para toda la UI: /api/cover?rg=ID. Si hay portada descargada la
+// sirve; si no, devuelve el mismo SVG determinista por id que usaba el cliente.
+const COVER_PAIRS = [['#0F6E56', '#1D9E75'], ['#534AB7', '#7F77DD'], ['#185FA5', '#378ADD'], ['#854F0B', '#BA7517'], ['#72243E', '#D4537E'], ['#5F5E5A', '#888780'], ['#3B6D11', '#639922'], ['#993C1D', '#D85A30']];
+function coverSvg(id) {
+  const p = COVER_PAIRS[((id || 0) % COVER_PAIRS.length + COVER_PAIRS.length) % COVER_PAIRS.length];
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300" width="300" height="300">` +
+    `<rect width="300" height="300" fill="${p[0]}"/><rect y="186" width="300" height="114" fill="${p[1]}"/>` +
+    `<circle cx="210" cy="108" r="51" fill="#FAC775"/><rect x="45" y="45" width="18" height="126" fill="#FAECE7"/></svg>`;
+}
+function serveCover(res, id) {
+  const row = Number.isFinite(id) ? Q.coverOf.get(id) : null;
+  if (row && row.cover_path) {
+    const p = path.join(__dirname, row.cover_path);
+    if (p.startsWith(__dirname) && fs.existsSync(p)) {
+      res.writeHead(200, { 'Content-Type': row.cover_mime || 'image/jpeg', 'Cache-Control': 'public, max-age=86400' });
+      return fs.createReadStream(p).pipe(res);
+    }
+  }
+  res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'public, max-age=3600' });
+  res.end(coverSvg(id));
+}
+
 // ── biblioteca en vivo: watcher de carpetas + eventos SSE a la UI ───────────────
 const sseClients = new Set();
 function sseBroadcast(type) { const line = `data: ${JSON.stringify({ type, t: Date.now() })}\n\n`; for (const r of sseClients) { try { r.write(line); } catch (e) {} } }
@@ -483,6 +507,7 @@ http.createServer((req, res) => {
   if (u.pathname === '/api/playlists' || u.pathname === '/api/playlist' || u.pathname.startsWith('/api/playlist/')) return void handlePlaylists(req, res, u);
   try {
     if (u.pathname === '/api/stream') return streamAudio(req, res, parseInt(u.searchParams.get('track'), 10));
+    if (u.pathname === '/api/cover') return serveCover(res, parseInt(u.searchParams.get('rg'), 10));
     if (u.pathname === '/api/library') return sendJSON(res, libraryList());
     if (u.pathname === '/api/album') { const a = album(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/search') return sendJSON(res, search(u.searchParams.get('q'), Math.min(parseInt(u.searchParams.get('n') || '20', 10) || 20, 100)));

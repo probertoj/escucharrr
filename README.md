@@ -36,6 +36,11 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     `release_group.about`) con **procedencia** (tabla `provenance`, `source='wikipedia'`, enlace al artículo).
     **Tus notas de Obsidian mandan**: solo rellena lo externo; el `user_edit` sigue ganando al leer. Entidades
     sin MBID se saltan (identificador fuerte, sin adivinar por nombre). Cacheado; `--force` re-consulta.
+  - `covers.js` — **carátulas reales** desde **Cover Art Archive** (abierto, sin clave): por MBID de
+    release-group pide la portada frontal (atajo `/front-<size>`, redirige a archive.org) y la **cachea en local**
+    (`app/cache/covers/<id>.jpg`, gitignored) con **procedencia** (`provenance`, `source='coverartarchive'`; o
+    `'none'` si no hay, para no reconsultar). `--size 250|500|1200`, `--rg ID`, `--limit`, `--force`. El servidor
+    sirve la carátula por `/api/cover?rg=ID` y, si no hay, devuelve el **SVG geométrico de respaldo** (mismo por id).
   - `analyze.js` — **loudness EBU R128 / ReplayGain** con ffmpeg (`ebur128`): por pista mide LUFS integrado y
     pico → `gain_db` (ref −18 LUFS) + `peak_dbfs`; y **por álbum** mide el disco entero como un solo programa
     (concatena sus ficheros con el demuxer `concat`) → `album_gain_db` + `album_peak_dbfs`, iguales para todas
@@ -125,6 +130,7 @@ node identify.js     --db ../app/escucharrr.db --acoustid --acoustid-key TU_KEY
 node enrich.js       --db ../app/escucharrr.db --limit 50
 node discogs.js      --db ../app/escucharrr.db --rg 1   # créditos por pista (donde MB no llega)
 node editorial.js    --db ../app/escucharrr.db          # bio/reseña desde Wikipedia (abierto, sin clave)
+node covers.js       --db ../app/escucharrr.db          # carátulas reales desde Cover Art Archive (cacheadas)
 node analyze.js      --db ../app/escucharrr.db          # loudness R128/ReplayGain (necesita ffmpeg)
 
 # 2. arrancar la vista web
