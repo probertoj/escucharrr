@@ -109,8 +109,16 @@ function ensureGenre(name) {
 
 // ── sync ────────────────────────────────────────────────────────────────────
 const vaultRoot = path.resolve(path.dirname(CFG_PATH), cfg.vault);
-const dir = path.join(vaultRoot, cfg.albumsFolder);
-const files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.md'));
+let dir = path.join(vaultRoot, cfg.albumsFolder || '');
+// Si la carpeta de álbumes configurada no existe, cae a la RAÍZ del vault (caso común: las
+// notas están directamente en el vault). Evita el crash por ENOENT y "arregla" la config.
+if (cfg.albumsFolder && !fs.existsSync(dir)) {
+  console.warn('  aviso: la carpeta de álbumes "' + cfg.albumsFolder + '" no existe en el vault; uso la raíz del vault');
+  cfg.albumsFolder = ''; dir = vaultRoot;
+}
+let files = [];
+try { files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.md')); }
+catch (e) { console.error('  no se puede leer la carpeta del vault:', dir, '(' + (e.code || e.message) + '); 0 notas'); }
 let n = 0;
 db.exec('BEGIN');
 try {

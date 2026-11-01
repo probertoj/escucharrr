@@ -134,7 +134,15 @@ const ensureRec = (title, cid, len) => { const r = S.recBy.get(title, cid); retu
 const ensureGenre = (name) => { const r = S.genreBy.get(name); return r ? r.id : Number(S.insGenre.run(name).lastInsertRowid); };
 
 // ── recorrido ─────────────────────────────────────────────────────────────────
-function walk(dir, out) { for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const f = path.join(dir, e.name); if (e.isDirectory()) walk(f, out); else if (/\.(flac|wav|dsf|dff)$/i.test(e.name)) out.push(f); } }
+function walk(dir, out) {
+  let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { console.warn('  (carpeta ilegible, saltada):', dir, '(' + (e.code || e.message) + ')'); return; }
+  for (const e of ents) {
+    const f = path.join(dir, e.name);
+    let isDir = false; try { isDir = e.isDirectory(); } catch (x) {}
+    if (isDir) walk(f, out);
+    else if (/\.(flac|wav|dsf|dff)$/i.test(e.name)) out.push(f);
+  }
+}
 const files = []; walk(path.resolve(ROOT), files);
 
 let ok = 0, ident = 0;
