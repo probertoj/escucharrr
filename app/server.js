@@ -260,6 +260,19 @@ function buildQ(db) { return {
      LEFT JOIN recording r ON r.id=COALESCE(p.recording_id, tr.recording_id)
      ORDER BY p.played_at DESC, p.id DESC LIMIT ? OFFSET ?`),
   rgTitle: db.prepare(`SELECT title FROM release_group WHERE id=?`),
+  // ── edición/corrección de metadatos ("tus datos mandan": el valor de usuario GANA) ──
+  edSetTier: db.prepare(`INSERT INTO rating_tier(subject_type,subject_id,tier_key,source,updated_at) VALUES(?,?,?,'user',datetime('now')) ON CONFLICT(subject_type,subject_id) DO UPDATE SET tier_key=excluded.tier_key, source='user', updated_at=datetime('now')`),
+  edDelTier: db.prepare(`DELETE FROM rating_tier WHERE subject_type=? AND subject_id=?`),
+  edSetStars: db.prepare(`INSERT INTO rating(subject_type,subject_id,stars,source,updated_at) VALUES(?,?,?,'user',datetime('now')) ON CONFLICT(subject_type,subject_id) DO UPDATE SET stars=excluded.stars, source='user', updated_at=datetime('now')`),
+  edDelStars: db.prepare(`DELETE FROM rating WHERE subject_type=? AND subject_id=?`),
+  edEvent: db.prepare(`INSERT INTO rating_event(subject_type,subject_id,kind,value,source) VALUES(?,?,?,?,'user')`),
+  edSetFlag: db.prepare(`INSERT OR IGNORE INTO flag(subject_type,subject_id,flag) VALUES(?,?,?)`),
+  edDelFlag: db.prepare(`DELETE FROM flag WHERE subject_type=? AND subject_id=? AND flag=?`),
+  edSetUserEdit: db.prepare(`INSERT INTO user_edit(subject_type,subject_id,field,value,updated_at) VALUES(?,?,?,?,datetime('now')) ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET value=excluded.value, updated_at=datetime('now')`),
+  edDelUserEdit: db.prepare(`DELETE FROM user_edit WHERE subject_type=? AND subject_id=? AND field=?`),
+  edSetProv: db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at) VALUES(?,?,?,'user',NULL,datetime('now')) ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source='user', source_ref=NULL, fetched_at=datetime('now')`),
+  edDelProv: db.prepare(`DELETE FROM provenance WHERE subject_type=? AND subject_id=? AND field=?`),
+  tierKeys: db.prepare(`SELECT key, label, rank FROM tier ORDER BY rank DESC`),
 }; }
 let Q = buildQ(db);
 function logPlay(j) {
@@ -1118,6 +1131,45 @@ async function handleBackup(req, res, u) {
   } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 
+// ── EDICIÓN/CORRECCIÓN de metadatos (el valor de USUARIO gana sobre el externo, estilo "prefer" de Roon) ──
+const EDIT_SUBJECTS = new Set(['release_group', 'artist', 'track', 'recording']);
+const EDIT_TEXT_FIELDS = new Set(['about', 'bio']);
+function handleEditSync(body) {
+  const st = String(body.subject_type || '');
+  const sid = parseInt(body.subject_id, 10);
+  const field = String(body.field || '');
+  if (!EDIT_SUBJECTS.has(st) || !sid) throw new Error('sujeto inválido');
+  if (field === 'tier') {
+    const v = (body.value == null || body.value === '') ? null : String(body.value);
+    if (v) { if (!Q.tierKeys.all().some(t => t.key === v)) throw new Error('tier inválido'); Q.edSetTier.run(st, sid, v); Q.edEvent.run(st, sid, 'tier', v); Q.edSetProv.run(st, sid, 'tier'); }
+    else { Q.edDelTier.run(st, sid); Q.edDelProv.run(st, sid, 'tier'); }
+    return { field, value: v };
+  }
+  if (field === 'stars') {
+    const n = Number(body.value);
+    const v = (body.value == null || body.value === '' || n <= 0 || Number.isNaN(n)) ? null : Math.min(5, n);   // 0/vacío = quitar valoración
+    if (v == null) { Q.edDelStars.run(st, sid); Q.edDelProv.run(st, sid, 'stars'); }
+    else { Q.edSetStars.run(st, sid, v); Q.edEvent.run(st, sid, 'stars', String(v)); Q.edSetProv.run(st, sid, 'stars'); }
+    return { field, value: v };
+  }
+  if (field === 'favorite') {
+    const on = !!body.value;
+    if (on) Q.edSetFlag.run(st, sid, 'favorite'); else Q.edDelFlag.run(st, sid, 'favorite');
+    return { field, value: on };
+  }
+  if (EDIT_TEXT_FIELDS.has(field)) {
+    const v = body.value == null ? '' : String(body.value);
+    if (v.trim() === '') { Q.edDelUserEdit.run(st, sid, field); Q.edDelProv.run(st, sid, field); return { field, value: null }; }
+    Q.edSetUserEdit.run(st, sid, field, v); Q.edSetProv.run(st, sid, field);
+    return { field, value: v };
+  }
+  throw new Error('campo no editable');
+}
+async function handleEdit(req, res) {
+  try { const r = handleEditSync(await readBody(req)); sseBroadcast('library'); return sendJSON(res, { ok: true, ...r }); }
+  catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
+}
+
 http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   if (u.pathname === '/api/events') {
@@ -1164,6 +1216,7 @@ http.createServer((req, res) => {
   if (u.pathname.startsWith('/api/radio/')) return void handleRadio(req, res, u);
   if (u.pathname.startsWith('/api/backup/')) return void handleBackup(req, res, u);
   if (u.pathname === '/api/history') return sendJSON(res, history(parseInt(u.searchParams.get('n'), 10), parseInt(u.searchParams.get('offset'), 10)));
+  if (req.method === 'POST' && u.pathname === '/api/edit') return void handleEdit(req, res);
   if (u.pathname.startsWith('/api/scrobble/')) return void handleScrobble(req, res, u);
   if (u.pathname === '/api/lyrics') return void getLyrics(parseInt(u.searchParams.get('track'), 10)).then(r => sendJSON(res, r)).catch(() => sendJSON(res, { found: false }));
   if (u.pathname === '/api/playlists' || u.pathname === '/api/playlist' || u.pathname.startsWith('/api/playlist/')) return void handlePlaylists(req, res, u);
