@@ -41,75 +41,88 @@ const PAIRS=[['#0F6E56','#1D9E75'],['#534AB7','#7F77DD'],['#185FA5','#378ADD'],[
 function cover(id){return `<img src="/api/cover?rg=${id}" alt="" loading="lazy" draggable="false" style="width:100%;height:100%;object-fit:cover;display:block">`;}
 function stars(s){return s?`<span class="stars">★</span> ${(+s).toFixed(1)}`:'<span style="color:var(--muted)">—</span>';}
 
+const esc0=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 let ALBUMS=[];
-const active={tier:[],genre:[],tag:[],decade:[],type:[],format:[]}; let minR=null, txt='';
-const facetDefs=[['tier','Tier'],['genre','Género'],['tag','Etiqueta'],['decade','Década'],['type','Tipo'],['format','Formato']];
-function valsOf(key){const m={};ALBUMS.forEach(a=>{let vs=[];
-  if(key==='tier')vs=a.tier_key?[a.tier_key]:[];
-  else if(key==='genre')vs=a.genres||[];
-  else if(key==='tag')vs=a.tags||[];
-  else if(key==='decade')vs=a.year?[String(Math.floor(a.year/10)*10)+'s']:[];
-  else if(key==='type')vs=a.primary_type?[a.primary_type.toLowerCase()]:[];
-  else if(key==='format')vs=a.format?[a.format]:[];
-  vs.forEach(v=>m[v]=(m[v]||0)+1);});return m;}
-function matchFacet(a,key,sel){if(!sel.length)return true;let vs=[];
-  if(key==='tier')vs=a.tier_key?[a.tier_key]:[];
-  else if(key==='genre')vs=a.genres||[];
-  else if(key==='tag')vs=a.tags||[];
-  else if(key==='decade')vs=a.year?[String(Math.floor(a.year/10)*10)+'s']:[];
-  else if(key==='type')vs=a.primary_type?[a.primary_type.toLowerCase()]:[];
-  else if(key==='format')vs=a.format?[a.format]:[];
-  return vs.some(v=>sel.includes(v));}
+// Facetas estilo "Focus" de Roon. Booleanas (favorito/más tarde/audio/reproducido) como valores sí/no.
+const BOOLK={favorite:'is_favorite',later:'listen_later',audio:'has_audio',played:'played'};
+const facetDefs=[['tier','Tier'],['genre','Género'],['format','Formato'],['decade','Década'],['type','Tipo'],['tag','Etiqueta'],['favorite','Favoritos'],['later','Escuchar más tarde'],['audio','Audio local'],['played','Reproducido']];
+const sel={}; facetDefs.forEach(([k])=>sel[k]={});   // sel[clave][valor] = 'inc' | 'exc'
+let minR=null, txt='';
+function avals(a,key){
+  if(key==='tier')return a.tier_key?[a.tier_key]:[];
+  if(key==='genre')return a.genres||[];
+  if(key==='tag')return a.tags||[];
+  if(key==='decade')return a.year?[String(Math.floor(a.year/10)*10)+'s']:[];
+  if(key==='type')return a.primary_type?[a.primary_type.toLowerCase()]:[];
+  if(key==='format')return a.format?[a.format]:[];
+  if(BOOLK[key])return [a[BOOLK[key]]?'sí':'no'];
+  return [];}
+function vlabel(key,v){ if(key==='tier')return TN[v]; if(BOOLK[key])return v==='sí'?'Sí':'No'; return v; }
+function valsOf(key){const m={};ALBUMS.forEach(a=>avals(a,key).forEach(v=>m[v]=(m[v]||0)+1));return m;}
+function matchFacet(a,key){
+  const s=sel[key],inc=[],exc=[]; for(const v in s){(s[v]==='exc'?exc:inc).push(v);}
+  if(!inc.length&&!exc.length)return true;
+  const vs=avals(a,key);
+  if(inc.length&&!vs.some(v=>inc.includes(v)))return false;   // incluir: debe tener alguno (OR)
+  if(exc.length&&vs.some(v=>exc.includes(v)))return false;    // excluir: no debe tener ninguno
+  return true;}
 function passes(a){
-  for(const[k]of facetDefs)if(!matchFacet(a,k,active[k]))return false;
+  for(const[k]of facetDefs)if(!matchFacet(a,k))return false;
   if(minR!=null&&!(a.album_stars>=minR))return false;
   if(txt&&!((a.title+' '+a.artist).toLowerCase().includes(txt)))return false;
   return true;}
 
 function renderFacets(){
-  let h=facetDefs.map(([k,label])=>{const m=valsOf(k);
-    const vs=Object.keys(m).sort((x,y)=>k==='tier'?TR[y]-TR[x]:(k==='decade'?x.localeCompare(y):m[y]-m[x]));
-    return `<div class="fcol"><h4>${label}</h4>`+vs.map(v=>{const on=active[k].includes(v);const lab=k==='tier'?TN[v]:v;
-      return `<div class="fv ${on?'on':''}" data-k="${k}" data-v="${v}"><span>${lab}</span><span class="n">${m[v]}</span></div>`;}).join('')+`</div>`;}).join('');
+  const box=document.getElementById('facets'); if(!box)return;
+  let h=facetDefs.map(([k,label])=>{const m=valsOf(k);const keys=Object.keys(m);if(!keys.length)return '';
+    const vs=keys.sort((x,y)=>k==='tier'?TR[y]-TR[x]:(k==='decade'?y.localeCompare(x):m[y]-m[x]));
+    return `<div class="fcol"><h4>${label}</h4>`+vs.map(v=>{const st=sel[k][v]||'';
+      return `<div class="fv ${st==='inc'?'on':st==='exc'?'exc':''}" data-k="${k}" data-v="${esc0(v)}" title="Clic: incluir → excluir → quitar">${st==='exc'?'<span class="fvsign">−</span>':''}<span>${esc0(vlabel(k,v))}</span><span class="n">${m[v]}</span></div>`;}).join('')+`</div>`;}).join('');
   const rm=[[5,'5★'],[4,'4★ o más'],[3,'3★ o más'],[2,'2★ o más'],[1,'1★ o más']];
   h+=`<div class="fcol"><h4>Valoración</h4>`+rm.map(([v,l])=>{const n=ALBUMS.filter(a=>a.album_stars>=v).length;const on=minR===v;
     return `<div class="fv ${on?'on':''}" data-rat="${v}"><span>${l}</span><span class="n">${n}</span></div>`;}).join('')+`</div>`;
-  facets.innerHTML=h;}
+  box.innerHTML=h;}
 function renderChips(){
-  const c=[];facetDefs.forEach(([k])=>active[k].forEach(v=>c.push([k,v,k==='tier'?TN[v]:v])));
-  if(minR!=null)c.push(['rat',minR,minR+'★ o más']);
-  chips.innerHTML=c.length?c.map(x=>`<span class="chip" data-ck="${x[0]}" data-cv="${x[1]}">${x[2]} ${window.icon('close',12)}</span>`).join('')+`<span class="chip" data-clear="1" style="background:var(--surface-2);color:var(--text-2)">Limpiar</span>`:'';}
+  const box=document.getElementById('chips'); const c=[];
+  facetDefs.forEach(([k])=>{const s=sel[k];for(const v in s)c.push([k,v,(s[v]==='exc'?'≠ ':'')+vlabel(k,v),s[v]]);});
+  if(minR!=null)c.push(['rat',String(minR),minR+'★ o más','inc']);
+  box.innerHTML=c.length?c.map(x=>`<span class="chip ${x[3]==='exc'?'excchip':''}" data-ck="${x[0]}" data-cv="${esc0(x[1])}">${esc0(x[2])} ${window.icon('close',12)}</span>`).join('')+`<span class="chip" data-clear="1" style="background:var(--surface-2);color:var(--text-2)">Limpiar</span>`:'';}
 function render(){
-  let l=ALBUMS.filter(passes);const s=sort.value;
+  let l=ALBUMS.filter(passes);const s=document.getElementById('sort').value;
   l.sort((a,b)=>s==='year'?(b.year||0)-(a.year||0):s==='artist'?a.artist.localeCompare(b.artist):s==='tier'?(TR[b.tier_key]||0)-(TR[a.tier_key]||0):s==='rating'?(b.album_stars||0)-(a.album_stars||0):a.title.localeCompare(b.title));
-  count.textContent=l.length===ALBUMS.length?`${ALBUMS.length} álbumes`:`${l.length} de ${ALBUMS.length} álbumes`;
-  grid.innerHTML=l.map(a=>`<a class="card" href="album.html?id=${a.id}">
+  document.getElementById('count').textContent=l.length===ALBUMS.length?`${ALBUMS.length} álbumes`:`${l.length} de ${ALBUMS.length} álbumes`;
+  document.getElementById('grid').innerHTML=l.map(a=>`<a class="card" href="album.html?id=${a.id}">
     <div class="cov">${cover(a.id)}
       ${a.tier_key?`<span class="badge" style="background:${TC[a.tier_key][0]};color:${TC[a.tier_key][1]}">${TN[a.tier_key]}</span>`:''}
       ${a.is_favorite?'<span class="fav">♥</span>':''}</div>
-    <div class="t">${a.title}</div><div class="s">${a.artist} · ${a.year||'—'}</div></a>`).join('');
+    <div class="t">${esc0(a.title)}</div><div class="s">${esc0(a.artist)} · ${a.year||'—'}</div></a>`).join('');
   renderFacets();renderChips();}
+function cycle(key,v){const s=sel[key];const cur=s[v];if(!cur)s[v]='inc';else if(cur==='inc')s[v]='exc';else delete s[v];}
 
 document.addEventListener('click',e=>{
   const fv=e.target.closest('.fv');
-  if(fv){if(fv.dataset.rat!==undefined){const v=+fv.dataset.rat;minR=minR===v?null:v;}
-    else{const a=active[fv.dataset.k];if(a){const v=fv.dataset.v,i=a.indexOf(v);i<0?a.push(v):a.splice(i,1);}}render();return;}
-  const ch=e.target.closest('.chip');
-  if(ch){if(ch.dataset.clear){for(const k in active)active[k]=[];minR=null;}
-    else if(ch.dataset.ck==='rat')minR=null;
-    else{const a=active[ch.dataset.ck];if(a){const i=a.indexOf(ch.dataset.cv);if(i>=0)a.splice(i,1);}}render();return;}
+  if(fv){if(fv.dataset.rat!==undefined){const v=+fv.dataset.rat;minR=minR===v?null:v;}else cycle(fv.dataset.k,fv.dataset.v);render();return;}
+  const ch=e.target.closest('#chips .chip');
+  if(ch){if(ch.dataset.clear){facetDefs.forEach(([k])=>sel[k]={});minR=null;}else if(ch.dataset.ck==='rat')minR=null;else if(sel[ch.dataset.ck])delete sel[ch.dataset.ck][ch.dataset.cv];render();return;}
 });
-focusbtn.onclick=()=>{focus.hidden=!focus.hidden;focusbtn.textContent=(focus.hidden?'▸':'▾')+' Focus';};
-sort.onchange=render; filter.oninput=()=>{txt=filter.value.toLowerCase().trim();render();};
+const focusbtn=document.getElementById('focusbtn');
+focusbtn.onclick=()=>{const fp=document.getElementById('focus');fp.hidden=!fp.hidden;focusbtn.textContent=(fp.hidden?'▸':'▾')+' Focus';};
+document.getElementById('sort').onchange=render;
+document.getElementById('filter').oninput=(e)=>{txt=e.target.value.toLowerCase().trim();render();};
 
-function load(){fetch('/api/library').then(r=>r.json()).then(d=>{ALBUMS=d;render();}).catch(e=>count.textContent='error: '+e.message);}
+function load(){fetch('/api/library').then(r=>r.json()).then(d=>{ALBUMS=d;render();}).catch(e=>document.getElementById('count').textContent='error: '+e.message);}
 load();
 document.addEventListener('escucharrr:changed',load);   // biblioteca en vivo
 
 // ── marcadores: guardar/aplicar un Focus (estilo Roon) ──
-const esc0=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-function currentFocus(){const a={};for(const k in active)if(active[k].length)a[k]=active[k].slice();return{active:a,minR,sort:sort.value};}
-function applyFocus(s){for(const k in active)active[k]=((s&&s.active&&s.active[k])||[]).slice();minR=(s&&s.minR!=null)?s.minR:null;if(s&&s.sort){sort.value=s.sort;}txt='';filter.value='';render();if(focus.hidden)focusbtn.click();}
+function currentFocus(){const o={};for(const k in sel)if(Object.keys(sel[k]).length)o[k]={...sel[k]};return{sel:o,minR,sort:document.getElementById('sort').value};}
+function applyFocus(st){
+  facetDefs.forEach(([k])=>sel[k]={});
+  if(st){const src=st.sel||st.active;   // compat: marcadores viejos usaban {active:{clave:[valores]}}
+    if(src)for(const k in src){if(sel[k]){const v=src[k];if(Array.isArray(v))v.forEach(x=>sel[k][x]='inc');else Object.assign(sel[k],v);}}
+    minR=st.minR!=null?st.minR:null; if(st.sort)document.getElementById('sort').value=st.sort;}
+  txt='';document.getElementById('filter').value='';render();
+  const fp=document.getElementById('focus'); if(fp.hidden)focusbtn.click();}
 function loadBookmarks(){fetch('/api/bookmarks').then(r=>r.json()).then(j=>{const bms=j.items||[];const bar=document.getElementById('bmbar');bar._bms=bms;bar.innerHTML=bms.length?'<span style="color:var(--text-2);font-size:12px;margin-right:4px">Marcadores:</span>'+bms.map(b=>`<span class="chip bm" data-id="${b.id}" style="cursor:pointer">${window.icon('star',13)} ${esc0(b.name)} <span class="bmx" data-del="${b.id}" title="Borrar" style="color:var(--text-2);display:inline-flex">${window.icon('close',12)}</span></span>`).join(''):'';}).catch(()=>{});}
 document.getElementById('savefocus').addEventListener('click',()=>{const n=prompt('Nombre del marcador (guarda el Focus actual):');if(n&&n.trim())fetch('/api/bookmarks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n.trim(),state:currentFocus()})}).then(r=>r.json()).then(()=>loadBookmarks());});
 document.getElementById('bmbar').addEventListener('click',e=>{const del=e.target.closest('.bmx');if(del){e.stopPropagation();fetch('/api/bookmark/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:+del.dataset.del})}).then(()=>loadBookmarks());return;}const bm=e.target.closest('.bm');if(bm){const bar=document.getElementById('bmbar');const b=(bar._bms||[]).find(x=>x.id===+bm.dataset.id);if(b)applyFocus(b.state);}});
