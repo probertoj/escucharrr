@@ -107,6 +107,32 @@ function ensureGenre(name) {
   return r ? r.id : Number(S.insGenre.run(name).lastInsertRowid);
 }
 
+// ── MODELO: la MÚSICA manda; Obsidian SOLO enriquece (tier/valoración/reseña) los discos que ya
+// existen en la biblioteca. No crea álbumes. Una nota sin disco correspondiente se ignora (si algún
+// día escaneas ese disco, la nota lo enriquecerá en el siguiente sync). --create-missing vuelve al
+// comportamiento antiguo (crear álbumes desde notas) por si se quisiera.
+const CREATE_MISSING = !!arg('create-missing', false);
+function norm(s) {
+  return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')  // sin acentos
+    .replace(/\b(the|el|la|los|las)\b/g, ' ').replace(/\(\d{4}\)|\[\d{4}\]/g, ' ')          // quita artículos y (año)
+    .replace(/[^a-z0-9]+/g, ' ').trim();
+}
+// Índice de discos existentes: por MBID y por "artista|título" normalizado (solo los que tienen pistas,
+// = discos reales con audio; si CREATE_MISSING, da igual porque crearemos).
+function buildAlbumIndex() {
+  const byMbid = new Map(), byKey = new Map();
+  const rows = db.prepare(`SELECT rg.id, rg.mbid, rg.title,
+      (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) artist,
+      EXISTS(SELECT 1 FROM "release" r JOIN medium m ON m.release_id=r.id JOIN track t ON t.medium_id=m.id WHERE r.release_group_id=rg.id) has_tracks
+    FROM release_group rg`).all();
+  for (const r of rows) {
+    if (!r.has_tracks) continue;                               // solo discos con audio/pistas
+    if (r.mbid) byMbid.set(r.mbid, r.id);
+    byKey.set(norm(r.artist) + '|' + norm(r.title), r.id);
+  }
+  return { byMbid, byKey };
+}
+
 // ── sync ────────────────────────────────────────────────────────────────────
 const vaultRoot = path.resolve(path.dirname(CFG_PATH), cfg.vault);
 let dir = path.join(vaultRoot, cfg.albumsFolder || '');
@@ -119,7 +145,8 @@ if (cfg.albumsFolder && !fs.existsSync(dir)) {
 let files = [];
 try { files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.md')); }
 catch (e) { console.error('  no se puede leer la carpeta del vault:', dir, '(' + (e.code || e.message) + '); 0 notas'); }
-let n = 0;
+let n = 0, skipped = 0;
+const idx = buildAlbumIndex();
 db.exec('BEGIN');
 try {
   for (const file of files) {
@@ -137,9 +164,12 @@ try {
     let genres = pick(fm, cfg.fields.genre) || [];
     if (typeof genres === 'string') genres = [genres];
 
-    const artistId = ensureArtist(artist);
-    const creditId = ensureCredit(artistId, artist);
-    const rgId = ensureRg(album, creditId, 'album', year ? String(year) : null);
+    // EMPAREJA con un disco EXISTENTE (por MBID o artista|título normalizado). Sin match: se ignora.
+    let rgId = (fm.mbid && idx.byMbid.get(fm.mbid)) || idx.byKey.get(norm(artist) + '|' + norm(album)) || null;
+    if (!rgId) {
+      if (CREATE_MISSING) { const creditId = ensureCredit(ensureArtist(artist), artist); rgId = ensureRg(album, creditId, 'album', year ? String(year) : null); }
+      else { skipped++; continue; }
+    }
 
     for (const g of genres) if (g) S.linkGenre.run(rgId, ensureGenre(g));
 
@@ -213,7 +243,7 @@ db.exec(`INSERT INTO search_fts(name,kind,subject_type,subject_id)
 db.exec(`INSERT INTO search_fts(name,kind,subject_type,subject_id)
   SELECT title,'track','recording',id FROM recording`);
 
-console.log(`Sincronizadas ${n} notas -> ${DB_PATH}`);
+console.log(`Enriquecidos ${n} discos desde el vault${CREATE_MISSING ? '' : ` (${skipped} notas sin disco, ignoradas)`} -> ${DB_PATH}`);
 
 // ── demo: demuestra que tier/rating son consultables ──────────────────────────
 if (DEMO) {
