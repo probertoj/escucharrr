@@ -416,7 +416,7 @@ function discover(opts) {
 }
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const AUDIO_MIME = { '.flac': 'audio/flac', '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.opus': 'audio/ogg', '.aiff': 'audio/aiff', '.aif': 'audio/aiff' };
+const AUDIO_MIME = { '.flac': 'audio/flac', '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.opus': 'audio/ogg', '.aiff': 'audio/aiff', '.aif': 'audio/aiff', '.dsf': 'audio/x-dsf', '.dff': 'audio/x-dff' };
 
 // Streaming del fichero real con soporte de Range (necesario para seek y para que
 // Chromium arranque FLAC). Resuelve la pista -> su local_file (por track o por grabación).
@@ -426,7 +426,19 @@ function streamAudio(req, res, trackId) {
   if (!row) { const t = Q.trackInfo.get(trackId); if (t && t.recording_id) row = Q.fileByRec.get(t.recording_id); }
   if (!row || !fs.existsSync(row.path)) { res.writeHead(404); res.end('sin fichero local'); return; }
   const stat = fs.statSync(row.path);
-  const type = AUDIO_MIME[path.extname(row.path).toLowerCase()] || 'application/octet-stream';
+  const ext = path.extname(row.path).toLowerCase();
+  // DSD (.dsf/.dff): los navegadores no lo decodifican → transcodificamos a FLAC al vuelo
+  // (88.2 kHz 24-bit, familia de DSD64; sin Range/seek). El motor NATIVO sí lo toca directo (ffmpeg→PCM).
+  if (ext === '.dsf' || ext === '.dff') {
+    res.writeHead(200, { 'Content-Type': 'audio/flac', 'Cache-Control': 'no-cache' });
+    if (req.method === 'HEAD') return res.end();
+    const ff = cp.spawn('ffmpeg', ['-nostdin', '-v', 'error', '-i', row.path, '-f', 'flac', '-ar', '88200', '-sample_fmt', 's32', '-'], { windowsHide: true });
+    ff.stdout.pipe(res); ff.stderr.resume();
+    ff.on('error', () => { try { res.end(); } catch (e) {} });
+    req.on('close', () => { try { ff.kill(); } catch (e) {} });
+    return;
+  }
+  const type = AUDIO_MIME[ext] || 'application/octet-stream';
   const range = req.headers.range;
   const baseHdr = { 'Content-Type': type, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache' };
   if (range) {
@@ -775,7 +787,7 @@ function settingsInfo() {
 const sseClients = new Set();
 function sseBroadcast(type) { const line = `data: ${JSON.stringify({ type, t: Date.now() })}\n\n`; for (const r of sseClients) { try { r.write(line); } catch (e) {} } }
 const _DL = path.join(__dirname, '..', 'data-layer');
-const _AUD = /\.(flac|wav|mp3|m4a|ogg|opus|aiff?)$/i;
+const _AUD = /\.(flac|wav|mp3|m4a|ogg|opus|aiff?|dsf|dff)$/i;
 let _watchers = [];
 // ── vigilado por SONDEO para carpetas de red (SMB/UNC): fs.watch recursivo no va en
 // shares de red en Windows, así que esas carpetas se sondean por firma de cambios. ──

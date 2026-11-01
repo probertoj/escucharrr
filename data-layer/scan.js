@@ -66,6 +66,32 @@ function readWav(file) {
   } finally { fs.closeSync(fd); }
 }
 
+// DSF (Sony): cabecera DSD+fmt → tasa DSD (p.ej. 2822400), canales, duración. Las etiquetas
+// van en ID3v2 (al final, en metadataPtr); de momento no se leen (se cae al nombre de fichero).
+function readDsf(file) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const h = Buffer.alloc(80); const n = fs.readSync(fd, h, 0, 80, 0);
+    if (n < 80 || h.toString('latin1', 0, 4) !== 'DSD ' || h.toString('latin1', 28, 32) !== 'fmt ') return null;
+    const channels = h.readUInt32LE(52), rate = h.readUInt32LE(56), sampleCount = Number(h.readBigUInt64LE(64));
+    return { info: { sampleRate: rate, channels, bits: 1, durationMs: rate ? Math.round(sampleCount / rate * 1000) : null }, tags: {} };
+  } finally { fs.closeSync(fd); }
+}
+// DFF (Philips DSDIFF, big-endian): busca el chunk 'FS  ' (tasa) y 'CHNL' (canales) en la cabecera.
+function readDff(file) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const b = Buffer.alloc(4096); const n = fs.readSync(fd, b, 0, 4096, 0);
+    if (n < 16 || b.toString('latin1', 0, 4) !== 'FRM8') return null;
+    let rate = 2822400, channels = 2;
+    const fsi = b.indexOf(Buffer.from('FS  ')); if (fsi >= 0 && fsi + 16 <= n) rate = b.readUInt32BE(fsi + 12);
+    const ci = b.indexOf(Buffer.from('CHNL')); if (ci >= 0 && ci + 14 <= n) channels = b.readUInt16BE(ci + 12);
+    return { info: { sampleRate: rate, channels, bits: 1, durationMs: null }, tags: {} };   // duración real la da ffmpeg al reproducir
+  } finally { fs.closeSync(fd); }
+}
+// Etiqueta de formato legible para DSD según la tasa (como el "DSD64/128/256" de Roon).
+function dsdLabel(rate) { return rate >= 22579200 ? 'DSD512' : rate >= 11289600 ? 'DSD256' : rate >= 5644800 ? 'DSD128' : rate >= 2822400 ? 'DSD64' : 'DSD'; }
+
 // ── statements / helpers del grafo ────────────────────────────────────────────
 const S = {
   artistByName: db.prepare('SELECT id FROM artist WHERE name=?'),
@@ -108,7 +134,7 @@ const ensureRec = (title, cid, len) => { const r = S.recBy.get(title, cid); retu
 const ensureGenre = (name) => { const r = S.genreBy.get(name); return r ? r.id : Number(S.insGenre.run(name).lastInsertRowid); };
 
 // ── recorrido ─────────────────────────────────────────────────────────────────
-function walk(dir, out) { for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const f = path.join(dir, e.name); if (e.isDirectory()) walk(f, out); else if (/\.(flac|wav)$/i.test(e.name)) out.push(f); } }
+function walk(dir, out) { for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const f = path.join(dir, e.name); if (e.isDirectory()) walk(f, out); else if (/\.(flac|wav|dsf|dff)$/i.test(e.name)) out.push(f); } }
 const files = []; walk(path.resolve(ROOT), files);
 
 let ok = 0, ident = 0;
@@ -116,8 +142,9 @@ db.exec('BEGIN');
 try {
   for (const file of files) {
     const ext = path.extname(file).slice(1).toLowerCase();
-    let parsed = null; try { parsed = ext === 'flac' ? readFlac(file) : readWav(file); } catch (e) { console.warn('  error leyendo', path.basename(file), e.message); }
+    let parsed = null; try { parsed = ext === 'flac' ? readFlac(file) : ext === 'dsf' ? readDsf(file) : ext === 'dff' ? readDff(file) : readWav(file); } catch (e) { console.warn('  error leyendo', path.basename(file), e.message); }
     if (!parsed) continue;
+    const fmtLabel = (ext === 'dsf' || ext === 'dff') ? dsdLabel(parsed.info.sampleRate) : ext.toUpperCase();
     const st = fs.statSync(file), t = parsed.tags, inf = parsed.info;
     const album = t.ALBUM || path.basename(path.dirname(file));
     const artistName = t.ALBUMARTIST || t.ARTIST || 'Artista desconocido';
@@ -138,8 +165,8 @@ try {
       const aid = ensureArtist(artistName), cid = ensureCredit(aid, artistName);
       const rg = ensureRg(album, cid, (t.DATE || '').slice(0, 4) || null);
       if (t.GENRE) S.linkGenre.run(rg, ensureGenre(t.GENRE.toLowerCase()));  // minúscula: convención común con MB/Discogs
-      const rel = ensureRel(rg, album, cid, t.DATE || null, ext.toUpperCase());
-      const med = ensureMed(rel, discNo, ext.toUpperCase());
+      const rel = ensureRel(rg, album, cid, t.DATE || null, fmtLabel);
+      const med = ensureMed(rel, discNo, fmtLabel);
       const tcid = t.ARTIST ? ensureCredit(ensureArtist(t.ARTIST), t.ARTIST) : cid;
       recId = ensureRec(title, tcid, inf.durationMs);
       const ex = S.trackBy.get(med, trackNo);
@@ -153,7 +180,7 @@ try {
     }
     const matchBy = recMbid ? 'mb-tag' : (identified ? 'tags' : null);
     const matchConf = recMbid ? 0.95 : (identified ? 0.7 : null);
-    S.insFile.run(file, ext.toUpperCase(), inf.sampleRate, inf.bits, inf.channels, inf.durationMs, st.size, String(st.mtimeMs), isrc, acoustid, fingerprint, trackId, recId, matchBy, matchConf);
+    S.insFile.run(file, fmtLabel, inf.sampleRate, inf.bits, inf.channels, inf.durationMs, st.size, String(st.mtimeMs), isrc, acoustid, fingerprint, trackId, recId, matchBy, matchConf);
     ok++;
   }
   db.exec('COMMIT');
