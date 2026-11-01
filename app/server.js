@@ -80,6 +80,7 @@ function buildQ(db) { return {
      FROM v_album a ORDER BY a.title`),
   album: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.tier_rank,
       (SELECT label FROM tier WHERE key=a.tier_key) tier_label, a.album_stars, a.is_favorite,
+      EXISTS(SELECT 1 FROM flag f WHERE f.subject_type='release_group' AND f.subject_id=a.id AND f.flag='listen_later') listen_later,
       (SELECT acn.artist_id FROM artist_credit_name acn JOIN release_group rg ON rg.artist_credit_id=acn.artist_credit_id
          WHERE rg.id=a.id ORDER BY acn.position LIMIT 1) artist_id
      FROM v_album a WHERE a.id=?`),
@@ -273,6 +274,17 @@ function buildQ(db) { return {
   edSetProv: db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at) VALUES(?,?,?,'user',NULL,datetime('now')) ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source='user', source_ref=NULL, fetched_at=datetime('now')`),
   edDelProv: db.prepare(`DELETE FROM provenance WHERE subject_type=? AND subject_id=? AND field=?`),
   tierKeys: db.prepare(`SELECT key, label, rank FROM tier ORDER BY rank DESC`),
+  // ── Descubrir: "escuchar más tarde" (flag) y "hace tiempo que no suena" (último play antiguo) ──
+  discListenLater: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
+     FROM v_album a JOIN flag f ON f.subject_type='release_group' AND f.subject_id=a.id AND f.flag='listen_later'
+     ORDER BY f.set_at DESC LIMIT 18`),
+  discNotRecent: db.prepare(`SELECT * FROM (
+       SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite,
+         (SELECT MAX(p.played_at) FROM play p JOIN track tr ON (p.track_id=tr.id OR p.recording_id=tr.recording_id)
+            JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
+            WHERE rel.release_group_id=a.id) last_played
+       FROM v_album a)
+     WHERE last_played IS NOT NULL AND last_played < datetime('now', ?) ORDER BY last_played ASC LIMIT 12`),
 }; }
 let Q = buildQ(db);
 function logPlay(j) {
@@ -405,6 +417,7 @@ function discover(opts) {
   let md = (opts && /^\d{2}-\d{2}$/.test(opts.day || '')) ? opts.day
     : String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
   const onThisDay = Q.discOnThisDay.all(curYear, md, curYear);
+  const nrDays = (opts && parseInt(opts.notRecentDays, 10)) || 45;   // "hace tiempo que no suena": umbral en días (?nrdays= para probar)
   return {
     unrated: Q.discUnrated.all(),
     unratedCount: Q.discUnratedCount.get().n,
@@ -412,6 +425,8 @@ function discover(opts) {
     random: Q.discRandom.all(),
     byGenre,
     onThisDay, onThisDayDate: md,
+    listenLater: Q.discListenLater.all(),
+    notRecent: Q.discNotRecent.all('-' + nrDays + ' days'), notRecentDays: nrDays,
   };
 }
 
@@ -1164,9 +1179,9 @@ function handleEditSync(body) {
     else { Q.edSetStars.run(st, sid, v); Q.edEvent.run(st, sid, 'stars', String(v)); Q.edSetProv.run(st, sid, 'stars'); }
     return { field, value: v };
   }
-  if (field === 'favorite') {
+  if (field === 'favorite' || field === 'listen_later') {
     const on = !!body.value;
-    if (on) Q.edSetFlag.run(st, sid, 'favorite'); else Q.edDelFlag.run(st, sid, 'favorite');
+    if (on) Q.edSetFlag.run(st, sid, field); else Q.edDelFlag.run(st, sid, field);
     return { field, value: on };
   }
   if (EDIT_TEXT_FIELDS.has(field)) {
@@ -1247,7 +1262,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/bookmarks') return sendJSON(res, { items: Q.bmList.all().map(b => ({ id: b.id, name: b.name, state: (() => { try { return JSON.parse(b.state || '{}'); } catch (e) { return {}; } })() })) });
     if (u.pathname === '/api/tags') return sendJSON(res, Q.allTags.all());
     if (u.pathname === '/api/tag') { const name = u.searchParams.get('name'); const albums = Q.tagAlbums.all(name); return albums.length ? sendJSON(res, { name, albums }) : (res.writeHead(404), res.end('{}')); }
-    if (u.pathname === '/api/discover') return sendJSON(res, discover({ day: u.searchParams.get('day') }));
+    if (u.pathname === '/api/discover') return sendJSON(res, discover({ day: u.searchParams.get('day'), notRecentDays: u.searchParams.get('nrdays') }));
     if (u.pathname === '/api/radio') { const seed = parseInt(u.searchParams.get('seed'), 10); const ex = (u.searchParams.get('exclude') || '').split(',').map(x => parseInt(x, 10)).filter(Boolean); return sendJSON(res, { tracks: seed ? radio(seed, ex, u.searchParams.get('n')) : [] }); }
     if (u.pathname === '/api/home') return sendJSON(res, home());
     if (u.pathname === '/' || u.pathname === '') return sendFile(res, 'index.html');

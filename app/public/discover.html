@@ -52,8 +52,14 @@ function render(d){
   if(d.onThisDay&&d.onThisDay.length){
     h+=`<div class="sec">En este día</div><div class="subnote">Discos publicados un ${otdDateLabel(d.onThisDayDate)} como hoy, en años anteriores.</div><div class="row">${d.onThisDay.map(otdCard).join('')}</div>`;
   }
+  if(d.listenLater&&d.listenLater.length){
+    h+=`<div class="sec">Escuchar más tarde</div><div class="subnote">Lo que marcaste para darle una oportunidad.</div>${row(d.listenLater)}`;
+  }
   if(d.unrated&&d.unrated.length){
     h+=`<div class="sec">Por valorar</div><div class="subnote">${d.unratedCount} ${d.unratedCount===1?'álbum sin tier':'álbumes sin tier'} — ponles orden y afinarás todo lo demás.</div>${grid(d.unrated)}`;
+  }
+  if(d.notRecent&&d.notRecent.length){
+    h+=`<div class="sec">Hace tiempo que no suena</div><div class="subnote">Discos que no reproduces desde hace más de ${d.notRecentDays||45} días.</div>${row(d.notRecent)}`;
   }
   if(d.revisit&&d.revisit.length){
     h+=`<div class="sec">Joyas por revisitar</div><div class="subnote">Tier alto que aún no has reproducido aquí.</div>${grid(d.revisit)}`;

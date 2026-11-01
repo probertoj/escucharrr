@@ -28,6 +28,7 @@ function renderAlbum(a){
   const sv=a.album_stars?Math.round(+a.album_stars):0;
   const stars=`<span class="starsed" style="display:inline-flex;align-items:center;gap:1px">${[1,2,3,4,5].map(n=>`<span class="st" data-stars="${n}" title="Valorar ${n}" style="cursor:pointer;color:${n<=sv?'var(--accent)':'var(--muted)'};font-size:17px;line-height:1">★</span>`).join('')}${sv?`<span class="st" data-stars="0" title="Quitar valoración" style="cursor:pointer;color:var(--text-2);font-size:12px;margin-left:4px;display:inline-flex">${window.icon('close',12)}</span>`:''}</span>`;
   const favEd=`<span class="faved" data-fav="${a.is_favorite?0:1}" title="${a.is_favorite?'Quitar de favoritos':'Marcar como favorito'}" style="cursor:pointer;color:${a.is_favorite?'var(--accent)':'var(--text-2)'};font-size:18px;line-height:1">♥</span>`;
+  const llEd=`<span class="llater" data-ll="${a.listen_later?0:1}" title="${a.listen_later?'Quitar de escuchar más tarde':'Escuchar más tarde'}" style="cursor:pointer;color:${a.listen_later?'var(--accent)':'var(--text-2)'};display:inline-flex;align-items:center;gap:4px;font-size:13px">${window.icon('lists',15)}${a.listen_later?'En «más tarde»':'Más tarde'}</span>`;
   const genres=(a.genres||[]).map(g=>`<a class="gchip" href="genre.html?name=${encodeURIComponent(g)}">${esc(g)}</a>`).join(' ');
   const artistLink=a.artist_id?`<a href="artist.html?id=${a.artist_id}" style="color:var(--accent)">${esc(a.artist)}</a>`:esc(a.artist);
   const provRef=s=>!s||!s.source_ref?'':(/^https?:/.test(s.source_ref)?` · <a href="${esc(s.source_ref)}" target="_blank" rel="noopener" style="color:var(--text-2)">${esc(s.source_ref.replace(/^https?:\/\/(www\.)?/,''))}</a>`:' · '+esc(s.source_ref));
@@ -51,6 +52,7 @@ function renderAlbum(a){
           <span><span class="k">Tier</span> ${tier}</span>
           <span><span class="k">Valoración</span> ${stars}</span>
           <span><span class="k">Favorito</span> ${favEd}</span>
+          <span>${llEd}</span>
           ${a.format?`<span><span class="k">Formato</span> ${esc(a.format)}</span>`:''}
           ${editions?`<span><span class="k">Ediciones</span> ${editions}</span>`:''}
         </div>
@@ -86,6 +88,7 @@ document.addEventListener('click',e=>{
   const tc=e.target.closest('#app .tchip'); if(tc){ editField('tier',tc.dataset.tier).then(r=>{ if(r.ok){toast(tc.dataset.tier?'Tier actualizado':'Tier quitado');load();}else toast(r.error||'error'); }); return; }
   const sc=e.target.closest('#app .st'); if(sc){ const v=+sc.dataset.stars; editField('stars',v).then(r=>{ if(r.ok){toast(v?'Valoración guardada':'Valoración quitada');load();}else toast(r.error||'error'); }); return; }
   const fc=e.target.closest('#app .faved'); if(fc){ const on=fc.dataset.fav==='1'; editField('favorite',on).then(r=>{ if(r.ok){toast(on?'Añadido a favoritos':'Quitado de favoritos');load();}else toast(r.error||'error'); }); return; }
+  const ll=e.target.closest('#app .llater'); if(ll){ const on=ll.dataset.ll==='1'; editField('listen_later',on).then(r=>{ if(r.ok){toast(on?'En «escuchar más tarde»':'Quitado de «más tarde»');load();}else toast(r.error||'error'); }); return; }
   const ae=e.target.closest('#app .aboutedit'); if(ae){ openAboutEditor(); return; }
 });
 function openAboutEditor(){
