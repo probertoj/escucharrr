@@ -45,6 +45,7 @@ fetch('/api/artist?id='+id).then(r=>r.json()).then(a=>{
   const bio=a.bio?`<div class="about"><div class="prov">${a.bio_source?('desde '+esc(a.bio_source.source)+provRef(a.bio_source)):''}</div>${esc(a.bio)}</div>`:'';
   const albums=(a.albums||[]).length?`<div class="sec">Álbumes <span style="color:var(--muted);font-size:14px;font-weight:400">${a.albums.length}</span></div><div class="grid">${a.albums.map(albumCard).join('')}</div>`:'<div class="count">Sin álbumes en tu biblioteca todavía.</div>';
   const appears=(a.appears||[]).length?`<div class="sec">Aparece en</div><ul class="appears">`+a.appears.map(x=>`<li><span class="yr">${x.year||'—'}</span><span style="flex:1"><a href="album.html?id=${x.id}" style="color:var(--accent)">${esc(x.title)}</a> <span style="color:var(--text-2)">· ${esc(x.artist||'')}</span>${x.roles.length?`<div class="roles">${x.roles.map(esc).join(' · ')}</div>`:''}</span></li>`).join('')+`</ul>`:'';
+  const composed=(a.composed||[]).length?`<div class="sec">Obras <span style="color:var(--muted);font-size:14px;font-weight:400;font-family:var(--sans)">${a.composed.length}</span></div><div class="chips">${a.composed.map(w=>`<a class="chip" href="work.html?id=${w.id}">${esc(w.title)}</a>`).join('')}</div>`:'';
   app.innerHTML=`
     <div class="ahero">
       <div class="ava" style="background:${ava}">${esc((a.name||'?').slice(0,2).toUpperCase())}</div>
@@ -56,6 +57,7 @@ fetch('/api/artist?id='+id).then(r=>r.json()).then(a=>{
       </div>
     </div>
     ${bio}
+    ${composed}
     ${albums}
     ${appears}`;
 }).catch(e=>app.innerHTML='error: '+e.message);

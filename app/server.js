@@ -107,7 +107,10 @@ const Q = {
       (SELECT lf.gain_db FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) gain_db,
       (SELECT lf.peak_dbfs FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) peak_dbfs,
       (SELECT lf.album_gain_db FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) album_gain_db,
-      (SELECT lf.album_peak_dbfs FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) album_peak_dbfs
+      (SELECT lf.album_peak_dbfs FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) album_peak_dbfs,
+      (SELECT work_id FROM recording WHERE id=tr.recording_id) work_id,
+      (SELECT w.title FROM work w WHERE w.id=(SELECT work_id FROM recording WHERE id=tr.recording_id)) work,
+      (SELECT group_concat(DISTINCT a.name) FROM credit c JOIN artist a ON a.id=c.artist_id WHERE c.entity_type='work' AND c.entity_id=(SELECT work_id FROM recording WHERE id=tr.recording_id) AND c.role='composición') composers
      FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
      WHERE rel.release_group_id=? ORDER BY m.position,tr.position`),
   fileByTrack: db.prepare('SELECT path, format, gain_db FROM local_file WHERE track_id=? LIMIT 1'),
@@ -115,6 +118,13 @@ const Q = {
   peaksByTrack: db.prepare('SELECT peaks FROM local_file WHERE track_id=? AND peaks IS NOT NULL LIMIT 1'),
   peaksByRec: db.prepare('SELECT peaks FROM local_file WHERE recording_id=? AND peaks IS NOT NULL LIMIT 1'),
   credits: db.prepare(`SELECT role, instrument, group_concat(DISTINCT artist_name) artists FROM v_album_credits WHERE release_group_id=? GROUP BY role, instrument ORDER BY role, instrument`),
+  // ── obras y compositores (modelo obra/interpretación, estilo Roon) ──
+  workGet: db.prepare('SELECT id, title, type FROM work WHERE id=?'),
+  workCredits: db.prepare(`SELECT a.id, a.name, c.role FROM credit c JOIN artist a ON a.id=c.artist_id WHERE c.entity_type='work' AND c.entity_id=? ORDER BY c.position`),
+  workPerf: db.prepare(`SELECT DISTINCT rg.id albumId, rg.title album, substr(rg.first_release,1,4) year, tr.id trackId, tr.title tracktitle,
+      (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) artist
+     FROM recording rec JOIN track tr ON tr.recording_id=rec.id JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id WHERE rec.work_id=? ORDER BY rg.first_release, rg.title`),
+  artistWorks: db.prepare(`SELECT DISTINCT w.id, w.title FROM work w JOIN credit c ON c.entity_type='work' AND c.entity_id=w.id WHERE c.artist_id=? AND c.role='composición' ORDER BY w.title`),
   search: db.prepare(`SELECT name, kind, subject_type, subject_id FROM search_fts WHERE search_fts MATCH ? ORDER BY bm25(search_fts) LIMIT ?`),
   recAlbum: db.prepare(`SELECT rel.release_group_id id FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE tr.recording_id=? LIMIT 1`),
   cArtists: db.prepare('SELECT count(*) n FROM artist'),
@@ -307,8 +317,15 @@ function album(id) {
 function libraryList() {
   return Q.library.all().map(a => { a.genres = (genresOf.get(a.id).gs || '').split('|').filter(Boolean); a.format = (formatOf.get(a.id) || {}).f || null; a.tags = Q.tagsOfAlbum.all(a.id).map(r => r.name); return a; });
 }
+function work(id) {
+  const w = Q.workGet.get(id); if (!w) return null;
+  w.credits = Q.workCredits.all(id);       // compositores/letristas/arreglistas
+  w.performances = Q.workPerf.all(id);     // versiones de la obra en tu biblioteca
+  return w;
+}
 function artist(id) {
   const a = Q.artist.get(id); if (!a) return null;
+  a.composed = Q.artistWorks.all(id);      // obras compuestas por este artista
   const edit = Q.artistBioEdit.get(id);
   a.bio = edit ? edit.v : a.bio;
   a.bio_source = edit ? { source: 'user' } : (Q.artistBioProv.get(id) || null);
@@ -775,6 +792,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/album') { const a = album(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/search') return sendJSON(res, search(u.searchParams.get('q'), Math.min(parseInt(u.searchParams.get('n') || '20', 10) || 20, 100)));
     if (u.pathname === '/api/artist') { const a = artist(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
+    if (u.pathname === '/api/work') { const w = work(parseInt(u.searchParams.get('id'), 10)); return w ? sendJSON(res, w) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/genre') { const g = genre(u.searchParams.get('name')); return g ? sendJSON(res, g) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/genres') return sendJSON(res, Q.allGenres.all());
     if (u.pathname === '/api/bookmarks') return sendJSON(res, { items: Q.bmList.all().map(b => ({ id: b.id, name: b.name, state: (() => { try { return JSON.parse(b.state || '{}'); } catch (e) { return {}; } })() })) });

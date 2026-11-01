@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — obra</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.wperf{list-style:none;padding:0;margin:0}
+.wperf li{display:flex;gap:12px;align-items:baseline;padding:11px 10px;margin:0 -10px;border-radius:9px;border-bottom:1px solid var(--border);transition:background .1s}
+.wperf li:hover{background:var(--surface-2)}
+.wperf .yr{color:var(--muted);width:46px;flex:none;font-variant-numeric:tabular-nums}
+.wcred{display:flex;flex-wrap:wrap;gap:8px 18px;margin:10px 0 4px;font-size:14px}
+.wcred .role{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-right:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div style="margin-bottom:14px"><a href="/" style="color:var(--accent);display:inline-flex;align-items:center;gap:5px"><span data-icon="arrow-left" data-s="15"></span>Biblioteca</a></div>
+  <div id="app">cargando…</div>
+</div>
+
+<script>
+const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const ROLELAB={'composición':'Compositor','letra':'Letra','escritura':'Escritura','arreglos':'Arreglos','orquestación':'Orquestación','libreto':'Libreto','traducción':'Traducción','revisión':'Revisión'};
+const id=+new URLSearchParams(location.search).get('id');
+fetch('/api/work?id='+id).then(r=>r.json()).then(w=>{
+  if(!w||!w.id){app.innerHTML='Obra no encontrada.';return;}
+  document.title='escucharrr — '+w.title;
+  // agrupa créditos por rol
+  const byRole={}; (w.credits||[]).forEach(c=>{(byRole[c.role]=byRole[c.role]||[]).push(c);});
+  const cred=Object.keys(byRole).map(role=>`<div><span class="role">${esc(ROLELAB[role]||role)}</span>${byRole[role].map(c=>`<a href="artist.html?id=${c.id}" style="color:var(--accent)">${esc(c.name)}</a>`).join(', ')}</div>`).join('');
+  const perf=(w.performances||[]).map(p=>`<li><span class="yr">${p.year||'—'}</span><span style="flex:1"><a href="album.html?id=${p.albumId}" style="color:var(--accent)">${esc(p.album)}</a> <span style="color:var(--text-2)">· ${esc(p.artist||'')}</span></span></li>`).join('');
+  app.innerHTML=`
+    <div style="color:var(--text-2);font-size:13px">obra${w.type?' · '+esc(w.type):''}</div>
+    <h1>${esc(w.title)}</h1>
+    ${cred?`<div class="wcred">${cred}</div>`:''}
+    <div class="sec">Versiones en tu biblioteca <span style="color:var(--muted);font-size:14px;font-weight:400;font-family:var(--sans)">${(w.performances||[]).length}</span></div>
+    <ul class="wperf">${perf||'<li style="color:var(--text-2)">Ninguna versión en tu biblioteca.</li>'}</ul>`;
+}).catch(e=>app.innerHTML='error: '+e.message);
+</script>
+<script src="icons.js" defer></script>
+<script src="nav.js" defer></script>
+<script src="player.js" defer></script>
+</body>
+</html>

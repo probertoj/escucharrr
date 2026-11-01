@@ -36,7 +36,7 @@ Evidencia RE de las pantallas de Roon (muestra del inventario `.broo`): `albumbr
 | Modelo relacional rico | grafo propio (artistas/álbumes/obras/créditos) | grafo estilo MusicBrainz (artist/credit/release_group/…​) | ✅ |
 | **Créditos por rol** | créditos navegables | tabla `credit` por rol (instrumento/voz/producción…) desde MB + Discogs | ✅ |
 | Identificación de álbum | metadata server propio + fingerprint **mel** (`roon_mel_*`, audiosignaturecensus) | `identify.js` (AcoustID/Chromaprint) + `enrich.js` (MusicBrainz) | 🟡 (equivalente abierto; sin census propio) |
-| **Clásica: compositor + obra** | `composerbrowser`, `workbrowser`, `workdetails` — modelo obra/interpretación | — | ❌ **(hueco grande para clásica)** |
+| **Clásica: compositor + obra** | `composerbrowser`, `workbrowser`, `workdetails` — modelo obra/interpretación | `works.js` + `work.html`: obra por pista, compositores, versiones; "Obras" en el artista | 🟡 (núcleo hecho; faltan movimientos/partes de obra y un navegador de compositores dedicado) |
 | Editorial (bios/reseñas) | editorial licenciado | `editorial.js` (Wikipedia vía Wikidata) + Obsidian manda | ✅ (fuentes abiertas) |
 | Edición/corrección de metadatos | `edit.broo`, `correction.broo` (identificar, agrupar, corregir) | override por `user_edit` + Obsidian; **sin UI de edición/corrección** | 🟡 |
 | "Tus datos mandan" / procedencia | — | provenance + user_edit ganan a lo externo | ✅ **(ventaja nuestra)** |

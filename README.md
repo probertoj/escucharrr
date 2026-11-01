@@ -33,6 +33,13 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
   - `enrich.js` — enriquece desde MusicBrainz: mbid, tipo, fecha, géneros y **créditos por rol**.
   - `discogs.js` — **créditos por pista desde Discogs** (intérpretes/roles/instrumentos que MB no
     cubre en sellos pequeños); mapea por posición a nuestras grabaciones. Funciona sin token.
+  - `works.js` — **obras y compositores** (el modelo obra/interpretación por el que Roon brilla, no solo en
+    clásica). Por cada álbum con MBID resuelve una edición y enlaza cada grabación con su **obra** (relación
+    `performance` de MusicBrainz) → `recording.work_id` + tabla `work`; y por obra trae su **compositor**
+    (letrista/arreglista) → `credit` con `entity_type='work'`. El servidor expone `/api/work?id=`, la pista del
+    álbum muestra «obra · compositor», la obra tiene su página (`work.html`: compositores + versiones en tu
+    biblioteca) y el artista lista sus **Obras**. (Verificado con Kind of Blue: So What/Blue in Green… → Miles
+    Davis / Bill Evans; la obra da incluso el título real cuando el tag de la pista es genérico.)
   - `editorial.js` — **editorial desde fuentes abiertas**: bio del artista + contexto/reseña del álbum
     desde **Wikipedia** (texto), resuelta por **Wikidata** vía las relaciones de MusicBrainz (sin clave).
     Cadena por MBID: MB `url-rels` → `wikidata` (Q…) → sitelink al idioma preferido (`--lang`, por defecto
@@ -164,6 +171,7 @@ node identify.js     --db ../app/escucharrr.db --isrc            # ISRC -> Music
 # huella acústica (opcional): necesita fpcalc en el PATH + API key de AcoustID
 node identify.js     --db ../app/escucharrr.db --acoustid --acoustid-key TU_KEY
 node enrich.js       --db ../app/escucharrr.db --limit 50
+node works.js        --db ../app/escucharrr.db          # obras + compositores (MusicBrainz)
 node discogs.js      --db ../app/escucharrr.db --rg 1   # créditos por pista (donde MB no llega)
 node editorial.js    --db ../app/escucharrr.db          # bio/reseña desde Wikipedia (abierto, sin clave)
 node covers.js       --db ../app/escucharrr.db          # carátulas reales desde Cover Art Archive (cacheadas)
