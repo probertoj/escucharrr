@@ -35,14 +35,17 @@ function albumCard(a){return `<a class="card" href="album.html?id=${a.id}">
   <div class="t">${esc(a.title)}</div><div class="s">${esc(a.primary_type||'álbum')} · ${a.year||'—'}</div></a>`;}
 
 const id=+new URLSearchParams(location.search).get('id');
-fetch('/api/artist?id='+id).then(r=>r.json()).then(a=>{
+const TORD=['excel','si','ok','meh','no'];
+function renderArtist(a){
   if(!a||!a.id){app.innerHTML='No encontrado';return;}
   document.title='escucharrr — '+a.name;
   const ava=AVA[a.id%AVA.length];
   const sub=[a.type,a.country,a.founded&&('desde '+a.founded)].filter(Boolean).join(' · ');
   const genres=(a.genres||[]).map(g=>`<a class="gchip" href="genre.html?name=${encodeURIComponent(g.name)}">${esc(g.name)}</a>`).join(' ');
   const provRef=s=>!s||!s.source_ref?'':(/^https?:/.test(s.source_ref)?` · <a href="${esc(s.source_ref)}" target="_blank" rel="noopener" style="color:var(--text-2)">${esc(s.source_ref.replace(/^https?:\/\/(www\.)?/,''))}</a>`:' · '+esc(s.source_ref));
-  const bio=a.bio?`<div class="about"><div class="prov">${a.bio_source?('desde '+esc(a.bio_source.source)+provRef(a.bio_source)):''}</div>${esc(a.bio)}</div>`:'';
+  const tier=`<span class="tiered" style="display:inline-flex;gap:4px;flex-wrap:wrap;align-items:center">${TORD.map(k=>`<span class="tchip" data-tier="${k}" title="${TN[k]}" style="cursor:pointer;font-size:11px;font-weight:600;padding:2px 9px;border-radius:999px;background:${a.tier_key===k?TC[k][0]:'var(--surface-2)'};color:${a.tier_key===k?TC[k][1]:'var(--text-2)'}">${TN[k]}</span>`).join('')}${a.tier_key?`<span class="tchip" data-tier="" title="Quitar tier" style="cursor:pointer;color:var(--text-2);padding:2px 6px">${window.icon('close',13)}</span>`:''}</span>`;
+  const bprov=a.bio&&a.bio_source?('desde '+esc(a.bio_source.source)+provRef(a.bio_source)):'';
+  const bio=`<div class="about" id="biobox"><div class="prov" style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span>${bprov}</span><span class="bioedit" style="cursor:pointer;color:var(--accent);font-size:12px;white-space:nowrap">${a.bio?'editar bio':'añadir bio'}</span></div><div class="biotext">${a.bio?esc(a.bio):'<span style="color:var(--text-2)">Sin biografía. Escribe la tuya — tus datos mandan.</span>'}</div></div>`;
   const albums=(a.albums||[]).length?`<div class="sec">Álbumes <span style="color:var(--muted);font-size:14px;font-weight:400">${a.albums.length}</span></div><div class="grid">${a.albums.map(albumCard).join('')}</div>`:'<div class="count">Sin álbumes en tu biblioteca todavía.</div>';
   const appears=(a.appears||[]).length?`<div class="sec">Aparece en</div><ul class="appears">`+a.appears.map(x=>`<li><span class="yr">${x.year||'—'}</span><span style="flex:1"><a href="album.html?id=${x.id}" style="color:var(--accent)">${esc(x.title)}</a> <span style="color:var(--text-2)">· ${esc(x.artist||'')}</span>${x.roles.length?`<div class="roles">${x.roles.map(esc).join(' · ')}</div>`:''}</span></li>`).join('')+`</ul>`:'';
   const composed=(a.composed||[]).length?`<div class="sec">Obras <span style="color:var(--muted);font-size:14px;font-weight:400;font-family:var(--sans)">${a.composed.length}</span></div><div class="chips">${a.composed.map(w=>`<a class="chip" href="work.html?id=${w.id}">${esc(w.title)}</a>`).join('')}</div>`:'';
@@ -54,13 +57,35 @@ fetch('/api/artist?id='+id).then(r=>r.json()).then(a=>{
         <h1>${esc(a.name)}</h1>
         ${a.disambiguation?`<div style="color:var(--text-2);font-size:14px">${esc(a.disambiguation)}</div>`:''}
         <div style="margin-top:8px">${genres}</div>
+        <div style="margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)">Tier</span> ${tier}</div>
       </div>
     </div>
     ${bio}
     ${composed}
     ${albums}
     ${appears}`;
-}).catch(e=>app.innerHTML='error: '+e.message);
+}
+function load(){fetch('/api/artist?id='+id).then(r=>r.json()).then(renderArtist).catch(e=>app.innerHTML='error: '+e.message);}
+load();
+document.addEventListener('escucharrr:changed',load);
+// ── edición de metadatos del artista ("tus datos mandan") ──
+let toastT=null;
+function toast(msg){let t=document.getElementById('toast');if(!t){t=document.createElement('div');t.id='toast';t.setAttribute('style','position:fixed;left:50%;bottom:80px;transform:translateX(-50%);z-index:80;background:var(--text);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.25);opacity:0;transition:opacity .15s');document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(toastT);toastT=setTimeout(()=>t.style.opacity='0',1800);}
+function editField(field,value){return fetch('/api/edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subject_type:'artist',subject_id:id,field,value})}).then(r=>r.json());}
+document.addEventListener('click',e=>{
+  const tc=e.target.closest('#app .tchip'); if(tc){ editField('tier',tc.dataset.tier).then(r=>{ if(r.ok){toast(tc.dataset.tier?'Tier actualizado':'Tier quitado');load();}else toast(r.error||'error'); }); return; }
+  const be=e.target.closest('#app .bioedit'); if(be){ openBioEditor(); return; }
+});
+function openBioEditor(){
+  const box=document.getElementById('biobox'); if(!box||box.querySelector('textarea'))return;
+  const curEl=box.querySelector('.biotext'); const cur=curEl?curEl.textContent:''; const existing=/Sin biograf/.test(cur)?'':cur;
+  const tx=document.createElement('div'); tx.style.marginTop='8px';
+  tx.innerHTML=`<textarea id="biota" style="width:100%;min-height:90px;font:inherit;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);box-sizing:border-box"></textarea><div style="margin-top:6px;display:flex;gap:8px"><button id="biosave" class="btn-accent" style="padding:6px 14px">Guardar</button><button id="biocancel" style="padding:6px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer">Cancelar</button></div>`;
+  box.appendChild(tx);
+  const ta=document.getElementById('biota'); ta.value=existing; ta.focus();
+  document.getElementById('biocancel').onclick=()=>tx.remove();
+  document.getElementById('biosave').onclick=()=>{ const v=ta.value; editField('bio',v).then(r=>{ if(r.ok){toast(v.trim()?'Bio guardada':'Bio quitada');load();}else toast(r.error||'error'); }); };
+}
 </script>
 <script src="icons.js" defer></script>
 <script src="nav.js" defer></script>
