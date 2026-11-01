@@ -8,7 +8,7 @@
 </head>
 <body>
 <div class="wrap">
-  <div style="margin-bottom:14px"><a href="/" style="color:var(--accent)">‹ Biblioteca</a></div>
+  <div style="margin-bottom:14px"><a href="/" style="color:var(--accent);display:inline-flex;align-items:center;gap:5px"><span data-icon="arrow-left" data-s="15"></span>Biblioteca</a></div>
   <div id="app">cargando…</div>
 </div>
 
@@ -30,7 +30,7 @@ fetch('/api/album?id='+id).then(r=>r.json()).then(a=>{
   const provRef=s=>!s||!s.source_ref?'':(/^https?:/.test(s.source_ref)?` · <a href="${esc(s.source_ref)}" target="_blank" rel="noopener" style="color:var(--text-2)">${esc(s.source_ref.replace(/^https?:\/\/(www\.)?/,''))}</a>`:' · '+esc(s.source_ref));
   const about=a.about?`<div class="about"><div class="prov">${a.about_source?('desde '+esc(a.about_source.source)+provRef(a.about_source)):''}</div>${esc(a.about)}</div>`:'';
   const editions=(a.editions||[]).map(e=>`${esc(e.format||'?')}${e.date?' · '+esc(e.date):''}`).join(' &nbsp;·&nbsp; ');
-  const tracks=(a.tracks||[]).length?`<div class="sec">Pistas</div>`+a.tracks.map((t,i)=>`<div class="track"><button class="play" data-idx="${i}" aria-label="Reproducir" title="Reproducir" style="border:none;background:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0 4px">▶</button><span class="pos">${t.pos}</span><span style="flex:1">${esc(t.title)}</span><span class="addtrk" data-tid="${t.trackId}" title="Añadir a una lista" style="cursor:pointer;color:var(--text-2);font-size:14px;padding:0 6px">＋</span><span class="dur">${mmss(t.length_ms)}</span></div>`).join(''):'';
+  const tracks=(a.tracks||[]).length?`<div class="sec">Pistas</div>`+a.tracks.map((t,i)=>`<div class="track"><button class="play" data-idx="${i}" aria-label="Reproducir" title="Reproducir" style="border:none;background:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0 4px;display:inline-flex;align-items:center">${window.icon('play',14)}</button><span class="pos">${t.pos}</span><span style="flex:1">${esc(t.title)}</span><span class="addtrk" data-tid="${t.trackId}" title="Añadir a una lista" style="cursor:pointer;color:var(--text-2);font-size:14px;padding:0 6px;display:inline-flex;align-items:center">${window.icon('plus',15)}</span><span class="dur">${mmss(t.length_ms)}</span></div>`).join(''):'';
   const INST={'bass':'bajo','electric bass':'bajo eléctrico','double bass':'contrabajo','guitar':'guitarra','acoustic guitar':'guitarra acústica','electric guitar':'guitarra eléctrica','drums':'batería','percussion':'percusión','piano':'piano','keyboards':'teclados','synthesizer':'sintetizador','organ':'órgano','cello':'violonchelo','violin':'violín','viola':'viola','trumpet':'trompeta','trombone':'trombón','saxophone':'saxofón','flute':'flauta','clarinet':'clarinete','harmonica':'armónica','accordion':'acordeón','vibraphone':'vibráfono'};
   const tInst=i=>i?(INST[i.toLowerCase()]||i.toLowerCase()):i;
   const clabel=c=>c.role==='instrumento'&&c.instrument?tInst(c.instrument):(c.role==='voz'&&c.instrument?'voz ('+tInst(c.instrument)+')':c.role);
@@ -42,7 +42,7 @@ fetch('/api/album?id='+id).then(r=>r.json()).then(a=>{
         <div style="color:var(--text-2);font-size:13px">${esc(a.primary_type||'álbum')} · ${a.year||'—'}</div>
         <h1>${esc(a.title)}</h1>
         <div style="font-size:15px">${artistLink}</div>
-        ${(a.tracks||[]).length?`<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn-accent" id="playalbum">▶ Reproducir</button><button id="addalbum" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px">＋ Añadir a lista</button></div>`:''}
+        ${(a.tracks||[]).length?`<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn-accent" id="playalbum" style="display:inline-flex;align-items:center;gap:6px">${window.icon('play',15)}Reproducir</button><button id="addalbum" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('plus',15)}Añadir a lista</button></div>`:''}
         <div class="meta">
           <span>${tier}</span>
           <span><span class="k">Valoración</span> ${stars}</span>
@@ -63,8 +63,8 @@ fetch('/api/album?id='+id).then(r=>r.json()).then(a=>{
 // ── tags de usuario (etiquetas libres, estilo Roon) ──
 function renderTags(tags){
   const box=document.getElementById('tagbox'); if(!box) return;
-  box.innerHTML=(tags||[]).map(t=>`<span class="gchip" style="display:inline-flex;align-items:center;gap:5px"><a href="tag.html?name=${encodeURIComponent(t)}" style="color:inherit">${esc(t)}</a><span class="txtag" data-tag="${esc(t)}" title="Quitar etiqueta" style="cursor:pointer;color:var(--text-2)">✕</span></span>`).join('')
-    +`<span class="chip" id="addtag" style="cursor:pointer">＋ etiqueta</span>`;
+  box.innerHTML=(tags||[]).map(t=>`<span class="gchip" style="display:inline-flex;align-items:center;gap:5px"><a href="tag.html?name=${encodeURIComponent(t)}" style="color:inherit">${esc(t)}</a><span class="txtag" data-tag="${esc(t)}" title="Quitar etiqueta" style="cursor:pointer;color:var(--text-2);display:inline-flex;align-items:center">${window.icon('close',13)}</span></span>`).join('')
+    +`<span class="chip" id="addtag" style="cursor:pointer">${window.icon('plus',13)} etiqueta</span>`;
 }
 async function tagPost(path,name){ try{ const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({album_id:id,name})}).then(x=>x.json()); if(r&&r.ok) renderTags(r.tags||[]); }catch(e){} }
 document.addEventListener('click',e=>{
@@ -93,7 +93,7 @@ function pickPlaylist(anchor,onPick){
     pop.setAttribute('style','position:absolute;z-index:70;min-width:200px;max-width:280px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:6px;font-size:13px');
     pop.innerHTML=`<div style="padding:6px 8px;color:var(--text-2);font-size:11px">Añadir a…</div>`+
       pls.map(p=>`<div class="plopt" data-id="${p.id}" style="padding:7px 10px;border-radius:7px;cursor:pointer">${esc(p.name)} <span style="color:var(--text-2)">· ${p.n}</span></div>`).join('')+
-      `<div class="plnew" style="padding:7px 10px;border-radius:7px;cursor:pointer;color:var(--accent);border-top:1px solid var(--border);margin-top:4px">＋ Nueva lista…</div>`;
+      `<div class="plnew" style="padding:7px 10px;border-radius:7px;cursor:pointer;color:var(--accent);border-top:1px solid var(--border);margin-top:4px;display:inline-flex;align-items:center;gap:5px">${window.icon('plus',13)}Nueva lista…</div>`;
     document.body.appendChild(pop);
     const r=anchor.getBoundingClientRect();
     pop.style.top=(window.scrollY+r.bottom+6)+'px';
@@ -107,6 +107,7 @@ function pickPlaylist(anchor,onPick){
 let toastT=null;
 function toast(msg){let t=document.getElementById('toast');if(!t){t=document.createElement('div');t.id='toast';t.setAttribute('style','position:fixed;left:50%;bottom:80px;transform:translateX(-50%);z-index:80;background:var(--text);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.25);opacity:0;transition:opacity .15s');document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(toastT);toastT=setTimeout(()=>t.style.opacity='0',1800);}
 </script>
+<script src="icons.js" defer></script>
 <script src="nav.js" defer></script>
 <script src="player.js" defer></script>
 </body>

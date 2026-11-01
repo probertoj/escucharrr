@@ -17,7 +17,7 @@
 </head>
 <body>
 <div class="wrap">
-  <div style="margin-bottom:14px"><a href="/" style="color:var(--accent)">‹ Biblioteca</a></div>
+  <div style="margin-bottom:14px"><a href="/" style="color:var(--accent);display:inline-flex;align-items:center;gap:5px"><span data-icon="arrow-left" data-s="15"></span>Biblioteca</a></div>
   <div id="app">cargando…</div>
 </div>
 
@@ -59,6 +59,7 @@ fetch('/api/artist?id='+id).then(r=>r.json()).then(a=>{
     ${appears}`;
 }).catch(e=>app.innerHTML='error: '+e.message);
 </script>
+<script src="icons.js" defer></script>
 <script src="nav.js" defer></script>
 <script src="player.js" defer></script>
 </body>

@@ -36,7 +36,7 @@ function load(){fetch('/api/playlists').then(r=>r.json()).then(j=>{
   const pls=j.items||[];
   count.textContent=pls.length?(pls.length+' lista'+(pls.length>1?'s':'')):'';
   list.innerHTML=pls.length?pls.map(p=>
-    `<a class="plrow" href="playlist.html?id=${p.id}"><span class="plicon">♫</span><span style="flex:1"><div style="font-weight:600">${esc(p.name)}</div><div class="n">${p.n} pista${p.n===1?'':'s'}</div></span><span style="color:var(--text-2)">›</span></a>`
+    `<a class="plrow" href="playlist.html?id=${p.id}"><span class="plicon">${window.icon('music',18)}</span><span style="flex:1"><div style="font-weight:600">${esc(p.name)}</div><div class="n">${p.n} pista${p.n===1?'':'s'}</div></span><span style="color:var(--text-2)">›</span></a>`
   ).join(''):'<div style="color:var(--text-2)">Aún no tienes listas. Crea una arriba, o añade álbumes desde su página.</div>';
 }).catch(e=>list.textContent='error: '+e.message);}
 function create(){const name=name_.value.trim();if(!name)return;
@@ -51,6 +51,7 @@ m3ufile.addEventListener('change',()=>{const f=m3ufile.files&&m3ufile.files[0];i
 load();
 document.addEventListener('escucharrr:changed',load);
 </script>
+<script src="icons.js" defer></script>
 <script src="nav.js" defer></script>
 <script src="player.js" defer></script>
 </body>

@@ -48,7 +48,7 @@ function render(d){
     h+=`<div class="sec seclink"><span>Más de <span style="text-transform:capitalize">${esc(g.name)}</span></span><a href="genre.html?name=${encodeURIComponent(g.name)}">ver los ${g.n} →</a></div>${row(g.albums)}`;
   });
   if(d.random&&d.random.length){
-    h+=`<div class="sec seclink"><span>Al azar</span><button id="shuffle" style="font-size:13px;padding:4px 10px">↻ Baraja</button></div>${row(d.random)}`;
+    h+=`<div class="sec seclink"><span>Al azar</span><button id="shuffle" style="font-size:13px;padding:4px 10px;display:inline-flex;align-items:center;gap:5px">${window.icon('refresh',14)} Baraja</button></div>${row(d.random)}`;
   }
   app.innerHTML=h||'<div class="count">Aún no hay suficiente en tu biblioteca para sugerir.</div>';
 }
@@ -57,6 +57,7 @@ load();
 document.addEventListener('escucharrr:changed',load);   // biblioteca en vivo
 document.addEventListener('click',e=>{if(e.target.closest('#shuffle'))load();});
 </script>
+<script src="icons.js" defer></script>
 <script src="nav.js" defer></script>
 <script src="player.js" defer></script>
 </body>

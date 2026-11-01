@@ -28,7 +28,7 @@
 </head>
 <body>
 <div class="wrap">
-  <div style="margin-bottom:14px"><a href="playlists.html" style="color:var(--accent)">‹ Listas</a></div>
+  <div style="margin-bottom:14px"><a href="playlists.html" style="color:var(--accent);display:inline-flex;align-items:center;gap:5px"><span data-icon="arrow-left" data-s="15"></span>Listas</a></div>
   <div id="app">cargando…</div>
 </div>
 
@@ -49,23 +49,23 @@ function render(){
   app.innerHTML=`
     <div class="plhead">
       <h1 id="plname">${esc(pl.name)}</h1>
-      <button class="ed" id="rename" title="Renombrar">✎</button>
-      <a class="ed" id="export" title="Exportar a M3U" href="/api/playlist/export?id=${id}" download style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center">⤓</a>
-      <button class="ed" id="delete" title="Borrar lista">🗑</button>
+      <button class="ed" id="rename" title="Renombrar" style="display:inline-flex;align-items:center;justify-content:center">${window.icon('edit',16)}</button>
+      <a class="ed" id="export" title="Exportar a M3U" href="/api/playlist/export?id=${id}" download style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center">${window.icon('download',16)}</a>
+      <button class="ed" id="delete" title="Borrar lista" style="display:inline-flex;align-items:center;justify-content:center">${window.icon('trash',16)}</button>
     </div>
     <div class="count">${items.length} pista${items.length===1?'':'s'}${mins?' · '+mins+' min':''}</div>
-    ${items.length?`<div style="margin:12px 0"><button class="btn-accent" id="playall">▶ Reproducir</button></div>`:''}
+    ${items.length?`<div style="margin:12px 0"><button class="btn-accent" id="playall" style="display:inline-flex;align-items:center;gap:6px">${window.icon('play',15)}Reproducir</button></div>`:''}
     <div id="rows">${items.map((t,i)=>row(t,i)).join('')||'<div style="color:var(--text-2);margin-top:14px">Lista vacía. Añade pistas o álbumes desde su página.</div>'}</div>`;
 }
 function row(t,i){
   const no=t.playable===false;
   return `<div class="trow${no?' noaudio':''}" data-i="${i}">
     <span class="pos">${i+1}</span>
-    <button class="play" data-i="${i}" title="Reproducir"${no?' disabled style="opacity:.4;cursor:default"':''}>▶</button>
+    <button class="play" data-i="${i}" title="Reproducir"${no?' disabled style="opacity:.4;cursor:default;display:inline-flex;align-items:center"':''}>${window.icon('play',14)}</button>
     <a class="thumb" href="album.html?id=${t.albumId}">${cover(t.albumId)}</a>
     <span class="ti"><div class="t">${esc(t.title)}${no?' · sin audio local':''}</div><div class="a">${esc(t.artist||'')}${t.album?' — <a href="album.html?id='+t.albumId+'" style="color:var(--text-2)">'+esc(t.album)+'</a>':''}</div></span>
     <span class="dur">${mmss(t.length_ms)}</span>
-    <span class="acts"><span data-act="up" data-i="${i}" title="Subir">↑</span><span data-act="down" data-i="${i}" title="Bajar">↓</span><span data-act="rm" data-i="${i}" title="Quitar">✕</span></span>
+    <span class="acts"><span data-act="up" data-i="${i}" title="Subir" style="display:inline-flex;align-items:center">${window.icon('chevron-up',15)}</span><span data-act="down" data-i="${i}" title="Bajar" style="display:inline-flex;align-items:center">${window.icon('chevron-down',15)}</span><span data-act="rm" data-i="${i}" title="Quitar" style="display:inline-flex;align-items:center">${window.icon('close',15)}</span></span>
   </div>`;
 }
 function persistOrder(){return api('/api/playlist/reorder',{id,items:items.map(t=>({trackId:t.trackId,recording_id:t.recording_id}))});}
@@ -86,6 +86,7 @@ document.addEventListener('click',e=>{
 load();
 document.addEventListener('escucharrr:changed',load);
 </script>
+<script src="icons.js" defer></script>
 <script src="nav.js" defer></script>
 <script src="player.js" defer></script>
 </body>

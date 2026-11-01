@@ -52,6 +52,7 @@ input[type=range]{accent-color:var(--accent)}
 </div>
 
 <script src="player.js" defer></script>
+<script src="icons.js" defer></script>
 <script src="nav.js" defer></script>
 <script>
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -72,7 +73,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   const bands = S.eqGains.map((g,i) => `<div class="b"><span class="g" id="eqg${i}">${g>0?'+':''}${g}</span><input class="eqband" type="range" min="-12" max="12" step="1" value="${g}" data-i="${i}"><span class="f">${esc(S.eqFreqs[i]||'')}</span></div>`).join('');
 
   app.innerHTML = `
-  <div class="grp"><h2><span class="gi">📚</span> Biblioteca</h2><div class="body">
+  <div class="grp"><h2><span class="gi">${window.icon('library',18)}</span> Biblioteca</h2><div class="body">
     <div class="row"><div class="stat">
       <span class="s"><b>${lib.albums||0}</b> álbumes</span><span class="s"><b>${lib.artists||0}</b> artistas</span>
       <span class="s"><b>${lib.tracks||0}</b> pistas</span><span class="s"><b>${lib.files||0}</b> ficheros</span>
@@ -84,7 +85,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     <div class="row"><div class="lbl"><div class="k">Escaneo, metadatos y análisis</div><div class="d">Por ahora desde las herramientas de <span class="mono">data-layer/</span> (scan, enrich, editorial, covers, analyze). El watcher reescanea al vuelo.</div></div></div>
   </div></div>
 
-  <div class="grp"><h2><span class="gi">🔈</span> Audio — salida</h2><div class="body">
+  <div class="grp"><h2><span class="gi">${window.icon('zone',18)}</span> Audio — salida</h2><div class="body">
     <div class="row"><div class="lbl"><div class="k">Zona de salida actual</div><div class="d">${esc(zoneName)}</div></div>
       <button id="chooseout">Elegir salida / zona…</button></div>
     <div class="row"><div class="lbl"><div class="k">Motor nativo (WASAPI)</div><div class="d">${nat.available?(nat.built?'compilado y disponible · resample sinc Kaiser, dither TPDF, EQ propio':'disponible pero sin compilar (ejecuta <span class="mono">engine/build.ps1</span>)'):'no disponible en esta build'}</div></div></div>
@@ -92,7 +93,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       <button id="chooseout2">Elegir salida…</button></div>
   </div></div>
 
-  <div class="grp"><h2><span class="gi">▶</span> Reproducción</h2><div class="body">
+  <div class="grp"><h2><span class="gi">${window.icon('play',18)}</span> Reproducción</h2><div class="body">
     <div class="row"><div class="lbl"><div class="k">Crossfade</div><div class="d">solapa el final de una pista con el inicio de la siguiente</div></div>
       <input id="xf" type="range" min="0" max="12" step="0.5" value="${S.xfade}" style="width:160px"><span class="val" id="xfval"></span></div>
     <div class="row"><div class="lbl"><div class="k">Normalización de volumen (ReplayGain)</div><div class="d">por pista (−18 LUFS) · por álbum (conserva la dinámica del disco) · desactivada</div></div>${rgSeg()}</div>
@@ -100,25 +101,25 @@ window.addEventListener('DOMContentLoaded', async () => {
       <label class="sw"><input type="checkbox" id="radio" ${S.radio?'checked':''}><span class="t"></span></label></div>
   </div></div>
 
-  <div class="grp"><h2><span class="gi">🎚</span> Ecualizador</h2><div class="body">
+  <div class="grp"><h2><span class="gi">${window.icon('eq',18)}</span> Ecualizador</h2><div class="body">
     <div class="row"><div class="lbl"><div class="k">Ecualizador de 7 bandas</div><div class="d">se aplica a la salida del navegador y, si está activo, al motor nativo</div></div>
       <label class="sw"><input type="checkbox" id="eqon" ${S.eqOn?'checked':''}><span class="t"></span></label></div>
     <div class="row" style="display:block"><div class="pre" id="pre">${presets}</div>
       <div class="eqbands" id="eqbands">${bands}</div></div>
   </div></div>
 
-  <div class="grp"><h2><span class="gi">↻</span> Servicios y scrobbling</h2><div class="body">
+  <div class="grp"><h2><span class="gi">${window.icon('refresh',18)}</span> Servicios y scrobbling</h2><div class="body">
     <div class="row"><div class="lbl"><div class="k">Scrobbling</div><div class="d">${(scr.enabled&&scr.enabled.length)?'activo: '+scr.enabled.map(esc).join(', ')+(scr.pending?` · ${scr.pending} en cola`:''):'desactivado (crea <span class="mono">app/scrobble.json</span> a partir de <span class="mono">scrobble.example.json</span>)'}</div></div></div>
     <div class="row"><div class="lbl"><div class="k">Spotify — ¿tengo este disco en mi biblioteca?</div><div class="d" id="spotrow">comparando tus discos locales con tus álbumes guardados en Spotify…</div></div><span id="spotbtns"></span></div>
     <div class="row"><div class="lbl"><div class="k">Tidal / Qobuz</div><div class="d soon">próximamente — ver <span class="mono">docs/ajustes-vs-roon.md</span></div></div></div>
   </div></div>
 
-  <div class="grp"><h2><span class="gi">🎨</span> Interfaz</h2><div class="body">
+  <div class="grp"><h2><span class="gi">${window.icon('theme-auto',18)}</span> Interfaz</h2><div class="body">
     <div class="row"><div class="lbl"><div class="k">Tema</div><div class="d">automático sigue al sistema; el fondo claro es blanco por diseño</div></div>${themeSeg}</div>
     <div class="row"><div class="lbl"><div class="k">Menú lateral</div><div class="d">fijo a la izquierda en escritorio, barra superior en móvil</div></div><span class="val">activo</span></div>
   </div></div>
 
-  <div class="grp"><h2><span class="gi">⚙</span> Avanzado</h2><div class="body">
+  <div class="grp"><h2><span class="gi">${window.icon('settings',18)}</span> Avanzado</h2><div class="body">
     <div class="row"><div class="lbl"><div class="k">Versión</div></div><span class="val">escucharrr ${esc(ap.version||'0.1')}</span></div>
     <div class="row"><div class="lbl"><div class="k">Servidor</div></div><span class="val">puerto ${esc(String(ap.port||''))}</span></div>
     <div class="row"><div class="lbl"><div class="k">Base de datos</div><div class="d mono">${esc(ap.db||'')}</div></div></div>

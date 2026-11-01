@@ -10,7 +10,7 @@
 <div class="wrap">
   <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
     <h1 style="font-size:26px;margin:0">Cola</h1><span id="count" style="font-size:13px;color:var(--text-2)"></span>
-    <span id="radio" title="Radio: cuando se acabe la cola, la extiende con pistas afines de tu biblioteca" style="margin-left:auto;cursor:pointer;font-size:13px;padding:5px 12px;border-radius:999px;border:1px solid var(--border)">📻 Radio</span>
+    <span id="radio" title="Radio: cuando se acabe la cola, la extiende con pistas afines de tu biblioteca" style="margin-left:auto;cursor:pointer;font-size:13px;padding:5px 12px;border-radius:999px;border:1px solid var(--border);display:inline-flex;align-items:center;gap:6px"><span data-icon="radio" data-s="15"></span>Radio</span>
     <button id="undo">⤺ Deshacer</button>
     <button id="clear">Vaciar lo próximo</button>
   </div>
@@ -39,11 +39,11 @@ function render(){
     if(idx>=0 && i===idx+1) h+='<div style="font-size:11px;color:var(--text-2);margin:14px 0 4px;letter-spacing:.04em">PRÓXIMAMENTE</div>';
     const cur=i===idx;
     h+=`<div class="track" style="${cur?'background:var(--accent-bg);border-radius:8px;':''}${i<idx?'opacity:.55;':''}padding:9px 10px">
-      <span data-jump="${i}" title="Reproducir" style="cursor:pointer;color:var(--accent)">▶</span>
+      <span data-jump="${i}" title="Reproducir" style="cursor:pointer;color:var(--accent);display:inline-flex;align-items:center">${window.icon('play',14)}</span>
       ${mini(t.albumId)}
       <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:14px;${cur?'color:var(--accent)':''}">${esc(t.title)}</div><div style="font-size:12px;color:var(--text-2)">${esc(t.artist)}</div></div>
       <span class="dur">${mmss(t.length_ms)}</span>
-      <span data-remove="${i}" title="Quitar" style="cursor:pointer;color:var(--muted)">✕</span></div>`;
+      <span data-remove="${i}" title="Quitar" style="cursor:pointer;color:var(--muted);display:inline-flex;align-items:center">${window.icon('close',14)}</span></div>`;
   });
   list.innerHTML=h;
 }
@@ -57,6 +57,7 @@ document.addEventListener('click',e=>{
 document.addEventListener('player:change',render);
 window.addEventListener('DOMContentLoaded',render);
 </script>
+<script src="icons.js" defer></script>
 <script src="nav.js" defer></script>
 <script src="player.js" defer></script>
 </body>

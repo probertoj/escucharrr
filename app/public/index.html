@@ -13,9 +13,9 @@
   <div class="count" id="count">cargando…</div>
 
   <div class="toolbar">
-    <button class="btn-accent">▶ Reproducir</button>
+    <button class="btn-accent" style="display:inline-flex;align-items:center;gap:6px"><span data-icon="play" data-s="15"></span>Reproducir</button>
     <button id="focusbtn">▸ Focus</button>
-    <button id="savefocus" title="Guardar el Focus actual como marcador">★ Guardar Focus</button>
+    <button id="savefocus" title="Guardar el Focus actual como marcador" style="display:inline-flex;align-items:center;gap:6px"><span data-icon="star" data-s="15"></span>Guardar Focus</button>
     <div class="spacer"></div>
     <label style="color:var(--text-2);font-size:13px">Ordenar</label>
     <select id="sort">
@@ -78,7 +78,7 @@ function renderFacets(){
 function renderChips(){
   const c=[];facetDefs.forEach(([k])=>active[k].forEach(v=>c.push([k,v,k==='tier'?TN[v]:v])));
   if(minR!=null)c.push(['rat',minR,minR+'★ o más']);
-  chips.innerHTML=c.length?c.map(x=>`<span class="chip" data-ck="${x[0]}" data-cv="${x[1]}">${x[2]} ✕</span>`).join('')+`<span class="chip" data-clear="1" style="background:var(--surface-2);color:var(--text-2)">Limpiar</span>`:'';}
+  chips.innerHTML=c.length?c.map(x=>`<span class="chip" data-ck="${x[0]}" data-cv="${x[1]}">${x[2]} ${window.icon('close',12)}</span>`).join('')+`<span class="chip" data-clear="1" style="background:var(--surface-2);color:var(--text-2)">Limpiar</span>`:'';}
 function render(){
   let l=ALBUMS.filter(passes);const s=sort.value;
   l.sort((a,b)=>s==='year'?(b.year||0)-(a.year||0):s==='artist'?a.artist.localeCompare(b.artist):s==='tier'?(TR[b.tier_key]||0)-(TR[a.tier_key]||0):s==='rating'?(b.album_stars||0)-(a.album_stars||0):a.title.localeCompare(b.title));
@@ -110,7 +110,7 @@ document.addEventListener('escucharrr:changed',load);   // biblioteca en vivo
 const esc0=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 function currentFocus(){const a={};for(const k in active)if(active[k].length)a[k]=active[k].slice();return{active:a,minR,sort:sort.value};}
 function applyFocus(s){for(const k in active)active[k]=((s&&s.active&&s.active[k])||[]).slice();minR=(s&&s.minR!=null)?s.minR:null;if(s&&s.sort){sort.value=s.sort;}txt='';filter.value='';render();if(focus.hidden)focusbtn.click();}
-function loadBookmarks(){fetch('/api/bookmarks').then(r=>r.json()).then(j=>{const bms=j.items||[];const bar=document.getElementById('bmbar');bar._bms=bms;bar.innerHTML=bms.length?'<span style="color:var(--text-2);font-size:12px;margin-right:4px">Marcadores:</span>'+bms.map(b=>`<span class="chip bm" data-id="${b.id}" style="cursor:pointer">★ ${esc0(b.name)} <span class="bmx" data-del="${b.id}" title="Borrar" style="color:var(--text-2)">✕</span></span>`).join(''):'';}).catch(()=>{});}
+function loadBookmarks(){fetch('/api/bookmarks').then(r=>r.json()).then(j=>{const bms=j.items||[];const bar=document.getElementById('bmbar');bar._bms=bms;bar.innerHTML=bms.length?'<span style="color:var(--text-2);font-size:12px;margin-right:4px">Marcadores:</span>'+bms.map(b=>`<span class="chip bm" data-id="${b.id}" style="cursor:pointer">${window.icon('star',13)} ${esc0(b.name)} <span class="bmx" data-del="${b.id}" title="Borrar" style="color:var(--text-2);display:inline-flex">${window.icon('close',12)}</span></span>`).join(''):'';}).catch(()=>{});}
 document.getElementById('savefocus').addEventListener('click',()=>{const n=prompt('Nombre del marcador (guarda el Focus actual):');if(n&&n.trim())fetch('/api/bookmarks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n.trim(),state:currentFocus()})}).then(r=>r.json()).then(()=>loadBookmarks());});
 document.getElementById('bmbar').addEventListener('click',e=>{const del=e.target.closest('.bmx');if(del){e.stopPropagation();fetch('/api/bookmark/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:+del.dataset.del})}).then(()=>loadBookmarks());return;}const bm=e.target.closest('.bm');if(bm){const bar=document.getElementById('bmbar');const b=(bar._bms||[]).find(x=>x.id===+bm.dataset.id);if(b)applyFocus(b.state);}});
 loadBookmarks();
@@ -143,6 +143,7 @@ loadBookmarks();
   document.addEventListener('click',e=>{if(!e.target.closest('.search'))drop.hidden=true;});
 })();
 </script>
+<script src="icons.js" defer></script>
 <script src="nav.js" defer></script>
 <script src="player.js" defer></script>
 </body>
