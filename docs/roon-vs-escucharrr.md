@@ -47,7 +47,7 @@ Evidencia RE de las pantallas de Roon (muestra del inventario `.broo`): `albumbr
 |---|---|---|---|
 | Cola + "a continuación" | `queue.broo` | cola persistente + pantalla "Ahora suena" con "a continuación" | ✅ |
 | **Roon Radio** (sin fin) | radio por IA desde tu biblioteca+streaming | `/api/radio` (radio desde el grafo, autoplay) | 🟡 (heurística propia, no IA/nube) |
-| Internet radio (emisoras en vivo) | `radiobrowser`, `internetradiodetails`, categorías | — | ❌ |
+| Internet radio (emisoras en vivo) | `radiobrowser`, `internetradiodetails`, categorías | `radio.html` + proxy ICY (`/api/radio/*`), modelo `is_live`, "ahora suena" por ICY/SSE | ✅ (emisoras propias por URL; falta directorio curado y salida nativa/UPnP) |
 | Crossfade / gapless | DSP de crossfade/fade | crossfade (web) + **gapless real** (UPnP SetNextURI; nativo reutiliza motor) | ✅ |
 | Volume leveling | normalización por pista/álbum | ReplayGain R128 pista/álbum/off (`analyze.js`) | ✅ |
 | **Waveform** (barra de onda) | onda en "ahora suena" | `waveform.js` (picos ffmpeg) + onda en el player | ✅ |

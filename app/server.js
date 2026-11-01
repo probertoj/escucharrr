@@ -197,6 +197,15 @@ const Q = {
      ORDER BY a.tier_rank DESC, RANDOM() LIMIT 12`),
   discRandom: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
      FROM v_album a ORDER BY RANDOM() LIMIT 6`),
+  // "En este día" (estilo Plexamp music.anniversary.releases): álbumes cuyo día-mes de
+  // lanzamiento coincide con hoy, de años anteriores. years_ago = añoActual − año. Necesita
+  // fecha COMPLETA (YYYY-MM-DD); las fechas solo-año de MusicBrainz no cuentan (no tienen día).
+  discOnThisDay: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite,
+       (? - CAST(substr(a.first_release,1,4) AS INT)) AS years_ago
+     FROM v_album a
+     WHERE length(a.first_release) >= 10 AND substr(a.first_release,6,5) = ?
+       AND CAST(substr(a.first_release,1,4) AS INT) < ?
+     ORDER BY (a.tier_rank IS NULL), a.tier_rank DESC, years_ago DESC, a.title LIMIT 24`),
   // metadatos para scrobble (por track_id)
   scrobbleMeta: db.prepare(`SELECT tr.recording_id, COALESCE(tr.title, r.title) title, r.mbid recording_mbid,
        COALESCE(tr.length_ms, r.length_ms) duration_ms, rel.mbid release_mbid, rg.title album,
@@ -355,17 +364,24 @@ function genre(name) {
   if (!albums.length) return null;
   return { name, albums, related: Q.genreRelated.all(name) };
 }
-function discover() {
+function discover(opts) {
   let tg = Q.topGenres.all();
   let sel = tg.filter(g => g.n >= 2);
   if (!sel.length) sel = tg.slice(0, 3);
   const byGenre = sel.slice(0, 4).map(g => ({ name: g.name, n: g.n, albums: Q.genreAlbums.all(g.name).slice(0, 12) }));
+  // "En este día": hoy (local) o un MM-DD de prueba (?day=MM-DD)
+  const now = new Date();
+  const curYear = now.getFullYear();
+  let md = (opts && /^\d{2}-\d{2}$/.test(opts.day || '')) ? opts.day
+    : String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+  const onThisDay = Q.discOnThisDay.all(curYear, md, curYear);
   return {
     unrated: Q.discUnrated.all(),
     unratedCount: Q.discUnratedCount.get().n,
     revisit: Q.discRevisit.all(),
     random: Q.discRandom.all(),
     byGenre,
+    onThisDay, onThisDayDate: md,
   };
 }
 
@@ -1092,7 +1108,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/bookmarks') return sendJSON(res, { items: Q.bmList.all().map(b => ({ id: b.id, name: b.name, state: (() => { try { return JSON.parse(b.state || '{}'); } catch (e) { return {}; } })() })) });
     if (u.pathname === '/api/tags') return sendJSON(res, Q.allTags.all());
     if (u.pathname === '/api/tag') { const name = u.searchParams.get('name'); const albums = Q.tagAlbums.all(name); return albums.length ? sendJSON(res, { name, albums }) : (res.writeHead(404), res.end('{}')); }
-    if (u.pathname === '/api/discover') return sendJSON(res, discover());
+    if (u.pathname === '/api/discover') return sendJSON(res, discover({ day: u.searchParams.get('day') }));
     if (u.pathname === '/api/radio') { const seed = parseInt(u.searchParams.get('seed'), 10); const ex = (u.searchParams.get('exclude') || '').split(',').map(x => parseInt(x, 10)).filter(Boolean); return sendJSON(res, { tracks: seed ? radio(seed, ex, u.searchParams.get('n')) : [] }); }
     if (u.pathname === '/api/home') return sendJSON(res, home());
     if (u.pathname === '/' || u.pathname === '') return sendFile(res, 'index.html');
