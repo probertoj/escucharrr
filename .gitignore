@@ -15,6 +15,8 @@ app/.spotify-token
 app/cache/
 # impulsos de convolución (WAV propios de la máquina del usuario)
 app/impulses/
+# copias de seguridad de la BD (locales)
+app/backups/
 # node
 node_modules/
 # artefactos de compilación del motor nativo (el código fuente sí se versiona)

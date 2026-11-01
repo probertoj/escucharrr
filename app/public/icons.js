@@ -33,6 +33,8 @@
     'arrow-left': '<path d="M20 12H5M11 6l-6 6 6 6"/>',
     refresh: '<path d="M20 11.5A8 8 0 006.3 6.3L3 9"/><path d="M3 4v5h5"/><path d="M4 12.5A8 8 0 0017.7 17.7L21 15"/><path d="M21 20v-5h-5"/>',
     radio: '<rect x="3" y="9" width="18" height="11" rx="2"/><path d="M7 9 17 4.5"/><circle cx="8" cy="14.5" r="2.2"/><path d="M14 13h4"/>',
+    history: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 4v4h4"/><path d="M12 8v4l3 2"/>',
+    backup: '<path d="M7 18a4 4 0 0 1-.5-7.97A6 6 0 0 1 18 9.2 3.5 3.5 0 0 1 17.5 18"/><path d="M12 12v6M9.5 15.5 12 18l2.5-2.5"/>',
     'chevron-up': '<path d="M5 15l7-7 7 7"/>',
     'chevron-down': '<path d="M5 9l7 7 7-7"/>',
     download: '<path d="M12 4v11M8 11l4 4 4-4"/><path d="M5 19h14"/>',

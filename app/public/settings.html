@@ -89,6 +89,13 @@ window.addEventListener('DOMContentLoaded', async () => {
     <div class="row"><div class="lbl"><div class="k">Reescanear la biblioteca ahora</div><div class="d" id="rescanstatus">vuelve a escanear las carpetas y la fuente Obsidian</div></div><button id="rescanbtn">Reescanear ahora</button></div>
   </div></div>
 
+  <div class="grp"><h2><span class="gi">${window.icon('backup',18)}</span> Copia de seguridad</h2><div class="body">
+    <div class="row"><div class="lbl"><div class="k">Crear una copia ahora</div><div class="d">Guarda una instantánea de toda tu biblioteca (tiers, valoraciones, etiquetas, historial, emisoras, presets…). Se conservan las <b>12</b> más recientes; además se crea una automática al arrancar si la última es antigua.</div></div><button id="bknow">Crear copia</button></div>
+    <div class="row" style="display:block"><div class="k" style="margin-bottom:8px">Copias guardadas</div>
+      <div id="bklist" class="d">cargando…</div>
+      <div id="bkmsg" style="font-size:12.5px;margin-top:8px;display:none"></div></div>
+  </div></div>
+
   <div class="grp"><h2><span class="gi">${window.icon('zone',18)}</span> Audio — salida</h2><div class="body">
     <div class="row"><div class="lbl"><div class="k">Zona de salida actual</div><div class="d">${esc(zoneName)}</div></div>
       <button id="chooseout">Elegir salida / zona…</button></div>
@@ -198,6 +205,30 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('browseobs').addEventListener('click', async e => { const inp = document.getElementById('obsvault'); const p = await browse({ desc: 'Elige la carpeta del vault de Obsidian', init: inp.value || '' }, e.currentTarget); if (p) inp.value = p; });
   document.getElementById('saveobs').addEventListener('click', async () => { const vault = (document.getElementById('obsvault').value || '').trim(); const albumsFolder = (document.getElementById('obsfolder').value || '').trim(); const b = document.getElementById('saveobs'); b.disabled = true; b.textContent = 'Guardando…'; try { const r = await fetch('/api/config/obsidian', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vault, albumsFolder }) }).then(x => x.json()); if (r.ok) { CFG.obsidian = r.obsidian; cfgMsg('Fuente Obsidian guardada.', true); } else cfgMsg('No se pudo guardar Obsidian: ' + (r.error || 'error'), false); } catch (e) { cfgMsg('No se pudo contactar con el servidor. No se guardó.', false); } b.disabled = false; b.textContent = 'Guardar'; });
   document.getElementById('rescanbtn').addEventListener('click', async () => { const b = document.getElementById('rescanbtn'), st = document.getElementById('rescanstatus'); b.disabled = true; b.textContent = 'Reescaneando…'; st.textContent = 'reescaneando… (puede tardar)'; try { const r = await fetch('/api/config/rescan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ what: ['music', 'vault'] }) }).then(x => x.json()); if (r.ok) { const m = (r.music || []).map(x => x.result).filter(Boolean).join(' · '); st.textContent = 'Listo. ' + (m || '') + (r.vault ? ' · ' + r.vault : ''); } else st.textContent = 'Error: ' + (r.error || ''); } catch (e) { st.textContent = 'Error de red.'; } b.disabled = false; b.textContent = 'Reescanear ahora'; });
+
+  // ── copia de seguridad: crear / listar / descargar / restaurar / borrar ──
+  let BACKUPS = [];
+  function bkMsg(t, ok) { const m = document.getElementById('bkmsg'); if (!m) return; m.textContent = t || ''; m.style.display = t ? 'block' : 'none'; m.style.color = ok ? 'var(--accent)' : '#c0392b'; clearTimeout(bkMsg._t); if (ok && t) bkMsg._t = setTimeout(() => { m.style.display = 'none'; }, 3500); }
+  function fmtBk(f) { const m = /escucharrr-(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})/.exec(f); if (!m) return f; return `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}`; }
+  function renderBackups() {
+    const box = document.getElementById('bklist'); if (!box) return;
+    if (!BACKUPS.length) { box.innerHTML = '<span style="color:var(--text-2)">Aún no hay copias. Crea la primera con el botón de arriba.</span>'; return; }
+    box.innerHTML = BACKUPS.map(b => `<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)">
+      <span class="mono" style="flex:1">${fmtBk(b.file)} <span style="color:var(--muted)">· ${Math.max(1,Math.round(b.size/1024))} KB</span></span>
+      <a href="/api/backup/download?f=${encodeURIComponent(b.file)}" title="Descargar" style="color:var(--text-2);display:inline-flex;padding:4px">${window.icon('download',16)}</a>
+      <button class="bkrestore" data-f="${esc(b.file)}" style="font-size:12px;padding:4px 10px">Restaurar</button>
+      <span class="bkdel" data-f="${esc(b.file)}" title="Borrar" style="cursor:pointer;color:var(--text-2);display:inline-flex;padding:4px">${window.icon('trash',16)}</span>
+    </div>`).join('');
+  }
+  function loadBackups() { fetch('/api/backup/list').then(r => r.json()).then(j => { if (j.ok) { BACKUPS = j.backups || []; renderBackups(); } }).catch(() => { const box = document.getElementById('bklist'); if (box) box.textContent = 'No se pudo cargar.'; }); }
+  loadBackups();
+  document.getElementById('bknow').addEventListener('click', async () => { const b = document.getElementById('bknow'); b.disabled = true; b.textContent = 'Creando…'; try { const r = await fetch('/api/backup/now', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(x => x.json()); if (r.ok) { BACKUPS = r.backups || []; renderBackups(); bkMsg('Copia creada: ' + fmtBk(r.file), true); } else bkMsg('No se pudo crear: ' + (r.error || ''), false); } catch (e) { bkMsg('No se pudo contactar con el servidor.', false); } b.disabled = false; b.textContent = 'Crear copia'; });
+  document.getElementById('bklist').addEventListener('click', async e => {
+    const rb = e.target.closest('.bkrestore');
+    if (rb) { if (!confirm('¿Restaurar esta copia? Se reemplazará tu biblioteca actual (se guarda una copia de seguridad del estado actual antes de restaurar).')) return; rb.disabled = true; rb.textContent = 'Restaurando…'; try { const r = await fetch('/api/backup/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file: rb.dataset.f }) }).then(x => x.json()); if (r.ok) { BACKUPS = r.backups || []; renderBackups(); bkMsg('Restaurado. La biblioteca se ha recargado.', true); } else bkMsg('No se pudo restaurar: ' + (r.error || ''), false); } catch (e2) { bkMsg('No se pudo contactar con el servidor.', false); } return; }
+    const db = e.target.closest('.bkdel');
+    if (db) { if (!confirm('¿Borrar esta copia?')) return; try { const r = await fetch('/api/backup/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file: db.dataset.f }) }).then(x => x.json()); if (r.ok) { BACKUPS = r.backups || []; renderBackups(); } } catch (e2) {} }
+  });
 });
 </script>
 </body>

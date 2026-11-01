@@ -21,6 +21,7 @@
     { href: 'genres.html', label: 'Géneros', ico: 'genres' },
     { href: 'playlists.html', label: 'Listas', ico: 'lists' },
     { href: 'radio.html', label: 'Radio', ico: 'radio' },
+    { href: 'history.html', label: 'Historial', ico: 'history' },
     { href: 'search.html', label: 'Buscar', ico: 'search' }
   ];
   var SETTINGS = { href: 'settings.html', label: 'Ajustes', ico: 'settings' };

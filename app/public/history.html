@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — historial</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.daylabel{font-family:var(--serif);font-size:19px;margin:22px 0 8px;text-transform:capitalize}
+.daylabel:first-child{margin-top:12px}
+.hrow{display:flex;align-items:center;gap:12px;padding:8px 6px;border-radius:9px}
+.hrow:hover{background:var(--surface-2)}
+.hrow .cov{flex:none;width:44px;height:44px;border-radius:6px;overflow:hidden;box-shadow:var(--shadow);background:var(--surface-2)}
+.hrow .cov img{width:100%;height:100%;object-fit:cover;display:block}
+.hrow .meta{flex:1;min-width:0}
+.hrow .t{font-weight:600;font-size:14px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.hrow .s{font-size:12.5px;color:var(--text-2);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.hrow .s a{color:var(--text-2)}
+.hrow .r{flex:none;text-align:right;color:var(--text-2);font-size:12px;font-variant-numeric:tabular-nums}
+.hrow .zone{display:inline-block;margin-top:2px;font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+#more{margin:18px auto 6px;display:block}
+.empty{color:var(--text-2);margin-top:20px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Historial</h1>
+  <div class="count" id="count">cargando…</div>
+  <div id="list"></div>
+  <button id="more" style="display:none">Cargar más</button>
+</div>
+
+<script>
+const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const SRC={ui:'Navegador',native:'Motor nativo',upnp:'Red'};
+let PLAYS=[], total=0, offset=0, loading=false;
+function parseTs(s){return new Date(String(s||'').replace(' ','T')+'Z');}
+function dayKey(d){return d.getFullYear()+'-'+d.getMonth()+'-'+d.getDate();}
+function dayLabel(d){const now=new Date();const t=new Date(now.getFullYear(),now.getMonth(),now.getDate());const dd=new Date(d.getFullYear(),d.getMonth(),d.getDate());const diff=Math.round((t-dd)/864e5);if(diff===0)return 'Hoy';if(diff===1)return 'Ayer';const opt={weekday:'long',day:'numeric',month:'long'};if(dd.getFullYear()!==now.getFullYear())opt.year='numeric';return dd.toLocaleDateString('es-ES',opt);}
+function timeLabel(d){return d.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'});}
+function cover(id){return id?`<img src="/api/cover?rg=${id}" alt="" loading="lazy">`:'';}
+function rowHtml(p){const d=parseTs(p.played_at);const zone=p.zone||SRC[p.source]||'';
+  const album=p.album_id?`<a href="album.html?id=${p.album_id}">${esc(p.album||'')}</a>`:esc(p.album||'');
+  return `<div class="hrow">
+    <div class="cov">${cover(p.album_id)}</div>
+    <div class="meta"><div class="t">${esc(p.title)}</div><div class="s">${esc(p.artist||'—')}${p.album?' · '+album:''}</div></div>
+    <div class="r">${timeLabel(d)}${zone?`<div class="zone">${esc(zone)}</div>`:''}</div>
+  </div>`;}
+function render(){
+  const list=document.getElementById('list');
+  if(!PLAYS.length){list.innerHTML='<div class="empty">Aún no has reproducido nada. Cuando suene música, aparecerá aquí.</div>';return;}
+  let h='',curKey=null;
+  for(const p of PLAYS){const d=parseTs(p.played_at);const k=dayKey(d);if(k!==curKey){curKey=k;h+=`<div class="daylabel">${dayLabel(d)}</div>`;}h+=rowHtml(p);}
+  list.innerHTML=h;
+  document.getElementById('count').textContent=total+' reproduccion'+(total===1?'':'es')+' registradas';
+  document.getElementById('more').style.display=(PLAYS.length<total)?'block':'none';
+}
+function load(reset){
+  if(loading)return;loading=true;
+  if(reset){PLAYS=[];offset=0;}
+  fetch('/api/history?n=50&offset='+offset).then(r=>r.json()).then(j=>{
+    loading=false;total=j.total||0;PLAYS=PLAYS.concat(j.plays||[]);offset=PLAYS.length;render();
+  }).catch(e=>{loading=false;document.getElementById('count').textContent='error: '+e.message;});
+}
+document.getElementById('more').addEventListener('click',()=>load(false));
+load(true);
+document.addEventListener('escucharrr:changed',()=>load(true));   // biblioteca en vivo
+document.addEventListener('player:change',()=>{ /* refresco suave: recarga si estamos arriba */ if(offset<=50)load(true); });
+</script>
+<script src="icons.js" defer></script>
+<script src="nav.js" defer></script>
+<script src="player.js" defer></script>
+</body>
+</html>

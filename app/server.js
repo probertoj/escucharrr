@@ -28,12 +28,13 @@ const PORT = process.env.PORT || 7733;
 const DB_PATH = path.join(__dirname, 'escucharrr.db');
 const PUB = path.join(__dirname, 'public');
 if (!fs.existsSync(DB_PATH)) { console.error('No existe', DB_PATH, '\nGenera la BD con las herramientas de ../data-layer.'); process.exit(1); }
-const db = new DatabaseSync(DB_PATH);
-try { db.exec('PRAGMA journal_mode=WAL'); db.exec('PRAGMA busy_timeout=5000'); } catch (e) {}
-
 // Scrobbling local-first (Last.fm + ListenBrainz): cola en SQLite + drenador con reintentos.
 const scrobble = require('../data-layer/scrobble');
-db.exec(`CREATE TABLE IF NOT EXISTS scrobble_queue (
+// Esquema de las tablas propias de la app (idempotente). Extraído a función para poder re-aplicarlo
+// al REABRIR la BD tras una restauración de copia de seguridad.
+function initAppSchema(d) {
+  try { d.exec('PRAGMA journal_mode=WAL'); d.exec('PRAGMA busy_timeout=5000'); } catch (e) {}
+  d.exec(`CREATE TABLE IF NOT EXISTS scrobble_queue (
   id INTEGER PRIMARY KEY, recording_id INTEGER, track_id INTEGER, artist TEXT NOT NULL, title TEXT NOT NULL,
   album TEXT, album_artist TEXT, recording_mbid TEXT, release_mbid TEXT, duration_ms INTEGER,
   listened_at INTEGER NOT NULL, created_at TEXT DEFAULT (datetime('now')),
@@ -46,6 +47,9 @@ db.exec(`CREATE TABLE IF NOT EXISTS scrobble_queue (
   CREATE TABLE IF NOT EXISTS bookmark (id INTEGER PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS dsp_preset (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, state TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS radio_station (id INTEGER PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, homepage TEXT, favicon TEXT, created_at TEXT DEFAULT (datetime('now')));`);
+}
+let db = new DatabaseSync(DB_PATH);
+initAppSchema(db);
 const lyrics = require('../data-layer/lyrics');
 let scrobCfg = null;
 function loadScrobbleCfg() { const p = path.join(__dirname, 'scrobble.json'); try { scrobCfg = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null; } catch (e) { scrobCfg = null; } return scrobCfg; }
@@ -68,9 +72,9 @@ async function spotifyAccessToken() {
   return spotifyTok.access_token;
 }
 
-const genresOf = db.prepare(`SELECT group_concat(g.name,'|') gs FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id WHERE rgg.release_group_id=?`);
-const formatOf = db.prepare(`SELECT rel.format f FROM "release" rel WHERE rel.release_group_id=? LIMIT 1`);
-const Q = {
+function buildQ(db) { return {
+  genresOf: db.prepare(`SELECT group_concat(g.name,'|') gs FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id WHERE rgg.release_group_id=?`),
+  formatOf: db.prepare(`SELECT rel.format f FROM "release" rel WHERE rel.release_group_id=? LIMIT 1`),
   library: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.tier_rank,
       (SELECT label FROM tier WHERE key=a.tier_key) tier_label, a.album_stars, a.is_favorite
      FROM v_album a ORDER BY a.title`),
@@ -244,7 +248,20 @@ const Q = {
   lyricsGet: db.prepare('SELECT * FROM lyrics WHERE recording_id=?'),
   lyricsUpsert: db.prepare(`INSERT INTO lyrics(recording_id,found,instrumental,plain,synced,source,fetched_at) VALUES(?,?,?,?,?,?,datetime('now'))
      ON CONFLICT(recording_id) DO UPDATE SET found=excluded.found,instrumental=excluded.instrumental,plain=excluded.plain,synced=excluded.synced,source=excluded.source,fetched_at=datetime('now')`),
-};
+  // ── historial de escucha (reproducciones cronológicas, estilo "History" de Roon) ──
+  historyCount: db.prepare(`SELECT count(*) n FROM play`),
+  historyList: db.prepare(`SELECT p.id, p.played_at, p.ms_played, p.source, p.zone, p.track_id, p.recording_id,
+       COALESCE(tr.title, r.title, 'Pista') AS title,
+       (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id, r.artist_credit_id) ORDER BY acn.position LIMIT 1) AS artist,
+       (SELECT rel.release_group_id FROM track t2 JOIN medium m2 ON m2.id=t2.medium_id JOIN "release" rel ON rel.id=m2.release_id
+          WHERE t2.id=p.track_id OR t2.recording_id=COALESCE(p.recording_id, tr.recording_id) LIMIT 1) AS album_id
+     FROM play p
+     LEFT JOIN track tr ON tr.id=p.track_id
+     LEFT JOIN recording r ON r.id=COALESCE(p.recording_id, tr.recording_id)
+     ORDER BY p.played_at DESC, p.id DESC LIMIT ? OFFSET ?`),
+  rgTitle: db.prepare(`SELECT title FROM release_group WHERE id=?`),
+}; }
+let Q = buildQ(db);
 function logPlay(j) {
   let recId = j.recording_id || null, trackId = j.track_id || null, ms = j.ms_played;
   if (trackId) { const t = Q.trackInfo.get(trackId); if (t) { recId = recId || t.recording_id; if (ms == null) ms = t.length_ms; } }
@@ -319,8 +336,8 @@ function search(q, n) {
 
 function album(id) {
   const a = Q.album.get(id); if (!a) return null;
-  a.genres = (genresOf.get(id).gs || '').split('|').filter(Boolean);
-  a.format = (formatOf.get(id) || {}).f || null;
+  a.genres = (Q.genresOf.get(id).gs || '').split('|').filter(Boolean);
+  a.format = (Q.formatOf.get(id) || {}).f || null;
   // "Acerca de": la nota de Obsidian (user_edit) MANDA; si no hay, cae a la reseña editorial externa.
   const ab = Q.about.get(id);
   if (ab) { a.about = ab.v; a.about_source = Q.prov.all(id).find(p => p.field === 'about') || null; }
@@ -336,7 +353,7 @@ function album(id) {
   return a;
 }
 function libraryList() {
-  return Q.library.all().map(a => { a.genres = (genresOf.get(a.id).gs || '').split('|').filter(Boolean); a.format = (formatOf.get(a.id) || {}).f || null; a.tags = Q.tagsOfAlbum.all(a.id).map(r => r.name); return a; });
+  return Q.library.all().map(a => { a.genres = (Q.genresOf.get(a.id).gs || '').split('|').filter(Boolean); a.format = (Q.formatOf.get(a.id) || {}).f || null; a.tags = Q.tagsOfAlbum.all(a.id).map(r => r.name); return a; });
 }
 function work(id) {
   const w = Q.workGet.get(id); if (!w) return null;
@@ -1046,6 +1063,61 @@ async function handleRadio(req, res, u) {
   } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 
+// ── HISTORIAL DE ESCUCHA (reproducciones cronológicas, estilo "History" de Roon) ──
+function history(limit, offset) {
+  limit = Math.min(Math.max(1, limit || 50), 200); offset = Math.max(0, offset || 0);
+  const rows = Q.historyList.all(limit, offset);
+  for (const r of rows) { if (r.album_id) { const t = Q.rgTitle.get(r.album_id); r.album = t ? t.title : null; } }
+  return { total: Q.historyCount.get().n, plays: rows, limit, offset };
+}
+
+// ── COPIA DE SEGURIDAD (estilo "Backup" de Roon): snapshot de la BD con VACUUM INTO, ──
+// conserva las últimas N, restaura reabriendo la conexión en vivo (db/Q son re-asignables).
+const _BK = path.join(__dirname, 'backups');
+const BACKUP_KEEP = 12;
+function ensureBackupDir() { try { if (!fs.existsSync(_BK)) fs.mkdirSync(_BK, { recursive: true }); } catch (e) {} }
+function listBackups() {
+  ensureBackupDir();
+  try { return fs.readdirSync(_BK).filter(f => /\.db$/i.test(f)).map(f => { let st = {}; try { st = fs.statSync(path.join(_BK, f)); } catch (e) {} return { file: f, size: st.size || 0, mtime: st.mtimeMs || 0 }; }).sort((a, b) => b.mtime - a.mtime); } catch (e) { return []; }
+}
+function pruneBackups() { for (const b of listBackups().slice(BACKUP_KEEP)) { try { fs.unlinkSync(path.join(_BK, b.file)); } catch (e) {} } }
+function backupNow() {
+  ensureBackupDir();
+  const ts = new Date().toISOString().replace('T', '_').replace(/[:.]/g, '-').slice(0, 19);
+  const name = 'escucharrr-' + ts + '.db';
+  const dest = path.join(_BK, name).replace(/\\/g, '/');
+  db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);   // snapshot consistente de la BD abierta
+  pruneBackups();
+  return { file: name };
+}
+function backupPath(file) { const base = path.basename(String(file || '')); const p = path.join(_BK, base); return (base && /\.db$/i.test(base) && fs.existsSync(p)) ? p : ''; }
+function restoreBackup(file) {
+  const src = backupPath(file); if (!src) throw new Error('copia no encontrada');
+  try { backupNow(); } catch (e) {}                         // red de seguridad: copia del estado actual antes de restaurar
+  try { stopWatching(); } catch (e) {}
+  try { db.close(); } catch (e) {}
+  for (const ext of ['', '-wal', '-shm']) { try { if (fs.existsSync(DB_PATH + ext)) fs.unlinkSync(DB_PATH + ext); } catch (e) {} }
+  fs.copyFileSync(src, DB_PATH);
+  db = new DatabaseSync(DB_PATH); initAppSchema(db); Q = buildQ(db);   // reabre en vivo y re-prepara las sentencias
+  try { startWatching(); } catch (e) {}
+  sseBroadcast('library');
+}
+function autoBackupIfStale() {   // "programado": una copia al arrancar si la más reciente tiene > 20 h
+  try { const l = listBackups(); const last = l[0] ? l[0].mtime : 0; if (Date.now() - last > 20 * 3600 * 1000) { backupNow(); console.log('copia de seguridad automática creada'); } } catch (e) {}
+}
+async function handleBackup(req, res, u) {
+  const sub = u.pathname.slice('/api/backup/'.length);
+  try {
+    if (req.method === 'GET' && sub === 'list') return sendJSON(res, { ok: true, backups: listBackups(), keep: BACKUP_KEEP });
+    if (req.method === 'GET' && sub === 'download') { const p = backupPath(u.searchParams.get('f')); if (!p) { res.writeHead(404); return res.end('{}'); } const b = fs.readFileSync(p); res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': 'attachment; filename="' + path.basename(p) + '"', 'Content-Length': b.length }); return res.end(b); }
+    const body = req.method === 'POST' ? await readBody(req) : {};
+    if (sub === 'now') { const r = backupNow(); return sendJSON(res, { ok: true, ...r, backups: listBackups() }); }
+    if (sub === 'restore') { restoreBackup(body.file); return sendJSON(res, { ok: true, restored: body.file, backups: listBackups() }); }
+    if (sub === 'delete') { const p = backupPath(body.file); if (p) { try { fs.unlinkSync(p); } catch (e) {} } return sendJSON(res, { ok: true, backups: listBackups() }); }
+    res.writeHead(404); res.end('{}');
+  } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
+}
+
 http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   if (u.pathname === '/api/events') {
@@ -1090,6 +1162,8 @@ http.createServer((req, res) => {
   if (u.pathname === '/api/config' || u.pathname.startsWith('/api/config/')) return void handleConfig(req, res, u);
   if (u.pathname.startsWith('/api/dsp/')) return void handleDsp(req, res, u);
   if (u.pathname.startsWith('/api/radio/')) return void handleRadio(req, res, u);
+  if (u.pathname.startsWith('/api/backup/')) return void handleBackup(req, res, u);
+  if (u.pathname === '/api/history') return sendJSON(res, history(parseInt(u.searchParams.get('n'), 10), parseInt(u.searchParams.get('offset'), 10)));
   if (u.pathname.startsWith('/api/scrobble/')) return void handleScrobble(req, res, u);
   if (u.pathname === '/api/lyrics') return void getLyrics(parseInt(u.searchParams.get('track'), 10)).then(r => sendJSON(res, r)).catch(() => sendJSON(res, { found: false }));
   if (u.pathname === '/api/playlists' || u.pathname === '/api/playlist' || u.pathname.startsWith('/api/playlist/')) return void handlePlaylists(req, res, u);
@@ -1117,6 +1191,7 @@ http.createServer((req, res) => {
 }).listen(PORT, () => {
   console.log('escucharrr en http://localhost:' + PORT);
   startWatching();
+  autoBackupIfStale();   // copia de seguridad "programada": una al arrancar si la última es antigua
   const svc = scrobble.enabledServices(scrobCfg || {});
   if (svc.length) { console.log('scrobbling activo:', svc.join(', ')); setInterval(() => scrobble.drain(db, scrobCfg, console.log).catch(() => {}), 30000); }
   else console.log('scrobbling: desactivado (crea app/scrobble.json a partir de scrobble.example.json)');
