@@ -20,6 +20,7 @@
     { href: 'discover.html', label: 'Descubrir', ico: 'discover' },
     { href: 'genres.html', label: 'Géneros', ico: 'genres' },
     { href: 'playlists.html', label: 'Listas', ico: 'lists' },
+    { href: 'radio.html', label: 'Radio', ico: 'radio' },
     { href: 'search.html', label: 'Buscar', ico: 'search' }
   ];
   var SETTINGS = { href: 'settings.html', label: 'Ajustes', ico: 'settings' };

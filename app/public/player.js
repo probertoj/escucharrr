@@ -57,6 +57,10 @@ window.player = (function () {
   let ctx = null, eqBands = [], masterGain = null;
   let dspIn = null, dspOut = null, peqNodes = [], convNode = null, convBuffer = null;   // subgrafo DSP reconstruible
   let fading = false, fadeTimer = null;
+  // ── radio por internet (stream en vivo; modelo is_live de Roon: sin cola/seek/duración) ──
+  const IRKEY = 'escucharrr.radio.station';
+  let irEl = null, irStation = null, irTitle = '', irPlaying = false, irPollT = null;
+  try { const s = JSON.parse(localStorage.getItem(IRKEY)); if (s && s.id) irStation = s; } catch (e) {}
 
   function ensureGraph() {
     if (ctx) return;
@@ -116,6 +120,7 @@ window.player = (function () {
   function applySink() {
     const id = zone.deviceId || '';
     try {
+      if (irEl && typeof irEl.setSinkId === 'function') irEl.setSinkId(id).catch(() => {});   // la radio usa su propio elemento
       if (ctx && typeof ctx.setSinkId === 'function') return ctx.setSinkId(id).catch(() => {});
       decks.forEach(d => { if (typeof d.el.setSinkId === 'function') d.el.setSinkId(id).catch(() => {}); });
     } catch (e) {}
@@ -227,7 +232,9 @@ window.player = (function () {
   const ic = (n, s) => window.icon ? window.icon(n, s || 18) : '';           // icono de línea monocromo
   const volIcon = () => vol === 0 ? 'volume-mute' : vol < 0.5 ? 'volume-low' : 'volume-high';
   function render() {
-    ensureBar(); const c = cur();
+    ensureBar();
+    if (irStation) return renderRadioBar();
+    const c = cur();
     if (!c) { bar.style.display = 'none'; emit(); return; }
     const len = lenMs(), p = posMs(), noAudio = c.playable === false;
     bar.style.display = 'flex';
@@ -400,6 +407,7 @@ window.player = (function () {
   }
 
   function start(i, atSec) {
+    if (irStation) stopRadio(true);   // reproducir una pista para la radio
     if (nativeMode) return nativePlay(i);
     if (upnpMode) return upnpPlay(i, atSec ? { seekSec: atSec } : undefined);
     cancelFade();
@@ -420,12 +428,49 @@ window.player = (function () {
   function onEnded() { if (fading) return; next(); }
   function next() { if (nativeMode) { if (idx < q.length - 1) nativePlay(idx + 1); else if (radioOn) maybeRadio(); else { playing = false; stopNativePoll(); render(); } return; } if (upnpMode) { if (idx < q.length - 1) upnpPlay(idx + 1); else if (radioOn) maybeRadio(); else { playing = false; stopUpnpPoll(); render(); } return; } if (idx < q.length - 1) start(idx + 1); else if (radioOn) maybeRadio(); else { playing = false; active().el.pause(); render(); } }
   function prev() { if (nativeMode) { if (nativePos > 3 || idx <= 0) nativePlay(idx, { seekSec: 0 }); else nativePlay(idx - 1); return; } if (upnpMode) { if (upnpPos > 3 || idx <= 0) upnpPlay(idx, { seekSec: 0 }); else upnpPlay(idx - 1); return; } const d = active(); if (d.trackIdx === idx && d.el.currentTime > 3) { d.el.currentTime = 0; } else if (idx > 0) start(idx - 1); else d.el.currentTime = 0; }
-  function toggle() { if (nativeMode) return nativeToggle(); if (upnpMode) return upnpToggle(); const c = cur(); if (!c || c.playable === false) return; const d = active(); if (d.trackIdx !== idx) return start(idx); if (d.el.paused) { ensureGraph(); if (ctx && ctx.state === 'suspended') ctx.resume(); d.el.play().catch(() => {}); } else d.el.pause(); }
-  function seekFrac(f) { if (nativeMode) return nativeSeek(f); if (upnpMode) return upnpSeek(f); const len = lenMs(); if (loadedCur() && len) active().el.currentTime = Math.max(0, Math.min(1, f)) * len / 1000; }
-  function setVol(v) { vol = Math.max(0, Math.min(1, v)); applyVol(); if (nativeMode) nativeVolumeApply(); else if (upnpMode) upnpVolumeApply(); render(); }
+  function toggle() { if (irStation) return toggleRadio(); if (nativeMode) return nativeToggle(); if (upnpMode) return upnpToggle(); const c = cur(); if (!c || c.playable === false) return; const d = active(); if (d.trackIdx !== idx) return start(idx); if (d.el.paused) { ensureGraph(); if (ctx && ctx.state === 'suspended') ctx.resume(); d.el.play().catch(() => {}); } else d.el.pause(); }
+  function seekFrac(f) { if (irStation) return; if (nativeMode) return nativeSeek(f); if (upnpMode) return upnpSeek(f); const len = lenMs(); if (loadedCur() && len) active().el.currentTime = Math.max(0, Math.min(1, f)) * len / 1000; }
+  function setVol(v) { vol = Math.max(0, Math.min(1, v)); applyVol(); if (irEl) irEl.volume = vol; if (nativeMode) nativeVolumeApply(); else if (upnpMode) upnpVolumeApply(); render(); }
 
   function playTracks(tracks, i) { if (!tracks || !tracks.length) return; q = tracks; start(i || 0); }
   function playAlbum(id, i) { fetch('/api/album?id=' + id).then(r => r.json()).then(a => { const tr = (a.tracks || []).map(t => ({ trackId: t.trackId, recording_id: t.recording_id, title: t.title, artist: a.artist, albumId: a.id, length_ms: t.length_ms, playable: t.playable !== 0, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs })); if (!tr.length) { alert('Este álbum aún no tiene pistas en tu biblioteca.'); return; } playTracks(tr, i || 0); }); }
+
+  // ── RADIO POR INTERNET: stream en vivo (sin cola/seek/duración), título "ahora suena" por ICY ──
+  function persistRadio() { try { if (irStation) localStorage.setItem(IRKEY, JSON.stringify({ id: irStation.id, name: irStation.name })); else localStorage.removeItem(IRKEY); } catch (e) {} }
+  function ensureIrEl() { if (!irEl) { irEl = new Audio(); irEl.preload = 'none'; irEl.onplaying = () => { irPlaying = true; renderRadioBar(); }; irEl.onpause = () => { irPlaying = false; renderRadioBar(); }; irEl.onerror = () => { irPlaying = false; renderRadioBar(); }; } return irEl; }
+  function playRadio(st) {
+    if (!st || !st.id) return;
+    try { decks.forEach(d => d.el.pause()); } catch (e) {} playing = false; cancelFade();   // para la cola/decks
+    if (nativeMode) nativeStop(); else if (upnpMode) { try { upnpStop(); } catch (e) {} }
+    const el = ensureIrEl();
+    irStation = { id: st.id, name: st.name, homepage: st.homepage }; irTitle = ''; persistRadio();
+    try { if (el.setSinkId) el.setSinkId(zone.deviceId || '').catch(() => {}); } catch (e) {}
+    el.volume = vol;
+    el.src = '/api/radio/stream?id=' + st.id + '&t=' + Date.now();
+    el.play().then(() => { irPlaying = true; renderRadioBar(); }).catch(() => { irPlaying = false; renderRadioBar(); });
+    fetchRadioNow(); if (irPollT) clearInterval(irPollT); irPollT = setInterval(fetchRadioNow, 10000);
+    render();
+  }
+  function toggleRadio() { if (!irStation) return; const el = ensureIrEl(); if (!el.src || el.src.indexOf('/api/radio/stream') < 0) return playRadio(irStation); if (el.paused) { el.play().catch(() => {}); } else el.pause(); }
+  function stopRadio(silent) { if (irPollT) { clearInterval(irPollT); irPollT = null; } if (irEl) { try { irEl.pause(); irEl.removeAttribute('src'); irEl.load(); } catch (e) {} } const was = !!irStation; irStation = null; irTitle = ''; irPlaying = false; persistRadio(); if (was && !silent) render(); }
+  function fetchRadioNow() { if (!irStation) return; fetch('/api/radio/nowplaying?id=' + irStation.id).then(r => r.json()).then(j => { if (j && j.ok && irStation) { if ((j.title || '') !== irTitle) { irTitle = j.title || ''; renderRadioBar(); } } }).catch(() => {}); }
+  function renderRadioBar() {
+    if (!irStation) return; ensureBar(); bar.style.display = 'flex';
+    bar.innerHTML =
+      `<span style="flex:none;width:46px;height:46px;border-radius:8px;background:var(--surface-2);display:inline-flex;align-items:center;justify-content:center;color:var(--text-2)">${ic('radio', 24)}</span>
+       <div style="min-width:120px;max-width:300px"><div style="font-size:14px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(irTitle || 'En directo')}</div>
+         <div style="font-size:12px;color:var(--text-2);display:flex;align-items:center;gap:7px"><span style="display:inline-flex;align-items:center;gap:4px;color:var(--accent);font-weight:700;font-size:10px;letter-spacing:.06em"><span style="width:7px;height:7px;border-radius:50%;background:var(--accent);display:inline-block"></span>EN VIVO</span><span style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(irStation.name)}</span></div></div>
+       <div style="flex:1;display:flex;align-items:center;justify-content:center;gap:20px;color:var(--text)">
+         <span data-act="radiotoggle" style="cursor:pointer;display:inline-flex" title="Play/Pausa">${ic(irPlaying ? 'pause' : 'play', 26)}</span>
+         <span data-act="radiostop" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Parar la radio">${ic('close', 20)}</span>
+       </div>
+       <span data-act="mute" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Silenciar">${ic(volIcon(), 17)}</span>
+       <input data-act="vol" type="range" min="0" max="1" step="0.01" value="${vol}" title="Volumen" style="width:72px;accent-color:var(--accent)">
+       <span data-act="zone" title="Salida / zona" style="cursor:pointer;font-size:12px;color:${nativeMode || upnpMode ? 'var(--accent)' : 'var(--text-2)'};display:inline-flex;align-items:center;gap:5px;max-width:160px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${ic('zone', 16)}<span style="overflow:hidden;text-overflow:ellipsis">${zoneLabel()}</span></span>
+       <a href="radio.html" title="Radio" style="color:var(--text-2);text-decoration:none;display:inline-flex;align-items:center">${ic('radio', 16)}</a>`;
+    emit();
+  }
+  const getRadio = () => ({ station: irStation, title: irTitle, playing: irPlaying });
   // cambia el modo de normalización y lo re-aplica en caliente (navegador o nativo)
   function applyRgMode() { if (nativeMode) { if (playing) nativeVolumeApply(); } else { const d = active(); if (d && d.gain && loadedCur()) setDeckGain(d, cur()); applyVol(); } }
   function setRgMode(m) { if (m !== 'track' && m !== 'album' && m !== 'off') return; if (m !== rgMode) { rgMode = m; persistRg(); applyRgMode(); } renderEqPanel(); }
@@ -675,7 +720,9 @@ window.player = (function () {
     }
     const a = e.target.closest('#nowbar [data-act], #npfs [data-act]'); if (!a) return;
     const k = a.dataset.act;
-    if (k === 'prev') prev();
+    if (k === 'radiotoggle') toggleRadio();
+    else if (k === 'radiostop') stopRadio();
+    else if (k === 'prev') prev();
     else if (k === 'next') next();
     else if (k === 'toggle') toggle();
     else if (k === 'npopen' || k === 'npclose') toggleNpFs();
@@ -706,7 +753,7 @@ window.player = (function () {
   });
 
   // biblioteca en vivo: el servidor avisa por SSE cuando reescanea; las vistas se refrescan
-  try { const es = new EventSource('/api/events'); es.onmessage = e => { try { if (JSON.parse(e.data).type === 'library') document.dispatchEvent(new CustomEvent('escucharrr:changed')); } catch (x) {} }; } catch (e) {}
+  try { const es = new EventSource('/api/events'); es.onmessage = e => { try { const d = JSON.parse(e.data); if (d.type === 'library') document.dispatchEvent(new CustomEvent('escucharrr:changed')); else if (d.type === 'radio' && irStation) fetchRadioNow(); } catch (x) {} }; } catch (e) {}
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { render(); markEqBtn(); }); else { render(); setTimeout(markEqBtn, 0); }
   const getGain = () => (ctx ? masterGain.gain.value * (active().gain ? active().gain.gain.value : 1) : active().el.volume);  // ganancia efectiva (vol × ReplayGain)
@@ -717,5 +764,6 @@ window.player = (function () {
   function getSettings() { return { xfade, rgMode, radio: radioOn, eqOn, eqGains: eqGains.slice(), eqFreqs: EQLAB.slice(), presets: Object.keys(EQPRE), volume: vol, zone: Object.assign({}, zone), nativeMode, upnpMode, upnpName: upnpDevName, peqOn, peqBands: peqBands.slice(), convOn, convFile }; }
 
   return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain, getZone, getAudio, getNative, setNativeMode, setRadio, undo,
-    getSettings, setXfade, setRgMode, setEqEnabled, setEqBand, setPreset, openOutput: toggleZPanel, openEq: toggleEqPanel, openDsp: toggleDspPanel };
+    getSettings, setXfade, setRgMode, setEqEnabled, setEqBand, setPreset, openOutput: toggleZPanel, openEq: toggleEqPanel, openDsp: toggleDspPanel,
+    playRadio, stopRadio, getRadio };
 })();

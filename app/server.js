@@ -4,6 +4,7 @@
 // Sin dependencias (node:http + node:sqlite).
 
 const http = require('node:http');
+const https = require('node:https');
 const { DatabaseSync } = require('node:sqlite');
 const fs = require('fs');
 const path = require('path');
@@ -43,7 +44,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS scrobble_queue (
   CREATE TABLE IF NOT EXISTS tag_item (tag_id INTEGER NOT NULL REFERENCES tag(id) ON DELETE CASCADE, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, created_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (tag_id, subject_type, subject_id));
   CREATE INDEX IF NOT EXISTS ix_tag_item ON tag_item(subject_type, subject_id);
   CREATE TABLE IF NOT EXISTS bookmark (id INTEGER PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
-  CREATE TABLE IF NOT EXISTS dsp_preset (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, state TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));`);
+  CREATE TABLE IF NOT EXISTS dsp_preset (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, state TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
+  CREATE TABLE IF NOT EXISTS radio_station (id INTEGER PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, homepage TEXT, favicon TEXT, created_at TEXT DEFAULT (datetime('now')));`);
 const lyrics = require('../data-layer/lyrics');
 let scrobCfg = null;
 function loadScrobbleCfg() { const p = path.join(__dirname, 'scrobble.json'); try { scrobCfg = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null; } catch (e) { scrobCfg = null; } return scrobCfg; }
@@ -104,6 +106,11 @@ const Q = {
   dspList: db.prepare(`SELECT id, name, state FROM dsp_preset ORDER BY name`),
   dspSave: db.prepare(`INSERT INTO dsp_preset(name, state) VALUES(?, ?) ON CONFLICT(name) DO UPDATE SET state=excluded.state`),
   dspDelete: db.prepare(`DELETE FROM dsp_preset WHERE id=?`),
+  // ── emisoras de radio por internet (stream en vivo + metadatos ICY) ──
+  radioList: db.prepare(`SELECT id, name, url, homepage, favicon FROM radio_station ORDER BY name`),
+  radioGet: db.prepare(`SELECT id, name, url, homepage, favicon FROM radio_station WHERE id=?`),
+  radioAdd: db.prepare(`INSERT INTO radio_station(name, url, homepage, favicon) VALUES(?, ?, ?, ?)`),
+  radioDelete: db.prepare(`DELETE FROM radio_station WHERE id=?`),
   prov: db.prepare(`SELECT field,source,source_ref FROM provenance WHERE subject_type='release_group' AND subject_id=?`),
   editions: db.prepare(`SELECT format,date,country FROM "release" WHERE release_group_id=? ORDER BY date`),
   tracks: db.prepare(`SELECT tr.id trackId, tr.recording_id, m.position disc, tr.position pos, tr.title, tr.length_ms,
@@ -950,6 +957,79 @@ async function handleDsp(req, res, u) {
   } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 
+// ── RADIO POR INTERNET: proxy de stream con lectura de metadatos ICY (SHOUTcast/Icecast) ──
+// RE de Roon: un stream en vivo se modela con `is_live` (sin duración/seek) y el "ahora suena"
+// viene por ICY. El navegador no puede leer ICY de un <audio>, así que el servidor abre el
+// stream con Icy-MetaData:1, extrae StreamTitle, lo QUITA del audio que reenvía, y publica el
+// título por SSE (evento 'radio'). También sirve al motor nativo (ffmpeg lee este proxy).
+const _radioNow = new Map();   // id -> { name, title }
+function radioInfo() { const items = []; for (const [id, v] of _radioNow) items.push({ id, ...v }); return items; }
+function httpGetStream(url, headers, onResponse, onError, maxRedirects = 5) {
+  let u; try { u = new URL(url); } catch (e) { return onError(new Error('URL inválida')); }
+  const mod = u.protocol === 'https:' ? https : http;
+  const req = mod.request(u, { method: 'GET', headers }, upRes => {
+    if ([301, 302, 303, 307, 308].includes(upRes.statusCode) && upRes.headers.location && maxRedirects > 0) {
+      upRes.resume();
+      return httpGetStream(new URL(upRes.headers.location, u).toString(), headers, onResponse, onError, maxRedirects - 1);
+    }
+    onResponse(upRes, req);
+  });
+  req.on('error', onError);
+  req.setTimeout(15000, () => req.destroy(new Error('timeout')));
+  req.end();
+  return req;
+}
+// Separa audio de metadatos ICY: cada metaint bytes de audio, 1 byte de longitud×16, luego
+// "StreamTitle='...';". Llama onAudio(buf) con SOLO el audio y onTitle(str) al cambiar el título.
+function makeIcyParser(metaint, onAudio, onTitle) {
+  let audioLeft = metaint, metaLeft = 0, metaExpect = -1, metaBuf = Buffer.alloc(0), lastTitle = null;
+  return function (chunk) {
+    let i = 0;
+    while (i < chunk.length) {
+      if (metaExpect === 0) { metaExpect = chunk[i] * 16; i++; metaLeft = metaExpect; metaBuf = Buffer.alloc(0); if (metaExpect === 0) { audioLeft = metaint; metaExpect = -1; } continue; }
+      if (metaExpect > 0) {
+        const take = Math.min(metaLeft, chunk.length - i);
+        metaBuf = Buffer.concat([metaBuf, chunk.subarray(i, i + take)]); i += take; metaLeft -= take;
+        if (metaLeft === 0) { const m = /StreamTitle='((?:[^']|\\')*)'/.exec(metaBuf.toString('utf8')); if (m && m[1] !== lastTitle) { lastTitle = m[1]; onTitle(m[1]); } audioLeft = metaint; metaExpect = -1; }
+        continue;
+      }
+      const take = Math.min(audioLeft, chunk.length - i);
+      onAudio(chunk.subarray(i, i + take)); i += take; audioLeft -= take;
+      if (audioLeft === 0) metaExpect = 0;
+    }
+  };
+}
+function radioProxy(req, res, station) {
+  const headers = { 'Icy-MetaData': '1', 'User-Agent': 'escucharrr/0.1', 'Accept': '*/*' };
+  httpGetStream(station.url, headers, (upRes, upReq) => {
+    if (upRes.statusCode >= 400) { res.writeHead(502); return res.end('upstream ' + upRes.statusCode); }
+    const metaint = parseInt(upRes.headers['icy-metaint'], 10) || 0;
+    const ctype = upRes.headers['content-type'] || 'audio/mpeg';
+    res.writeHead(200, { 'Content-Type': ctype, 'Cache-Control': 'no-cache', 'Connection': 'close' });
+    const cur = _radioNow.get(station.id);
+    _radioNow.set(station.id, { name: station.name, title: cur ? cur.title : '' });
+    const setTitle = t => { _radioNow.set(station.id, { name: station.name, title: t }); sseBroadcast('radio'); };
+    if (metaint > 0) { const parse = makeIcyParser(metaint, buf => { try { res.write(buf); } catch (e) {} }, setTitle); upRes.on('data', c => { try { parse(c); } catch (e) {} }); }
+    else upRes.pipe(res, { end: false });
+    upRes.on('end', () => { try { res.end(); } catch (e) {} });
+    upRes.on('error', () => { try { res.end(); } catch (e) {} });
+    const cleanup = () => { try { upReq.destroy(); } catch (e) {} };
+    req.on('close', cleanup); res.on('close', cleanup);
+  }, err => { if (!res.headersSent) res.writeHead(502); try { res.end('error: ' + err.message); } catch (e) {} });
+}
+async function handleRadio(req, res, u) {
+  const sub = u.pathname.slice('/api/radio/'.length);
+  try {
+    if (req.method === 'GET' && sub === 'stations') return sendJSON(res, { ok: true, stations: Q.radioList.all(), now: radioInfo() });
+    if (req.method === 'GET' && sub === 'stream') { const st = Q.radioGet.get(parseInt(u.searchParams.get('id'), 10)); if (!st) { res.writeHead(404); return res.end('{}'); } return radioProxy(req, res, st); }
+    if (req.method === 'GET' && sub === 'nowplaying') { const id = parseInt(u.searchParams.get('id'), 10); const v = _radioNow.get(id); return sendJSON(res, { ok: true, title: v ? v.title : '', name: v ? v.name : '' }); }
+    const body = req.method === 'POST' ? await readBody(req) : {};
+    if (sub === 'station') { const name = String(body.name || '').trim().slice(0, 120); const url = String(body.url || '').trim(); if (!name || !/^https?:\/\//i.test(url)) { res.writeHead(400); return res.end(JSON.stringify({ ok: false, error: 'Nombre y URL http(s) obligatorios' })); } const r = Q.radioAdd.run(name, url, String(body.homepage || '').trim() || null, String(body.favicon || '').trim() || null); return sendJSON(res, { ok: true, id: Number(r.lastInsertRowid), stations: Q.radioList.all() }); }
+    if (sub === 'station/delete') { const id = parseInt(body.id, 10); Q.radioDelete.run(id); _radioNow.delete(id); return sendJSON(res, { ok: true, stations: Q.radioList.all() }); }
+    res.writeHead(404); res.end('{}');
+  } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
+}
+
 http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   if (u.pathname === '/api/events') {
@@ -993,6 +1073,7 @@ http.createServer((req, res) => {
   if (u.pathname.startsWith('/api/spotify/')) return void handleSpotify(req, res, u);
   if (u.pathname === '/api/config' || u.pathname.startsWith('/api/config/')) return void handleConfig(req, res, u);
   if (u.pathname.startsWith('/api/dsp/')) return void handleDsp(req, res, u);
+  if (u.pathname.startsWith('/api/radio/')) return void handleRadio(req, res, u);
   if (u.pathname.startsWith('/api/scrobble/')) return void handleScrobble(req, res, u);
   if (u.pathname === '/api/lyrics') return void getLyrics(parseInt(u.searchParams.get('track'), 10)).then(r => sendJSON(res, r)).catch(() => sendJSON(res, { found: false }));
   if (u.pathname === '/api/playlists' || u.pathname === '/api/playlist' || u.pathname.startsWith('/api/playlist/')) return void handlePlaylists(req, res, u);

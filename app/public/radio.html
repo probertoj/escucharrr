@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — radio</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.addbox{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:16px 0 6px}
+.addbox input{padding:8px 10px}
+.addbox #rname{width:200px} .addbox #rurl{flex:1;min-width:260px} .addbox #rhome{width:180px}
+#rmsg{font-size:12.5px;margin:6px 0 0;display:none}
+.stations{margin-top:18px;display:flex;flex-direction:column;gap:8px}
+.st{display:flex;align-items:center;gap:14px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;background:var(--surface);transition:box-shadow .12s,border-color .12s}
+.st:hover{box-shadow:var(--shadow);border-color:var(--accent-bg)}
+.st.on{border-color:var(--accent);box-shadow:var(--shadow)}
+.st .play{flex:none;width:44px;height:44px;border-radius:50%;background:var(--surface-2);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text);transition:background .12s,color .12s}
+.st .play:hover{background:var(--accent);color:#fff}
+.st.on .play{background:var(--accent);color:#fff}
+.st .meta{flex:1;min-width:0}
+.st .nm{font-weight:600;font-size:15px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.st .sub{font-size:12.5px;color:var(--text-2);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;display:flex;align-items:center;gap:7px;margin-top:2px}
+.live{display:inline-flex;align-items:center;gap:4px;color:var(--accent);font-weight:700;font-size:10px;letter-spacing:.06em}
+.live .dot{width:7px;height:7px;border-radius:50%;background:var(--accent)}
+.st .act{flex:none;display:flex;align-items:center;gap:6px;color:var(--text-2)}
+.st .act a,.st .act span{display:inline-flex;align-items:center;cursor:pointer;padding:5px;border-radius:7px}
+.st .act a:hover,.st .act span:hover{background:var(--surface-2);color:var(--text)}
+.empty{color:var(--text-2);margin-top:20px}
+.hint{color:var(--text-2);font-size:12.5px;margin-top:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Radio</h1>
+  <div class="count" id="count">cargando…</div>
+  <div class="addbox">
+    <input id="rname" placeholder="Nombre de la emisora">
+    <input id="rurl" placeholder="URL del stream (http/https)">
+    <input id="rhome" placeholder="Web (opcional)">
+    <button id="radd">Añadir emisora</button>
+  </div>
+  <div id="rmsg"></div>
+  <div class="hint">Pega la URL directa de un stream (SHOUTcast/Icecast MP3/AAC). El servidor lee los metadatos ICY y muestra qué suena. La radio se reproduce por la salida del navegador.</div>
+  <div class="stations" id="stations"></div>
+</div>
+
+<script>
+const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const ic=(n,s)=>window.icon?window.icon(n,s||18):'';
+let STATIONS=[], NOW={};
+function rmsg(t,ok){const m=document.getElementById('rmsg');m.textContent=t||'';m.style.display=t?'block':'none';m.style.color=ok?'var(--accent)':'#c0392b';if(ok&&t){clearTimeout(rmsg._t);rmsg._t=setTimeout(()=>m.style.display='none',2500);}}
+function playingId(){try{const r=window.player&&window.player.getRadio&&window.player.getRadio();return r&&r.station?r.station.id:null;}catch(e){return null;}}
+function playingTitle(){try{const r=window.player&&window.player.getRadio&&window.player.getRadio();return r?r.title:'';}catch(e){return '';}}
+function render(){
+  const cont=document.getElementById('stations');
+  const curId=playingId();
+  document.getElementById('count').textContent=STATIONS.length?(STATIONS.length+' emisora'+(STATIONS.length>1?'s':'')):'Aún no hay emisoras';
+  if(!STATIONS.length){cont.innerHTML='<div class="empty">Añade tu primera emisora con el formulario de arriba.</div>';return;}
+  cont.innerHTML=STATIONS.map(s=>{
+    const on=s.id===curId;
+    const title=on?(playingTitle()||NOW[s.id]||''):(NOW[s.id]||'');
+    const sub=on
+      ? `<span class="live"><span class="dot"></span>EN VIVO</span><span>${esc(title||'En directo')}</span>`
+      : (title?`<span>${esc(title)}</span>`:`<span>${esc(hostOf(s.url))}</span>`);
+    return `<div class="st${on?' on':''}" data-id="${s.id}">
+      <span class="play" data-act="play" data-id="${s.id}" title="${on?'Reproduciendo':'Reproducir'}">${ic(on?'pause':'play',20)}</span>
+      <div class="meta"><div class="nm">${esc(s.name)}</div><div class="sub">${sub}</div></div>
+      <div class="act">
+        ${s.homepage?`<a href="${esc(s.homepage)}" target="_blank" rel="noopener" title="Web de la emisora">${ic('discover',16)}</a>`:''}
+        <span data-act="del" data-id="${s.id}" title="Quitar emisora">${ic('trash',16)}</span>
+      </div></div>`;
+  }).join('');
+}
+function hostOf(u){try{return new URL(u).host;}catch(e){return u;}}
+function load(){fetch('/api/radio/stations').then(r=>r.json()).then(j=>{if(j&&j.ok){STATIONS=j.stations||[];(j.now||[]).forEach(n=>NOW[n.id]=n.title);render();}}).catch(e=>document.getElementById('count').textContent='error: '+e.message);}
+document.getElementById('stations').addEventListener('click',e=>{
+  const p=e.target.closest('[data-act="play"]');
+  if(p){const s=STATIONS.find(x=>x.id==p.dataset.id);if(!s)return;const curId=playingId();
+    if(s.id===curId){window.player.toggle();}else{window.player.playRadio(s);} setTimeout(render,120);return;}
+  const d=e.target.closest('[data-act="del"]');
+  if(d){const s=STATIONS.find(x=>x.id==d.dataset.id);if(!s)return;if(!confirm('¿Quitar «'+s.name+'»?'))return;
+    if(playingId()===s.id&&window.player.stopRadio)window.player.stopRadio();
+    fetch('/api/radio/station/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:s.id})}).then(r=>r.json()).then(j=>{if(j.ok){STATIONS=j.stations||[];render();}});return;}
+});
+async function addStation(){
+  const name=(document.getElementById('rname').value||'').trim();
+  const url=(document.getElementById('rurl').value||'').trim();
+  const homepage=(document.getElementById('rhome').value||'').trim();
+  if(!name||!url){rmsg('Pon al menos nombre y URL.',false);return;}
+  const b=document.getElementById('radd');b.disabled=true;b.textContent='Añadiendo…';
+  try{const j=await fetch('/api/radio/station',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,url,homepage})}).then(r=>r.json());
+    if(j.ok){STATIONS=j.stations||[];document.getElementById('rname').value='';document.getElementById('rurl').value='';document.getElementById('rhome').value='';rmsg('Emisora añadida.',true);render();}
+    else rmsg('No se pudo añadir: '+(j.error||'error'),false);
+  }catch(e){rmsg('No se pudo contactar con el servidor.',false);}
+  b.disabled=false;b.textContent='Añadir emisora';
+}
+document.getElementById('radd').addEventListener('click',addStation);
+document.getElementById('rurl').addEventListener('keydown',e=>{if(e.key==='Enter')addStation();});
+load();
+document.addEventListener('player:change',render);   // refresca el estado "sonando" al cambiar el player
+try{const es=new EventSource('/api/events');es.onmessage=e=>{try{const d=JSON.parse(e.data);if(d.type==='radio'){fetch('/api/radio/stations').then(r=>r.json()).then(j=>{if(j&&j.ok){(j.now||[]).forEach(n=>NOW[n.id]=n.title);render();}});}}catch(x){}};}catch(e){}
+</script>
+<script src="icons.js" defer></script>
+<script src="nav.js" defer></script>
+<script src="player.js" defer></script>
+</body>
+</html>
