@@ -79,10 +79,13 @@ window.addEventListener('DOMContentLoaded', async () => {
       <span class="s"><b>${lib.tracks||0}</b> pistas</span><span class="s"><b>${lib.files||0}</b> ficheros</span>
       <span class="s"><b>${lib.genres||0}</b> géneros</span><span class="s"><b>${lib.covers||0}</b> carátulas</span>
     </div></div>
-    <div class="row"><div class="lbl"><div class="k">Carpetas vigiladas ${watch.active?'<span class="tag">en vivo</span>':''}</div>
-      <div class="d">${(watch.folders&&watch.folders.length)?watch.folders.map(f=>`<span class="mono">${esc(f)}</span>`).join('<br>'):'ninguna (crea <span class="mono">app/watch.json</span>)'}</div></div></div>
-    ${watch.obsidian?`<div class="row"><div class="lbl"><div class="k">Fuente Obsidian</div><div class="d"><span class="mono">${esc(watch.obsidian.vault)}</span> · carpeta «${esc(watch.obsidian.albumsFolder)}»</div></div></div>`:''}
-    <div class="row"><div class="lbl"><div class="k">Escaneo, metadatos y análisis</div><div class="d">Por ahora desde las herramientas de <span class="mono">data-layer/</span> (scan, enrich, editorial, covers, analyze). El watcher reescanea al vuelo.</div></div></div>
+    <div class="row" style="display:block"><div class="k" style="margin-bottom:8px">Carpetas de música vigiladas <span id="watchlive"></span></div>
+      <div id="cfgfolders" class="d">cargando…</div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><input id="newfolder" placeholder="C:\\Users\\tú\\Music" style="flex:1;min-width:230px"><button id="addfolder">Añadir carpeta</button></div>
+      <div class="d" style="margin-top:6px">Se vigilan en vivo (añadir/quitar ficheros reescanea solo). Metadatos, carátulas, letras y análisis se amplían con las herramientas de <span class="mono">data-layer/</span>.</div></div>
+    <div class="row" style="display:block"><div class="k" style="margin-bottom:8px">Fuente Obsidian <span class="d" style="font-weight:400">(opcional; tus notas mandan)</span></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input id="obsvault" placeholder="ruta del vault" style="flex:1;min-width:220px"><input id="obsfolder" placeholder="carpeta de álbumes" style="width:170px"><button id="saveobs">Guardar</button></div></div>
+    <div class="row"><div class="lbl"><div class="k">Reescanear la biblioteca ahora</div><div class="d" id="rescanstatus">vuelve a escanear las carpetas y la fuente Obsidian</div></div><button id="rescanbtn">Reescanear ahora</button></div>
   </div></div>
 
   <div class="grp"><h2><span class="gi">${window.icon('zone',18)}</span> Audio — salida</h2><div class="body">
@@ -158,6 +161,30 @@ window.addEventListener('DOMContentLoaded', async () => {
   const sq = new URLSearchParams(location.search).get('spotify');
   if (sq === 'ok') { const r = document.getElementById('spotrow'); if (r) r.innerHTML = '¡Conectado! Sincronizando tu biblioteca…'; setTimeout(() => fetch('/api/spotify/status').then(x => x.json()).then(renderSpotify).catch(() => {}), 2500); }
   else if (sq === 'error') { const r = document.getElementById('spotrow'); if (r) r.textContent = 'No se pudo conectar con Spotify. Revisa app/spotify.json y la Redirect URI.'; }
+
+  // ── Biblioteca editable: carpetas vigiladas + Obsidian + reescaneo ──
+  const CFG = { folders: [], obsidian: null };
+  function renderFolders() {
+    const box = document.getElementById('cfgfolders'); if (!box) return;
+    const f = CFG.folders || [];
+    box.innerHTML = f.length ? f.map((p, i) => `<div style="display:flex;align-items:center;gap:8px;padding:4px 0"><span class="mono" style="flex:1;word-break:break-all">${esc(p)}</span><button class="rmfolder" data-i="${i}" title="Quitar carpeta" style="padding:5px 8px;display:inline-flex;align-items:center">${window.icon('close',14)}</button></div>`).join('') : '<span style="color:var(--text-2)">Ninguna todavía. Añade una carpeta abajo.</span>';
+  }
+  function applyWatchLive(active) { const w = document.getElementById('watchlive'); if (w) w.innerHTML = (active && CFG.folders.length) ? '<span class="tag">en vivo</span>' : ''; }
+  async function saveFolders() { try { const r = await fetch('/api/config/folders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folders: CFG.folders }) }).then(x => x.json()); if (r.ok) { CFG.folders = r.folders || []; renderFolders(); applyWatchLive(r.active); } } catch (e) {} }
+  async function loadConfig() {
+    let c = null; try { c = await fetch('/api/config').then(x => x.json()); } catch (e) {}
+    if (!c || !c.ok) return;
+    CFG.folders = c.folders || []; CFG.obsidian = c.obsidian || null;
+    renderFolders(); applyWatchLive(c.active);
+    const v = document.getElementById('obsvault'), af = document.getElementById('obsfolder');
+    if (v && c.obsidian) v.value = c.obsidian.vault || ''; if (af && c.obsidian) af.value = c.obsidian.albumsFolder || '';
+  }
+  loadConfig();
+  document.getElementById('cfgfolders').addEventListener('click', e => { const b = e.target.closest('.rmfolder'); if (b) { CFG.folders.splice(+b.dataset.i, 1); saveFolders(); } });
+  document.getElementById('addfolder').addEventListener('click', () => { const inp = document.getElementById('newfolder'); const p = (inp.value || '').trim(); if (!p) return; CFG.folders.push(p); inp.value = ''; saveFolders(); });
+  document.getElementById('newfolder').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('addfolder').click(); });
+  document.getElementById('saveobs').addEventListener('click', async () => { const vault = (document.getElementById('obsvault').value || '').trim(); const albumsFolder = (document.getElementById('obsfolder').value || '').trim(); const b = document.getElementById('saveobs'); b.disabled = true; b.textContent = 'Guardando…'; try { const r = await fetch('/api/config/obsidian', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vault, albumsFolder }) }).then(x => x.json()); if (r.ok) CFG.obsidian = r.obsidian; } catch (e) {} b.disabled = false; b.textContent = 'Guardar'; });
+  document.getElementById('rescanbtn').addEventListener('click', async () => { const b = document.getElementById('rescanbtn'), st = document.getElementById('rescanstatus'); b.disabled = true; b.textContent = 'Reescaneando…'; st.textContent = 'reescaneando… (puede tardar)'; try { const r = await fetch('/api/config/rescan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ what: ['music', 'vault'] }) }).then(x => x.json()); if (r.ok) { const m = (r.music || []).map(x => x.result).filter(Boolean).join(' · '); st.textContent = 'Listo. ' + (m || '') + (r.vault ? ' · ' + r.vault : ''); } else st.textContent = 'Error: ' + (r.error || ''); } catch (e) { st.textContent = 'Error de red.'; } b.disabled = false; b.textContent = 'Reescanear ahora'; });
 });
 </script>
 </body>

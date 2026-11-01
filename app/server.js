@@ -712,31 +712,86 @@ function settingsInfo() {
 // ── biblioteca en vivo: watcher de carpetas + eventos SSE a la UI ───────────────
 const sseClients = new Set();
 function sseBroadcast(type) { const line = `data: ${JSON.stringify({ type, t: Date.now() })}\n\n`; for (const r of sseClients) { try { r.write(line); } catch (e) {} } }
-function startWatching() {
+const _DL = path.join(__dirname, '..', 'data-layer');
+const _AUD = /\.(flac|wav|mp3|m4a|ogg|opus|aiff?)$/i;
+let _watchers = [];
+// lee app/watch.json + resuelve el config de Obsidian (vault/albumsFolder)
+function watchConfig() {
   const cfgPath = path.join(__dirname, 'watch.json');
-  if (!fs.existsSync(cfgPath)) { console.log('biblioteca en vivo: desactivada (crea app/watch.json a partir de watch.example.json)'); return; }
-  let cfg; try { cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch (e) { console.error('watch.json inválido:', e.message); return; }
-  const music = cfg.music || [];
+  if (!fs.existsSync(cfgPath)) return null;
+  let cfg; try { cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch (e) { return null; }
+  const music = Array.isArray(cfg.music) ? cfg.music : [];
   const obsidianConfig = cfg.obsidianConfig ? path.resolve(__dirname, cfg.obsidianConfig) : null;
-  let vault = null;
-  if (obsidianConfig && fs.existsSync(obsidianConfig)) { try { const oc = JSON.parse(fs.readFileSync(obsidianConfig, 'utf8')); vault = path.resolve(path.dirname(obsidianConfig), oc.vault); } catch (e) {} }
-  const DL = path.join(__dirname, '..', 'data-layer');
-  const pending = new Set(); let timer = null, running = false;
-  const schedule = (kind) => { pending.add(kind); clearTimeout(timer); timer = setTimeout(run, 1500); };   // debounce 1.5 s
-  const spawnIngest = (args) => new Promise(r => { const p = cp.spawn(process.execPath, args, { cwd: DL }); let o = ''; p.stdout.on('data', d => o += d); p.stderr.on('data', d => o += d); p.on('close', () => r(o.trim().split('\n').pop() || '')); });
-  async function run() {
-    if (running) { pending.add('rerun'); return; }
-    running = true; const kinds = new Set(pending); pending.clear();
-    try {
-      if (kinds.has('music')) for (const root of music) console.log('  [watch] música:', await spawnIngest([path.join(DL, 'scan.js'), '--db', DB_PATH, '--root', root]));
-      if (kinds.has('vault') && obsidianConfig) console.log('  [watch] vault:', await spawnIngest([path.join(DL, 'obsidian-sync.js'), '--db', DB_PATH, '--config', obsidianConfig]));
-      sseBroadcast('library');
-    } catch (e) { console.error('  [watch] error:', e.message); }
-    finally { running = false; if (pending.size) { const r = [...pending][0]; pending.delete('rerun'); schedule(r === 'rerun' ? 'music' : r); } }
-  }
-  const AUD = /\.(flac|wav|mp3|m4a|ogg|opus|aiff?)$/i;
-  for (const root of music) if (fs.existsSync(root)) { try { fs.watch(root, { recursive: true }, (ev, f) => { if (!f || AUD.test(f)) schedule('music'); }); console.log('biblioteca en vivo: vigilando música', root); } catch (e) { console.error('no se pudo vigilar', root, e.message); } }
-  if (vault && fs.existsSync(vault)) { try { fs.watch(vault, { recursive: true }, (ev, f) => { if (!f || /\.md$/i.test(f)) schedule('vault'); }); console.log('biblioteca en vivo: vigilando vault', vault); } catch (e) {} }
+  let vault = null, obs = null;
+  if (obsidianConfig && fs.existsSync(obsidianConfig)) { try { obs = JSON.parse(fs.readFileSync(obsidianConfig, 'utf8')); vault = path.resolve(path.dirname(obsidianConfig), obs.vault); } catch (e) {} }
+  return { cfgPath, music, obsidianConfig, vault, obs };
+}
+function _spawnIngest(args) { return new Promise(r => { const p = cp.spawn(process.execPath, args, { cwd: _DL }); let o = ''; p.stdout.on('data', d => o += d); p.stderr.on('data', d => o += d); p.on('close', () => r(o.trim().split('\n').pop() || '')); }); }
+let _ingPending = new Set(), _ingTimer = null, _ingRunning = false;
+function _ingSchedule(kind) { _ingPending.add(kind); clearTimeout(_ingTimer); _ingTimer = setTimeout(_ingRun, 1500); }   // debounce 1.5 s
+async function _ingRun() {
+  if (_ingRunning) { _ingPending.add('rerun'); return; }
+  const c = watchConfig(); if (!c) { _ingPending.clear(); return; }
+  _ingRunning = true; const kinds = new Set(_ingPending); _ingPending.clear();
+  try {
+    if (kinds.has('music')) for (const root of c.music) console.log('  [watch] música:', await _spawnIngest([path.join(_DL, 'scan.js'), '--db', DB_PATH, '--root', root]));
+    if (kinds.has('vault') && c.obsidianConfig) console.log('  [watch] vault:', await _spawnIngest([path.join(_DL, 'obsidian-sync.js'), '--db', DB_PATH, '--config', c.obsidianConfig]));
+    sseBroadcast('library');
+  } catch (e) { console.error('  [watch] error:', e.message); }
+  finally { _ingRunning = false; if (_ingPending.size) { const r = [..._ingPending][0]; _ingPending.delete('rerun'); _ingSchedule(r === 'rerun' ? 'music' : r); } }
+}
+function stopWatching() { for (const w of _watchers) { try { w.close(); } catch (e) {} } _watchers = []; }
+function startWatching() {   // (re)aplica el watcher según la config actual; se puede llamar tras editarla
+  stopWatching();
+  const c = watchConfig();
+  if (!c) { console.log('biblioteca en vivo: desactivada (crea app/watch.json a partir de watch.example.json, o configúrala en Ajustes)'); return; }
+  for (const root of c.music) if (fs.existsSync(root)) { try { _watchers.push(fs.watch(root, { recursive: true }, (ev, f) => { if (!f || _AUD.test(f)) _ingSchedule('music'); })); console.log('biblioteca en vivo: vigilando música', root); } catch (e) { console.error('no se pudo vigilar', root, e.message); } }
+  if (c.vault && fs.existsSync(c.vault)) { try { _watchers.push(fs.watch(c.vault, { recursive: true }, (ev, f) => { if (!f || /\.md$/i.test(f)) _ingSchedule('vault'); })); console.log('biblioteca en vivo: vigilando vault', c.vault); } catch (e) {} }
+}
+async function rescanNow(kinds) {   // reescaneo manual inmediato
+  const c = watchConfig(); if (!c) throw new Error('No hay carpetas configuradas (crea/edita la configuración de Biblioteca).');
+  const out = { music: [], vault: null };
+  if (kinds.includes('music')) for (const root of c.music) out.music.push({ root, result: await _spawnIngest([path.join(_DL, 'scan.js'), '--db', DB_PATH, '--root', root]) });
+  if (kinds.includes('vault') && c.obsidianConfig) out.vault = await _spawnIngest([path.join(_DL, 'obsidian-sync.js'), '--db', DB_PATH, '--config', c.obsidianConfig]);
+  sseBroadcast('library');
+  return out;
+}
+// ── escritura de la config desde la UI (carpetas vigiladas + Obsidian) ──
+function writeWatchFolders(folders) {
+  const cfgPath = path.join(__dirname, 'watch.json');
+  let cfg = {}; try { if (fs.existsSync(cfgPath)) cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch (e) {}
+  const seen = new Set();
+  cfg.music = (folders || []).map(f => String(f || '').trim()).filter(f => f && !seen.has(f) && seen.add(f));
+  if (!cfg.obsidianConfig) cfg.obsidianConfig = './obsidian.json';
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+}
+function writeObsidian(vault, albumsFolder) {
+  const cfgPath = path.join(__dirname, 'watch.json');
+  let wcfg = {}; try { if (fs.existsSync(cfgPath)) wcfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch (e) {}
+  let base = {};   // preserva fields/tierMap del config actual o del ejemplo
+  const curPath = wcfg.obsidianConfig ? path.resolve(__dirname, wcfg.obsidianConfig) : null;
+  try { if (curPath && fs.existsSync(curPath)) base = JSON.parse(fs.readFileSync(curPath, 'utf8')); } catch (e) {}
+  if (!base.fields) { try { base = JSON.parse(fs.readFileSync(path.join(_DL, 'config.example.json'), 'utf8')); } catch (e) {} }
+  base.vault = vault; base.albumsFolder = albumsFolder;
+  fs.writeFileSync(path.join(__dirname, 'obsidian.json'), JSON.stringify(base, null, 2));
+  if (!wcfg.music) wcfg.music = [];
+  wcfg.obsidianConfig = './obsidian.json';
+  fs.writeFileSync(cfgPath, JSON.stringify(wcfg, null, 2));
+}
+function configInfo() {
+  const c = watchConfig();
+  return { active: !!c, folders: (c && c.music) || [], obsidian: (c && c.obs) ? { vault: c.vault, albumsFolder: c.obs.albumsFolder || '' } : null };
+}
+async function handleConfig(req, res, u) {
+  const sub = u.pathname.slice('/api/config'.length).replace(/^\//, '');
+  try {
+    if (req.method === 'GET' && sub === '') return sendJSON(res, { ok: true, ...configInfo() });
+    const body = await readBody(req);
+    if (sub === 'folders') { writeWatchFolders(Array.isArray(body.folders) ? body.folders : []); startWatching(); return sendJSON(res, { ok: true, ...configInfo() }); }
+    if (sub === 'obsidian') { writeObsidian(String(body.vault || '').trim(), String(body.albumsFolder || '').trim()); startWatching(); return sendJSON(res, { ok: true, ...configInfo() }); }
+    if (sub === 'rescan') { const r = await rescanNow(Array.isArray(body.what) ? body.what : ['music', 'vault']); return sendJSON(res, { ok: true, ...r }); }
+    res.writeHead(404); res.end('{}');
+  } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 
 http.createServer((req, res) => {
@@ -780,6 +835,7 @@ http.createServer((req, res) => {
   if (u.pathname.startsWith('/api/native/')) return void handleNative(req, res, u);
   if (u.pathname.startsWith('/api/upnp/')) return void handleUpnp(req, res, u);
   if (u.pathname.startsWith('/api/spotify/')) return void handleSpotify(req, res, u);
+  if (u.pathname === '/api/config' || u.pathname.startsWith('/api/config/')) return void handleConfig(req, res, u);
   if (u.pathname.startsWith('/api/scrobble/')) return void handleScrobble(req, res, u);
   if (u.pathname === '/api/lyrics') return void getLyrics(parseInt(u.searchParams.get('track'), 10)).then(r => sendJSON(res, r)).catch(() => sendJSON(res, { found: false }));
   if (u.pathname === '/api/playlists' || u.pathname === '/api/playlist' || u.pathname.startsWith('/api/playlist/')) return void handlePlaylists(req, res, u);

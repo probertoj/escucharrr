@@ -4,6 +4,7 @@
 *.db-shm
 # config local del watcher (rutas propias de la máquina)
 app/watch.json
+app/obsidian.json
 # credenciales de scrobbling (tokens/claves propias)
 app/scrobble.json
 app/.lastfm-token

@@ -87,7 +87,9 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
   - **Biblioteca en vivo**: con `app/watch.json` (copia de `watch.example.json`), el servidor vigila
     tus carpetas de música y el vault de Obsidian, reescanea/sincroniza al vuelo y refresca la UI por SSE.
     El ciclo está **cerrado**: borrar un fichero o una nota **poda** su pista/álbum del grafo (ver `prune.js`),
-    no solo añadir/actualizar.
+    no solo añadir/actualizar. **Configurable desde Ajustes → Biblioteca** (sin editar ficheros a mano):
+    añadir/quitar carpetas y editar la fuente Obsidian escriben `watch.json`/`app/obsidian.json` y **re-aplican
+    el watcher en vivo** (rutas `/api/config`, `/api/config/{folders,obsidian,rescan}`), con un botón "Reescanear ahora".
   - **Scrobbling local-first** (`data-layer/scrobble.js`): cada escucha que supera el umbral (mitad de la
     pista o 4 min; ≥ 30 s) se encola en SQLite (`scrobble_queue`, instantánea de metadata con MBIDs) y un
     drenador la envía a **Last.fm** y **ListenBrainz** con reintentos + backoff, tolerando estar sin conexión;
