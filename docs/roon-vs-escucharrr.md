@@ -25,7 +25,7 @@ Evidencia RE de las pantallas de Roon (muestra del inventario `.broo`): `albumbr
 | **Tags** de usuario | `tagbrowser/tagdetails` | tags libres + faceta + `tag.html` | ✅ |
 | **Marcadores** (Focus guardado) | bookmarks (Focus/vista guardada) | `/api/bookmarks` + barra de marcadores | ✅ |
 | Búsqueda | `search` global (artistas/álbumes/pistas/compositores/obras) | `/api/search` FTS5 por prefijo (artista/álbum/pista) | 🟡 (falta compositor/obra/tag/playlist en resultados) |
-| **Historial** de escucha | `historybrowser` — qué y cuándo | tabla `play` registra escuchas; **sin pantalla de historial** | 🟡 |
+| **Historial** de escucha | `historybrowser` — qué y cuándo | `history.html` (cronológico, agrupado por día, hora local + zona), `/api/history` | ✅ |
 | Home / Explore / Daily Picks | `home`, `explore`, `dailypicksviewall` | home + discover (sugerencias del propio grafo) | 🟡 (sin "daily picks" editoriales) |
 | Navegador de carpetas/ficheros | `folderbrowser/filebrowser` | — | ❌ (no hace falta: modelo relacional, no de carpetas) |
 
@@ -108,7 +108,7 @@ headroom, DSD output gain, channel mapping, exclusive/integer/event mode, resync
 | Función Roon (RE) | Cómo es en Roon | escucharrr | Veredicto |
 |---|---|---|---|
 | Carpetas vigiladas / importación | `import.broo`, watched folders | `watch.json` + watcher en vivo (reescanea/sincroniza por SSE) | ✅ |
-| **Copia de seguridad / sync** | `backup.broo`, `sync.broo` | — (la BD es un fichero; sin backup/restore en la UI) | 🟡 |
+| **Copia de seguridad / sync** | `backup.broo`, `sync.broo` | Ajustes → Copia de seguridad: VACUUM INTO con timestamp, conserva 12, auto al arrancar, restaurar (reabre la BD en vivo) + descargar, `/api/backup/*` | ✅ (backup/restore; sin sync entre dispositivos) |
 | **Perfiles** (multiusuario) | `profiles.broo` | — (un solo perfil) | ❌ |
 | Cuenta / licencia / nube | SSO + **machine allocation** (asignación de equipos) + heartbeat; Curve25519/HMAC-SHA512 | **nada** — local-first, sin login ni gate | ✅ **(ventaja: "Roon se interrumpe", nosotros no)** |
 | Acceso remoto (ARC) | app propia + relay | — | ❌ |
