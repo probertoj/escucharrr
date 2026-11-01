@@ -70,7 +70,7 @@ headroom, DSD output gain, channel mapping, exclusive/integer/event mode, resync
 | Dither | truncate dither | **TPDF** en la ruta entera | ✅ |
 | **EQ paramétrico** | IIR paramétrico, guardable | **EQ de 7 bandas** (biquad RBJ) fijo | 🟡 (no paramétrico libre ni guardable) |
 | **Convolución / corrección de sala** | `roon_convolution_*` + room_correction | — | ❌ **(hueco)** |
-| **DSD** (reproducir .dsf/.dff, DSD→PCM, SDM) | sí | — (ffmpeg podría, pero no integrado) | ❌ |
+| **DSD** (reproducir .dsf/.dff, DSD→PCM, SDM) | sí | escaneo .dsf/.dff (DSD64/128/256, cabecera DSF) + reproducción: nativo (ffmpeg→PCM→WASAPI) y navegador (transcode a FLAC 88.2k) | ✅ (DSD→PCM; falta SDM/DSD-nativo al DAC y leer tags ID3 del DSF) |
 | **MQA** | core decoder + device support | — | ❌ (propietario; probablemente no lo queramos) |
 | Crossfeed (auriculares) | sí | — | ❌ |
 | Headroom / limitador | sí | límite por pico (peak_dbfs) | 🟡 |
