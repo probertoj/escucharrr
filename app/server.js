@@ -724,6 +724,50 @@ function sseBroadcast(type) { const line = `data: ${JSON.stringify({ type, t: Da
 const _DL = path.join(__dirname, '..', 'data-layer');
 const _AUD = /\.(flac|wav|mp3|m4a|ogg|opus|aiff?)$/i;
 let _watchers = [];
+// ── vigilado por SONDEO para carpetas de red (SMB/UNC): fs.watch recursivo no va en
+// shares de red en Windows, así que esas carpetas se sondean por firma de cambios. ──
+let _pollRoots = new Map();   // root -> última firma
+let _pollTimer = null, _polling = false;
+const POLL_MS = 30000;
+const _fsp = fs.promises;
+function isUnc(p) { return /^\\\\/.test(String(p)) || /^\/\//.test(String(p)); }
+// Firma barata de cambios (nº de audios + Σmtime + Σtamaño), ASÍNCRONA: una carpeta de red
+// grande (NAS) tiene miles de ficheros; un recorrido SÍNCRONO bloquearía el event loop y
+// congelaría el servidor (en el arranque y en cada sondeo). fs.promises cede el control.
+async function pollSignatureAsync(root) {
+  let n = 0, mt = 0, sz = 0;
+  async function walk(dir) {
+    let ents; try { ents = await _fsp.readdir(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of ents) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) await walk(p);
+      else if (_AUD.test(e.name)) { try { const st = await _fsp.stat(p); n++; mt += st.mtimeMs; sz += st.size; } catch (x) {} }
+    }
+  }
+  await walk(root);
+  return n + ':' + Math.round(mt) + ':' + sz;
+}
+function addPoll(root) {   // registra una carpeta para sondeo; el baseline se fija en el 1er tick (no bloquea el arranque)
+  if (!_pollRoots.has(root)) { _pollRoots.set(root, null); console.log('biblioteca en vivo: sondeando (red) ' + root); }
+  startPolling();
+}
+function startPolling() {
+  if (_pollTimer || !_pollRoots.size) return;
+  _pollTimer = setInterval(async () => {
+    if (_polling) return; _polling = true;
+    try {
+      for (const root of _pollRoots.keys()) {
+        if (!fs.existsSync(root)) continue;
+        let sig; try { sig = await pollSignatureAsync(root); } catch (e) { continue; }
+        const prev = _pollRoots.get(root);
+        _pollRoots.set(root, sig);
+        if (prev != null && sig !== prev) { console.log('  [poll] cambio detectado en', root); _ingSchedule('music'); }   // prev=null = fijar baseline sin disparar
+      }
+    } finally { _polling = false; }
+  }, POLL_MS);
+  if (_pollTimer.unref) _pollTimer.unref();
+}
+function stopPolling() { if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; } _pollRoots.clear(); }
 // lee app/watch.json + resuelve el config de Obsidian (vault/albumsFolder)
 function watchConfig() {
   const cfgPath = path.join(__dirname, 'watch.json');
@@ -749,7 +793,7 @@ async function _ingRun() {
   } catch (e) { console.error('  [watch] error:', e.message); }
   finally { _ingRunning = false; if (_ingPending.size) { const r = [..._ingPending][0]; _ingPending.delete('rerun'); _ingSchedule(r === 'rerun' ? 'music' : r); } }
 }
-function stopWatching() { for (const w of _watchers) { try { w.close(); } catch (e) {} } _watchers = []; }
+function stopWatching() { for (const w of _watchers) { try { w.close(); } catch (e) {} } _watchers = []; stopPolling(); }
 // Vigila una carpeta con fs.watch, pero CAPTURA el evento 'error' asíncrono: en rutas de red
 // (UNC/SMB, p. ej. un NAS) el watch recursivo lanza UNKNOWN de forma asíncrona y, sin este
 // handler, tumba el proceso. Si falla, se cierra ese watcher y se avisa — la carpeta SIGUE
@@ -758,7 +802,7 @@ function safeWatch(root, label, onChange) {
   let w;
   try { w = fs.watch(root, { recursive: true }, onChange); }
   catch (e) { console.error('no se pudo vigilar', root, e.code || e.message, '(se escanea a mano)'); return; }
-  w.on('error', e => { console.error('aviso: vigilado en vivo no disponible para', root, '(' + (e.code || e.message) + '; probablemente red/SMB — usa «Reescanear ahora»)'); try { w.close(); } catch (x) {} _watchers = _watchers.filter(x => x !== w); });
+  w.on('error', e => { console.error('aviso: fs.watch falló en', root, '(' + (e.code || e.message) + '); cambio a sondeo'); try { w.close(); } catch (x) {} _watchers = _watchers.filter(x => x !== w); addPoll(root); });
   _watchers.push(w);
   console.log('biblioteca en vivo: vigilando ' + label, root);
 }
@@ -766,8 +810,8 @@ function startWatching() {   // (re)aplica el watcher según la config actual; s
   stopWatching();
   const c = watchConfig();
   if (!c) { console.log('biblioteca en vivo: desactivada (crea app/watch.json a partir de watch.example.json, o configúrala en Ajustes)'); return; }
-  for (const root of c.music) if (fs.existsSync(root)) safeWatch(root, 'música', (ev, f) => { if (!f || _AUD.test(f)) _ingSchedule('music'); });
-  if (c.vault && fs.existsSync(c.vault)) safeWatch(c.vault, 'vault', (ev, f) => { if (!f || /\.md$/i.test(f)) _ingSchedule('vault'); });
+  for (const root of c.music) if (fs.existsSync(root)) { if (isUnc(root)) addPoll(root); else safeWatch(root, 'música', (ev, f) => { if (!f || _AUD.test(f)) _ingSchedule('music'); }); }
+  if (c.vault && fs.existsSync(c.vault)) { if (isUnc(c.vault)) addPoll(c.vault); else safeWatch(c.vault, 'vault', (ev, f) => { if (!f || /\.md$/i.test(f)) _ingSchedule('vault'); }); }
 }
 async function rescanNow(kinds) {   // reescaneo manual inmediato
   const c = watchConfig(); if (!c) throw new Error('No hay carpetas configuradas (crea/edita la configuración de Biblioteca).');
@@ -845,8 +889,8 @@ async function handleConfig(req, res, u) {
     if (req.method === 'GET' && sub === '') return sendJSON(res, { ok: true, ...configInfo() });
     if (sub === 'browse') return void handleBrowse(req, res);
     const body = await readBody(req);
-    if (sub === 'folders') { writeWatchFolders(Array.isArray(body.folders) ? body.folders : []); startWatching(); return sendJSON(res, { ok: true, ...configInfo() }); }
-    if (sub === 'obsidian') { writeObsidian(String(body.vault || '').trim(), String(body.albumsFolder || '').trim()); startWatching(); return sendJSON(res, { ok: true, ...configInfo() }); }
+    if (sub === 'folders') { writeWatchFolders(Array.isArray(body.folders) ? body.folders : []); startWatching(); if (watchConfig() && watchConfig().music.length) _ingSchedule('music'); return sendJSON(res, { ok: true, ...configInfo() }); }
+    if (sub === 'obsidian') { writeObsidian(String(body.vault || '').trim(), String(body.albumsFolder || '').trim()); startWatching(); _ingSchedule('vault'); return sendJSON(res, { ok: true, ...configInfo() }); }
     if (sub === 'rescan') { const r = await rescanNow(Array.isArray(body.what) ? body.what : ['music', 'vault']); return sendJSON(res, { ok: true, ...r }); }
     res.writeHead(404); res.end('{}');
   } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }

@@ -93,11 +93,11 @@ function render(){
 document.addEventListener('click',e=>{
   const fv=e.target.closest('.fv');
   if(fv){if(fv.dataset.rat!==undefined){const v=+fv.dataset.rat;minR=minR===v?null:v;}
-    else{const a=active[fv.dataset.k],v=fv.dataset.v,i=a.indexOf(v);i<0?a.push(v):a.splice(i,1);}render();return;}
+    else{const a=active[fv.dataset.k];if(a){const v=fv.dataset.v,i=a.indexOf(v);i<0?a.push(v):a.splice(i,1);}}render();return;}
   const ch=e.target.closest('.chip');
   if(ch){if(ch.dataset.clear){for(const k in active)active[k]=[];minR=null;}
     else if(ch.dataset.ck==='rat')minR=null;
-    else{const a=active[ch.dataset.ck],i=a.indexOf(ch.dataset.cv);if(i>=0)a.splice(i,1);}render();return;}
+    else{const a=active[ch.dataset.ck];if(a){const i=a.indexOf(ch.dataset.cv);if(i>=0)a.splice(i,1);}}render();return;}
 });
 focusbtn.onclick=()=>{focus.hidden=!focus.hidden;focusbtn.textContent=(focus.hidden?'▸':'▾')+' Focus';};
 sort.onchange=render; filter.oninput=()=>{txt=filter.value.toLowerCase().trim();render();};
