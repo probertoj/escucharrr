@@ -8,18 +8,18 @@
 <style>
 nav.top{display:flex;gap:16px;font-size:14px;margin-bottom:16px}
 nav.top a{color:var(--text-2)} nav.top a.on{color:var(--text);font-weight:600}
-.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin:14px 0 24px}
-.metric{background:var(--surface-2);border-radius:12px;padding:14px 16px}
-.metric .v{font-size:26px;font-weight:600;line-height:1.1}
-.metric .l{font-size:12px;color:var(--text-2)}
-.row{display:flex;gap:12px;overflow-x:auto;padding-bottom:6px}
-.row .card{flex:none;width:130px}
-.tierbar{display:flex;align-items:center;gap:10px;margin:7px 0}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:14px;margin:16px 0 26px}
+.metric{background:var(--surface-2);border:1px solid var(--border);border-radius:13px;padding:16px 18px}
+.metric .v{font-family:var(--serif);font-size:30px;font-weight:600;line-height:1.05;letter-spacing:-.01em}
+.metric .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:3px}
+.row{display:flex;gap:16px;overflow-x:auto;padding-bottom:6px}
+.row .card{flex:none;width:136px}
+.tierbar{display:flex;align-items:center;gap:10px;margin:8px 0}
 .tierbar .lab{width:48px;font-size:13px}
-.tierbar .track{flex:1;height:10px;background:var(--surface-2);border-radius:999px;overflow:hidden}
-.tierbar .n{width:28px;text-align:right;color:var(--text-2);font-size:13px}
+.tierbar .track{flex:1;height:9px;background:var(--surface-2);border-radius:999px;overflow:hidden}
+.tierbar .n{width:28px;text-align:right;color:var(--text-2);font-size:13px;font-variant-numeric:tabular-nums}
 .two{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px;align-items:start}
-.note{background:var(--surface-2);border-radius:12px;padding:14px 16px;color:var(--text-2);font-size:14px}
+.note{background:var(--surface-2);border-radius:13px;padding:15px 18px;color:var(--text-2);font-size:14px;line-height:1.55}
 </style>
 </head>
 <body>
