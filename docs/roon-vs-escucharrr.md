@@ -21,7 +21,7 @@ Evidencia RE de las pantallas de Roon (muestra del inventario `.broo`): `albumbr
 | Función Roon (RE) | Cómo es en Roon | escucharrr | Veredicto |
 |---|---|---|---|
 | Navegadores de álbum/artista/pista/género | `albumbrowser`, `artistbrowser`, `trackbrowser`, `genrebrowser` | páginas album/artist/genre/library | ✅ |
-| **Focus** (facetas) | `focus.broo` — facetas combinables, guardables | Focus por tier/género/etiqueta/década/tipo/formato/valoración | ✅ (menos facetas que Roon, que añade "grabado en", sello, forma…) |
+| **Focus** (facetas) | `focus.broo` — facetas combinables, incluir/excluir, guardables | Focus con incluir/excluir por tier/género/formato/década/tipo/etiqueta/favoritos/escuchar-más-tarde/audio-local/reproducido/valoración | ✅ (incluir/excluir como Roon; faltan sello/compositor/inspector técnico) |
 | **Tags** de usuario | `tagbrowser/tagdetails` | tags libres + faceta + `tag.html` | ✅ |
 | **Marcadores** (Focus guardado) | bookmarks (Focus/vista guardada) | `/api/bookmarks` + barra de marcadores | ✅ |
 | Búsqueda | `search` global (artistas/álbumes/pistas/compositores/obras) | `/api/search` FTS5 por prefijo (artista/álbum/pista) | 🟡 (falta compositor/obra/tag/playlist en resultados) |

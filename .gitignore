@@ -17,6 +17,9 @@ app/cache/
 app/impulses/
 # copias de seguridad de la BD (locales)
 app/backups/
+# artefactos de recuperación (BD renombrada tras una corrupción)
+app/*.corrupt-*
+app/*.bak-*
 # node
 node_modules/
 # artefactos de compilación del motor nativo (el código fuente sí se versiona)
