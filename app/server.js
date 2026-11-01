@@ -782,10 +782,47 @@ function configInfo() {
   const c = watchConfig();
   return { active: !!c, folders: (c && c.music) || [], obsidian: (c && c.obs) ? { vault: c.vault, albumsFolder: c.obs.albumsFolder || '' } : null };
 }
+// Diálogo NATIVO de selección de carpeta de Windows (standalone en Win11): el servidor
+// corre en la máquina del usuario, así que abre un FolderBrowserDialog del Explorador y
+// devuelve la RUTA ABSOLUTA real (la File System Access API del navegador no da la ruta de disco).
+function pickFolder(opts = {}) {
+  return new Promise(resolve => {
+    if (process.platform !== 'win32') return resolve({ ok: false, error: 'El selector nativo de carpeta solo está disponible en Windows.' });
+    const ps = [
+      '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+      'Add-Type -AssemblyName System.Windows.Forms | Out-Null',
+      '$owner = New-Object System.Windows.Forms.Form',
+      '$owner.TopMost = $true; $owner.ShowInTaskbar = $false; $owner.Opacity = 0; $owner.Show() | Out-Null; $owner.Activate()',
+      '$d = New-Object System.Windows.Forms.FolderBrowserDialog',
+      '$d.Description = $env:ESC_DESC; $d.ShowNewFolderButton = $true',
+      'if ($env:ESC_INIT) { try { $d.SelectedPath = $env:ESC_INIT } catch {} }',
+      '$r = $d.ShowDialog($owner); $owner.Close()',
+      "if ($r -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.SelectedPath) }",
+    ].join('\n');
+    const env = Object.assign({}, process.env, {
+      ESC_DESC: String(opts.desc || 'Elige una carpeta'),
+      ESC_INIT: String(opts.init || ''),
+    });
+    let out = '', done = false;
+    const finish = v => { if (!done) { done = true; resolve(v); } };
+    try {
+      const p = cp.spawn('powershell.exe', ['-NoProfile', '-STA', '-WindowStyle', 'Hidden', '-Command', ps], { env, windowsHide: true });
+      p.stdout.on('data', d => { out += d.toString('utf8'); });
+      p.on('error', e => finish({ ok: false, error: String(e.message) }));
+      p.on('close', () => { const sel = out.trim(); finish({ ok: true, path: sel, cancelled: !sel }); });
+    } catch (e) { finish({ ok: false, error: String(e.message) }); }
+  });
+}
+async function handleBrowse(req, res) {
+  const body = await readBody(req);
+  const r = await pickFolder({ desc: body.desc, init: body.init });
+  return sendJSON(res, r);
+}
 async function handleConfig(req, res, u) {
   const sub = u.pathname.slice('/api/config'.length).replace(/^\//, '');
   try {
     if (req.method === 'GET' && sub === '') return sendJSON(res, { ok: true, ...configInfo() });
+    if (sub === 'browse') return void handleBrowse(req, res);
     const body = await readBody(req);
     if (sub === 'folders') { writeWatchFolders(Array.isArray(body.folders) ? body.folders : []); startWatching(); return sendJSON(res, { ok: true, ...configInfo() }); }
     if (sub === 'obsidian') { writeObsidian(String(body.vault || '').trim(), String(body.albumsFolder || '').trim()); startWatching(); return sendJSON(res, { ok: true, ...configInfo() }); }

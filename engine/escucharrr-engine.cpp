@@ -37,6 +37,7 @@
 #include <fcntl.h>
 #include <string>
 #include <vector>
+#include <deque>
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "avrt.lib")
