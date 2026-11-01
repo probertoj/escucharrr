@@ -750,12 +750,24 @@ async function _ingRun() {
   finally { _ingRunning = false; if (_ingPending.size) { const r = [..._ingPending][0]; _ingPending.delete('rerun'); _ingSchedule(r === 'rerun' ? 'music' : r); } }
 }
 function stopWatching() { for (const w of _watchers) { try { w.close(); } catch (e) {} } _watchers = []; }
+// Vigila una carpeta con fs.watch, pero CAPTURA el evento 'error' asíncrono: en rutas de red
+// (UNC/SMB, p. ej. un NAS) el watch recursivo lanza UNKNOWN de forma asíncrona y, sin este
+// handler, tumba el proceso. Si falla, se cierra ese watcher y se avisa — la carpeta SIGUE
+// escaneándose a mano ("Reescanear ahora") aunque el vigilado en vivo no funcione ahí.
+function safeWatch(root, label, onChange) {
+  let w;
+  try { w = fs.watch(root, { recursive: true }, onChange); }
+  catch (e) { console.error('no se pudo vigilar', root, e.code || e.message, '(se escanea a mano)'); return; }
+  w.on('error', e => { console.error('aviso: vigilado en vivo no disponible para', root, '(' + (e.code || e.message) + '; probablemente red/SMB — usa «Reescanear ahora»)'); try { w.close(); } catch (x) {} _watchers = _watchers.filter(x => x !== w); });
+  _watchers.push(w);
+  console.log('biblioteca en vivo: vigilando ' + label, root);
+}
 function startWatching() {   // (re)aplica el watcher según la config actual; se puede llamar tras editarla
   stopWatching();
   const c = watchConfig();
   if (!c) { console.log('biblioteca en vivo: desactivada (crea app/watch.json a partir de watch.example.json, o configúrala en Ajustes)'); return; }
-  for (const root of c.music) if (fs.existsSync(root)) { try { _watchers.push(fs.watch(root, { recursive: true }, (ev, f) => { if (!f || _AUD.test(f)) _ingSchedule('music'); })); console.log('biblioteca en vivo: vigilando música', root); } catch (e) { console.error('no se pudo vigilar', root, e.message); } }
-  if (c.vault && fs.existsSync(c.vault)) { try { _watchers.push(fs.watch(c.vault, { recursive: true }, (ev, f) => { if (!f || /\.md$/i.test(f)) _ingSchedule('vault'); })); console.log('biblioteca en vivo: vigilando vault', c.vault); } catch (e) {} }
+  for (const root of c.music) if (fs.existsSync(root)) safeWatch(root, 'música', (ev, f) => { if (!f || _AUD.test(f)) _ingSchedule('music'); });
+  if (c.vault && fs.existsSync(c.vault)) safeWatch(c.vault, 'vault', (ev, f) => { if (!f || /\.md$/i.test(f)) _ingSchedule('vault'); });
 }
 async function rescanNow(kinds) {   // reescaneo manual inmediato
   const c = watchConfig(); if (!c) throw new Error('No hay carpetas configuradas (crea/edita la configuración de Biblioteca).');
