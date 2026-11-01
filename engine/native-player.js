@@ -46,7 +46,9 @@ class NativePlayer extends EventEmitter {
     this._server = null;      // servidor del named pipe de PCM
     this._sock = null;        // socket conectado (el motor como cliente)
     this._ffExpectEnd = false;// true = el fin de ffmpeg es esperado (seek/stop), no fin de pista
-    this._eq = { on: false, gains: [0, 0, 0, 0, 0, 0, 0] };   // ecualizador (se reenvía al motor en cada play)
+    this._eq = { on: false, gains: [0, 0, 0, 0, 0, 0, 0] };   // ecualizador gráfico (se reenvía al motor en cada play)
+    this._peq = { on: false, bands: [] };     // EQ paramétrico: [{type,freq,q,gain}] (se reenvía en cada play)
+    this._conv = { on: false, path: '' };     // convolución: ruta del impulso WAV (se reenvía en cada play)
     this._state = {
       playing: false, paused: false, file: null, deviceId: null,
       exclusive: false, gainDb: 0, baseOffset: 0, startedAt: 0,
@@ -102,8 +104,17 @@ class NativePlayer extends EventEmitter {
 
   _writeCtl(obj) { try { if (this._eng && this._eng.stdin.writable) this._eng.stdin.write(JSON.stringify(obj) + '\n'); } catch (e) {} }
   _sendEq() { this._writeCtl({ cmd: 'eq', on: !!this._eq.on, g: this._eq.gains }); }
+  // formato de banda paramétrica → cuaternas [type,freq,q,gain] (el motor parsea arrays de números)
+  _peqWire() { return (this._peq.bands || []).slice(0, 16).map(b => [b.type | 0, +b.freq || 1000, +b.q || 1, +b.gain || 0]); }
+  _sendPeq() { this._writeCtl({ cmd: 'peq', on: !!this._peq.on, b: this._peqWire() }); }
+  _sendConv() { this._writeCtl({ cmd: 'conv', on: !!this._conv.on, path: this._conv.path || '' }); }
+  _sendDsp() { this._sendEq(); this._sendPeq(); this._sendConv(); }
   // ecualizador de 7 bandas en el motor (en vivo si hay motor; se reenvía en cada play)
   setEq(on, gains) { this._eq = { on: !!on, gains: (gains || this._eq.gains).slice(0, 7) }; if (this._eng) this._sendEq(); return this.state; }
+  // EQ paramétrico (bandas configurables); en vivo si hay motor
+  setPeq(on, bands) { this._peq = { on: !!on, bands: Array.isArray(bands) ? bands.slice(0, 16) : this._peq.bands }; if (this._eng) this._sendPeq(); return this.state; }
+  // convolución: cargar/activar un impulso WAV; cargar uno nuevo lo resamplea a la tasa de salida
+  setConv(on, convPath) { this._conv = { on: !!on, path: convPath != null ? convPath : this._conv.path }; if (this._eng) this._sendConv(); return this.state; }
 
   _teardown() {
     clearTimeout(this._endTimer);
@@ -136,6 +147,8 @@ class NativePlayer extends EventEmitter {
     const gainDb = opts.gainDb != null ? opts.gainDb : this._state.gainDb;
     const offset = opts.seekSec || 0;
     if (opts.eq) this._eq = { on: !!opts.eq.on, gains: (opts.eq.gains || this._eq.gains).slice(0, 7) };
+    if (opts.peq) this._peq = { on: !!opts.peq.on, bands: Array.isArray(opts.peq.bands) ? opts.peq.bands.slice(0, 16) : this._peq.bands };
+    if (opts.conv) this._conv = { on: !!opts.conv.on, path: opts.conv.path != null ? opts.conv.path : this._conv.path };
 
     const probe = this._probe(file);               // rate/canales nativos + duración
     const inRate = probe.rate || 48000;            // tasa NATIVA del fichero (ffmpeg solo decodifica a ella)
@@ -155,6 +168,8 @@ class NativePlayer extends EventEmitter {
       this._writeCtl({ cmd: 'flush' });
       if (inRate !== this._state.inRate) this._writeCtl({ cmd: 'inrate', v: inRate });   // nueva pista con otra tasa: reconfigura el resampler
       if (opts.eq) this._sendEq();
+      if (opts.peq) this._sendPeq();
+      if (opts.conv) this._sendConv();
       this._writeCtl({ cmd: 'gain', v: dbToLinear(gainDb) });   // ReplayGain de la nueva pista, en vivo
       this._ff = this._spawnFfmpeg(file, offset, inRate, ch);
       Object.assign(this._state, { playing: true, paused: false, file, gainDb, baseOffset: offset, startedAt: Date.now(), durationSec: probe.duration || 0, inRate, resampling: inRate !== rate });
@@ -180,7 +195,7 @@ class NativePlayer extends EventEmitter {
     eng.on('error', e => this.emit('error', e));
     eng.stdin.on('error', () => {});
     lineReader(eng.stdout, o => {
-      if (o.event === 'started') { Object.assign(this._state, { device: o.device, mode: o.mode, bitPerfect: o.bitPerfect, live: o.live, resampling: !!o.resampling, outFormat: o.outFormat || null, taps: o.taps || 0, inRate: o.inRate || inRate }); this._sendEq(); }
+      if (o.event === 'started') { Object.assign(this._state, { device: o.device, mode: o.mode, bitPerfect: o.bitPerfect, live: o.live, resampling: !!o.resampling, outFormat: o.outFormat || null, taps: o.taps || 0, inRate: o.inRate || inRate }); this._sendDsp(); }
       else if (o.event === 'error' || o.event === 'notice') this.emit('engine', o);
     });
     eng.on('close', () => { if (this._eng === eng) { this._state.playing = false; this._state.live = false; } });

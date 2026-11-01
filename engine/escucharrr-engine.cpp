@@ -38,6 +38,7 @@
 #include <string>
 #include <vector>
 #include <deque>
+#include <algorithm>
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "avrt.lib")
@@ -274,6 +275,166 @@ static void eq_coeffs(Biquad& bq, int band, double gainDb, double Fs) {
     bq.a1 = (float)(a1 / a0); bq.a2 = (float)(a2 / a0);
 }
 
+// ── EQ PARAMÉTRICO: bandas configurables (tipo / frecuencia / Q / ganancia) ──
+// Segunda etapa de EQ, independiente del gráfico de 7 bandas de arriba: aquí cada
+// banda define su tipo y parámetros (como el EQ paramétrico de Roon). Tipos:
+// 0 peak, 1 lowshelf, 2 highshelf, 3 lowpass, 4 highpass, 5 notch.
+static const int PEQ_MAX = 16;
+struct PBand { int type; double freq, q, gain; };
+static CRITICAL_SECTION g_peqCs;            // protege g_peqReq / g_peqNReq
+static PBand g_peqReq[PEQ_MAX];
+static int   g_peqNReq = 0;
+static volatile long g_peqOn = 0;
+static volatile long g_peqDirty = 0;        // 1 = recalcular coeficientes en el hilo de audio
+// Coeficientes RBJ genéricos para cualquier tipo de banda (normalizados por a0).
+static void pbiquad_coeffs(Biquad& bq, int type, double freq, double Q, double gainDb, double Fs) {
+    if (freq <= 0) freq = 1.0; if (freq >= Fs / 2) freq = Fs / 2 - 1.0; if (Q <= 0) Q = 0.707;
+    double A = pow(10.0, gainDb / 40.0);
+    double w0 = 2.0 * M_PI * freq / Fs, cw = cos(w0), sw = sin(w0);
+    double alpha = sw / (2.0 * Q);
+    double b0, b1, b2, a0, a1, a2;
+    switch (type) {
+        case 1: {                                                   // lowshelf (S=1)
+            double tsa = 2.0 * sqrt(A) * (sw / 2.0 * sqrt(2.0));
+            b0 = A * ((A + 1) - (A - 1) * cw + tsa);  b1 = 2 * A * ((A - 1) - (A + 1) * cw);  b2 = A * ((A + 1) - (A - 1) * cw - tsa);
+            a0 = (A + 1) + (A - 1) * cw + tsa;        a1 = -2 * ((A - 1) + (A + 1) * cw);     a2 = (A + 1) + (A - 1) * cw - tsa; break; }
+        case 2: {                                                   // highshelf (S=1)
+            double tsa = 2.0 * sqrt(A) * (sw / 2.0 * sqrt(2.0));
+            b0 = A * ((A + 1) + (A - 1) * cw + tsa);  b1 = -2 * A * ((A - 1) + (A + 1) * cw); b2 = A * ((A + 1) + (A - 1) * cw - tsa);
+            a0 = (A + 1) - (A - 1) * cw + tsa;        a1 = 2 * ((A - 1) - (A + 1) * cw);      a2 = (A + 1) - (A - 1) * cw - tsa; break; }
+        case 3: {                                                   // lowpass
+            b0 = (1 - cw) / 2; b1 = 1 - cw; b2 = (1 - cw) / 2; a0 = 1 + alpha; a1 = -2 * cw; a2 = 1 - alpha; break; }
+        case 4: {                                                   // highpass
+            b0 = (1 + cw) / 2; b1 = -(1 + cw); b2 = (1 + cw) / 2; a0 = 1 + alpha; a1 = -2 * cw; a2 = 1 - alpha; break; }
+        case 5: {                                                   // notch
+            b0 = 1; b1 = -2 * cw; b2 = 1; a0 = 1 + alpha; a1 = -2 * cw; a2 = 1 - alpha; break; }
+        default: {                                                  // peaking
+            b0 = 1 + alpha * A; b1 = -2 * cw; b2 = 1 - alpha * A; a0 = 1 + alpha / A; a1 = -2 * cw; a2 = 1 - alpha / A; break; }
+    }
+    bq.b0 = (float)(b0 / a0); bq.b1 = (float)(b1 / a0); bq.b2 = (float)(b2 / a0);
+    bq.a1 = (float)(a1 / a0); bq.a2 = (float)(a2 / a0);
+}
+
+// ── CONVOLUCIÓN (FFT overlap-add): carga un impulso WAV y lo convoluciona en vivo ──
+// Es la convolución estilo Roon (room correction / cabezal de altavoz). FFT radix-2
+// propia (sin libs). La IR se resamplea a la tasa de salida si hace falta; el nodo
+// mantiene una FIFO interna por canal, así que introduce ~B muestras de latencia.
+struct Cpx { double re, im; };
+static void fft(std::vector<Cpx>& a, bool inv) {
+    size_t n = a.size();
+    for (size_t i = 1, j = 0; i < n; i++) {
+        size_t bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) { Cpx t = a[i]; a[i] = a[j]; a[j] = t; }
+    }
+    for (size_t len = 2; len <= n; len <<= 1) {
+        double ang = 2.0 * M_PI / (double)len * (inv ? 1.0 : -1.0);
+        Cpx wl{ cos(ang), sin(ang) };
+        for (size_t i = 0; i < n; i += len) {
+            Cpx w{ 1.0, 0.0 };
+            for (size_t k = 0; k < len / 2; k++) {
+                Cpx u = a[i + k];
+                Cpx& b = a[i + k + len / 2];
+                Cpx v{ b.re * w.re - b.im * w.im, b.re * w.im + b.im * w.re };
+                a[i + k] = { u.re + v.re, u.im + v.im };
+                b = { u.re - v.re, u.im - v.im };
+                Cpx nw{ w.re * wl.re - w.im * wl.im, w.re * wl.im + w.im * wl.re };
+                w = nw;
+            }
+        }
+    }
+    if (inv) { double invn = 1.0 / (double)n; for (auto& x : a) { x.re *= invn; x.im *= invn; } }
+}
+struct Convolver {
+    int ch = 0; size_t B = 0, N = 0, L = 0;              // bloque / tamaño FFT / longitud IR
+    std::vector<std::vector<Cpx>> H;                     // espectro de la IR por canal (tamaño N)
+    std::vector<std::vector<float>> acc;                 // acumulador de entrada por canal (hasta B)
+    std::vector<size_t> accN;
+    std::vector<std::vector<float>> carry;               // cola de solape por canal (longitud L-1)
+    std::vector<std::deque<float>> out;                  // salida lista por canal
+    Convolver(const std::vector<std::vector<float>>& ir, int channels, size_t block) {
+        ch = channels; L = 0; for (auto& c : ir) L = (c.size() > L ? c.size() : L);
+        if (L == 0) L = 1;
+        B = block; N = 1; while (N < B + L - 1) N <<= 1;
+        H.resize(ch); acc.assign(ch, std::vector<float>(B, 0.0f)); accN.assign(ch, 0);
+        carry.assign(ch, std::vector<float>(L > 0 ? L - 1 : 0, 0.0f)); out.resize(ch);
+        for (int c = 0; c < ch; c++) {
+            const std::vector<float>& src = ir[ir.size() == 1 ? 0 : (c < (int)ir.size() ? c : (int)ir.size() - 1)];
+            std::vector<Cpx> h(N, { 0,0 });
+            for (size_t i = 0; i < src.size() && i < N; i++) h[i].re = src[i];
+            fft(h, false); H[c] = std::move(h);
+        }
+    }
+    void reset() { for (int c = 0; c < ch; c++) { accN[c] = 0; std::fill(acc[c].begin(), acc[c].end(), 0.0f); std::fill(carry[c].begin(), carry[c].end(), 0.0f); out[c].clear(); } }
+    void block(int c) {                                  // convoluciona un bloque de B muestras del canal c
+        std::vector<Cpx> x(N, { 0,0 });
+        for (size_t i = 0; i < B; i++) x[i].re = acc[c][i];
+        fft(x, false);
+        for (size_t i = 0; i < N; i++) { double re = x[i].re * H[c][i].re - x[i].im * H[c][i].im; double im = x[i].re * H[c][i].im + x[i].im * H[c][i].re; x[i] = { re, im }; }
+        fft(x, true);
+        size_t tail = (L > 0 ? L - 1 : 0);
+        for (size_t i = 0; i < tail; i++) x[i].re += carry[c][i];          // solapa la cola previa
+        for (size_t i = 0; i < B; i++) out[c].push_back((float)x[i].re);   // emite B muestras
+        for (size_t i = 0; i < tail; i++) carry[c][i] = (float)x[B + i].re;// nueva cola
+    }
+    void process(float* buf, size_t frames) {            // in-place, interleaved (ch canales)
+        for (size_t i = 0; i < frames; i++)
+            for (int c = 0; c < ch; c++) {
+                acc[c][accN[c]++] = buf[i * ch + c];
+                if (accN[c] == B) { this->block(c); accN[c] = 0; }
+                if (!out[c].empty()) { buf[i * ch + c] = out[c].front(); out[c].pop_front(); }
+                else buf[i * ch + c] = 0.0f;              // latencia inicial (~B muestras)
+            }
+    }
+};
+static CRITICAL_SECTION g_convCs;           // protege g_conv / g_convNew
+static Convolver* g_conv = nullptr;
+static Convolver* g_convNew = nullptr;      // el hilo de control lo prepara; el de audio lo adopta
+static volatile long g_convOn = 0;
+static volatile long g_convSwap = 0;        // 1 = adoptar g_convNew / limpiar
+static volatile long g_convReset = 0;       // 1 = limpiar la cola de solape (seek)
+static unsigned g_outRate = 48000;          // tasa de salida (para resamplear la IR)
+static int      g_outChannels = 2;
+
+// Lee un WAV (PCM 16/24/32 entero o float32) a float por canal. Devuelve false si falla.
+static bool load_wav(const std::wstring& path, std::vector<std::vector<float>>& chans, unsigned& rate) {
+    FILE* f = _wfopen(path.c_str(), L"rb"); if (!f) return false;
+    auto rd = [&](void* p, size_t n) { return fread(p, 1, n, f) == n; };
+    char riff[4], wave[4]; unsigned riffSize = 0;
+    if (!rd(riff, 4) || !rd(&riffSize, 4) || !rd(wave, 4) || memcmp(riff, "RIFF", 4) || memcmp(wave, "WAVE", 4)) { fclose(f); return false; }
+    unsigned short fmt = 0, nch = 0, bits = 0; unsigned sr = 0; bool haveFmt = false;
+    std::vector<unsigned char> data;
+    for (;;) {
+        char id[4]; unsigned sz = 0;
+        if (!rd(id, 4) || !rd(&sz, 4)) break;
+        if (!memcmp(id, "fmt ", 4)) {
+            std::vector<unsigned char> fb(sz); if (!rd(fb.data(), sz)) break;
+            fmt = *(unsigned short*)&fb[0]; nch = *(unsigned short*)&fb[2]; sr = *(unsigned*)&fb[4]; bits = *(unsigned short*)&fb[14];
+            if (fmt == 0xFFFE && sz >= 26) { fmt = *(unsigned short*)&fb[24]; }   // EXTENSIBLE: subformato (1=PCM, 3=float)
+            haveFmt = true;
+        } else if (!memcmp(id, "data", 4)) {
+            data.resize(sz); if (fread(data.data(), 1, sz, f) != sz) data.resize(0);
+            break;
+        } else { if (fseek(f, (sz + 1) & ~1u, SEEK_CUR) != 0) break; }   // salta (chunks a word boundary)
+    }
+    fclose(f);
+    if (!haveFmt || !nch || data.empty()) return false;
+    rate = sr; int bytes = bits / 8; size_t frames = data.size() / (bytes * nch);
+    chans.assign(nch, std::vector<float>(frames, 0.0f));
+    for (size_t i = 0; i < frames; i++)
+        for (int c = 0; c < nch; c++) {
+            const unsigned char* p = &data[(i * nch + c) * bytes];
+            float v = 0.0f;
+            if (fmt == 3 && bits == 32) { v = *(const float*)p; }
+            else if (bits == 16) { short s = (short)(p[0] | (p[1] << 8)); v = s / 32768.0f; }
+            else if (bits == 24) { int s = (p[0] | (p[1] << 8) | (p[2] << 16)); if (s & 0x800000) s |= ~0xFFFFFF; v = s / 8388608.0f; }
+            else if (bits == 32) { int s = (int)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24)); v = s / 2147483648.0f; }
+            chans[c][i] = v;
+        }
+    return true;
+}
+
 // ── control de tasa de entrada en vivo (cambio de pista con otro sample rate) ──
 static volatile long g_inRateReq = 0;       // nueva tasa de entrada pedida (Hz)
 static volatile long g_inRateDirty = 0;     // 1 = reconstruir el resampler en el hilo de audio
@@ -366,6 +527,33 @@ struct Resampler {
     }
 };
 
+// Resamplea un canal (offline) de inRate→outRate con el mismo núcleo Kaiser del motor.
+static std::vector<float> resample_channel(const std::vector<float>& x, unsigned inRate, unsigned outRate) {
+    if (inRate == outRate || x.empty()) return x;
+    Resampler rs(1, inRate, outRate, RS_TAPS, RS_BETA);
+    std::vector<float> y; y.reserve((size_t)((double)x.size() * outRate / inRate) + 64);
+    std::vector<float> tmp(4096);
+    size_t pos = 0;
+    while (pos < x.size() || !rs.empty()) {
+        if (pos < x.size()) { size_t blk = x.size() - pos < 4096 ? x.size() - pos : 4096; rs.push(&x[pos], blk); pos += blk; }
+        for (;;) { size_t g = rs.pull(tmp.data(), tmp.size()); if (!g) break; y.insert(y.end(), tmp.begin(), tmp.begin() + g); }
+        if (pos >= x.size() && rs.empty()) break;
+    }
+    return y;
+}
+// Construye un Convolver desde un WAV de impulso, resampleando la IR a outRate si hace falta.
+// maxTaps limita la longitud (coste/latencia); devuelve nullptr si no se pudo cargar.
+static Convolver* build_convolver_from_wav(const std::wstring& path, unsigned outRate, int outCh, size_t maxTaps) {
+    std::vector<std::vector<float>> ir; unsigned irRate = 0;
+    if (!load_wav(path, ir, irRate) || ir.empty()) return nullptr;
+    if (irRate && irRate != outRate) for (auto& c : ir) c = resample_channel(c, irRate, outRate);
+    size_t L = 0; for (auto& c : ir) L = (c.size() > L ? c.size() : L);
+    if (L == 0) return nullptr;
+    if (L > maxTaps) { for (auto& c : ir) if (c.size() > maxTaps) c.resize(maxTaps); L = maxTaps; }
+    size_t block = 4096;                                   // latencia ≈ 85 ms @48k, inaudible para música
+    return new Convolver(ir, outCh, block);
+}
+
 // ── cuantización float→entero con dither TPDF (triangular, 1 LSB pp) ─────────────
 // Ruta de salida en PCM entero (p. ej. WASAPI exclusivo entero). El modo compartido usa
 // float y NO pasa por aquí. Verificado numéricamente en --selftest; la salida entera
@@ -418,6 +606,22 @@ static double rms_of(const std::vector<float>& v, size_t off, size_t len) {
     double s = 0; for (size_t i = 0; i < len; i++) s += (double)v[off + i] * v[off + i];
     return sqrt(s / (len ? len : 1));
 }
+// Ganancia (dB) de una banda paramétrica a una frecuencia de prueba (procesa un tono).
+static double biquad_tone_gain(int type, double freq, double q, double gainDb, double testHz, double Fs) {
+    Biquad bq; pbiquad_coeffs(bq, type, freq, q, gainDb, Fs);
+    size_t N = (size_t)Fs; std::vector<float> y(N);
+    for (size_t i = 0; i < N; i++) { float x = (float)(0.5 * sin(2.0 * M_PI * testHz * i / Fs)); y[i] = bq.process(x); }
+    return 20.0 * log10(goertzel_amp(&y[N / 4], N / 2, testHz, Fs) / 0.5 + 1e-20);
+}
+// Ganancia (dB) de la convolución con una IR de 2 taps [0.5,0.5] (|H|=|cos(pi f/Fs)|).
+static double conv_tone_gain(double testHz, double Fs) {
+    std::vector<std::vector<float>> ir(1, std::vector<float>{ 0.5f, 0.5f });
+    Convolver cv(ir, 1, 4096);
+    size_t N = (size_t)Fs; std::vector<float> buf(N);
+    for (size_t i = 0; i < N; i++) buf[i] = (float)(0.5 * sin(2.0 * M_PI * testHz * i / Fs));
+    cv.process(buf.data(), N);
+    return 20.0 * log10(goertzel_amp(&buf[N / 4], N / 2, testHz, Fs) / 0.5 + 1e-20);
+}
 static int selftest() {
     std::string out = "{\"event\":\"selftest\",\"taps\":" + std::to_string(RS_TAPS) +
                       ",\"beta\":" + std::to_string(RS_BETA) + ",\"resampler\":[";
@@ -456,6 +660,21 @@ static int selftest() {
         float_to_int(x.data(), q.data(), N, 1, 2, 16, true); decode16();
         double dcD = 0; for (size_t i = 0; i < N; i++) dcD += back[i] - x[i]; dcD /= N;
         char b[200]; sprintf_s(b, "{\"truncErrDC\":%.3e,\"ditherErrDC\":%.3e}", dcT, dcD);
+        out += b;
+    }
+    out += ",\"peq\":";
+    {   // EQ paramétrico: peaking +6dB@1k, lowpass@1k (atenúa a 4k), highshelf +6@10k, notch@1k
+        double peak1k = biquad_tone_gain(0, 1000, 1.0, 6.0, 1000, 48000.0);
+        double lp4k   = biquad_tone_gain(3, 1000, 0.707, 0.0, 4000, 48000.0);
+        double hs10k  = biquad_tone_gain(2, 10000, 0.707, 6.0, 16000, 48000.0);
+        double notch  = biquad_tone_gain(5, 1000, 4.0, 0.0, 1000, 48000.0);
+        char b[260]; sprintf_s(b, "{\"peakGainDb@1k\":%.3f,\"lowpassGainDb@4k\":%.3f,\"highshelfGainDb@16k\":%.3f,\"notchGainDb@1k\":%.3f}", peak1k, lp4k, hs10k, notch);
+        out += b;
+    }
+    out += ",\"conv\":";
+    {   // convolución IR=[0.5,0.5]: |H(1k)|≈-0.019 dB, |H(20k)|≈-11.73 dB (promediador de 2 taps)
+        double c1k = conv_tone_gain(1000, 48000.0), c20k = conv_tone_gain(20000, 48000.0);
+        char b[200]; sprintf_s(b, "{\"gainDb@1k\":%.3f,\"gainDb@20k\":%.3f,\"expected@20k\":-11.726}", c1k, c20k);
         out += b;
     }
     out += "}";
@@ -507,10 +726,42 @@ static DWORD WINAPI control_reader(LPVOID) {
             if (g) { g++; EnterCriticalSection(&g_eqCs); for (int k = 0; k < 7; k++) { char* end; double v = strtod(g, &end); if (end == g) break; g_eqGainReq[k] = (float)v; g = end; while (*g == ',' || *g == ' ') g++; } LeaveCriticalSection(&g_eqCs); }
             g_eqDirty = 1;
         }
+        else if (strstr(line, "\"peq\"")) {                 // EQ paramétrico: {"cmd":"peq","on":b,"b":[[type,f,q,g],...]}
+            g_peqOn = (strstr(line, "\"on\":true") || strstr(line, "\"on\":1")) ? 1 : 0;
+            const char* b = strstr(line, "\"b\""); if (b) b = strchr(b, '[');
+            EnterCriticalSection(&g_peqCs);
+            g_peqNReq = 0;
+            if (b) { b++;                                   // dentro del array externo
+                while (*b && g_peqNReq < PEQ_MAX) {
+                    while (*b == ' ' || *b == ',') b++;
+                    if (*b == ']' || !*b) break;
+                    if (*b == '[') { b++; double v[4] = { 0, 0, 1, 0 }; int k = 0; char* end;
+                        while (k < 4) { double d = strtod(b, &end); if (end == b) break; v[k++] = d; b = end; while (*b == ',' || *b == ' ') b++; if (*b == ']') break; }
+                        while (*b && *b != ']') b++; if (*b == ']') b++;
+                        g_peqReq[g_peqNReq++] = PBand{ (int)v[0], v[1], v[2], v[3] };
+                    } else b++;
+                }
+            }
+            LeaveCriticalSection(&g_peqCs);
+            g_peqDirty = 1;
+        }
+        else if (strstr(line, "\"conv\"")) {                // convolución: {"cmd":"conv","on":b,"path":"..."}
+            g_convOn = (strstr(line, "\"on\":true") || strstr(line, "\"on\":1")) ? 1 : 0;
+            const char* p = strstr(line, "\"path\"");
+            if (p) { p = strchr(p, ':'); if (p) { p = strchr(p, '"'); if (p) { p++;
+                std::string raw;
+                while (*p && *p != '"') { if (*p == '\\' && p[1]) { p++; raw += (*p == 'n' ? '\n' : *p); } else raw += *p; p++; }
+                if (!raw.empty()) {
+                    Convolver* nc = build_convolver_from_wav(utf8_to_wide(raw.c_str()), g_outRate, g_outChannels, 1u << 18);
+                    if (nc) { EnterCriticalSection(&g_convCs); Convolver* old = g_convNew; g_convNew = nc; g_convSwap = 1; LeaveCriticalSection(&g_convCs); if (old) delete old; }
+                    else emit_error("no se pudo cargar el impulso de convolución");
+                }
+            } } }
+        }
         else if (strstr(line, "\"inrate\"")) { const char* v = strstr(line, "\"v\""); if (v) { v = strchr(v, ':'); if (v) { g_inRateReq = atol(v + 1); g_inRateDirty = 1; } } }
         else if (strstr(line, "\"pause\""))  g_paused = 1;
         else if (strstr(line, "\"resume\"")) g_paused = 0;
-        else if (strstr(line, "\"flush\""))  { if (g_ring) g_ring->clear(); }
+        else if (strstr(line, "\"flush\""))  { if (g_ring) g_ring->clear(); g_convReset = 1; }
         else if (strstr(line, "\"stop\""))   { g_stop = 1; if (g_ring) g_ring->cancel(); break; }
     }
     return 0;
@@ -660,6 +911,7 @@ static int play_stream(unsigned reqRate, unsigned reqCh, bool exclusive,
 
     // Nodo de resample: igualamos la entrada a la tasa de salida para que WASAPI no remuestree.
     const unsigned outRate = useFmt->nSamplesPerSec;
+    g_outRate = outRate; g_outChannels = (int)useFmt->nChannels;   // para que el hilo de control resamplee la IR al construir la convolución
     Resampler* rs = (inRate && inRate != outRate && outIsFloat)
                         ? new Resampler(chn, inRate, outRate, RS_TAPS, RS_BETA) : nullptr;
 
@@ -690,6 +942,7 @@ static int play_stream(unsigned reqRate, unsigned reqCh, bool exclusive,
     std::vector<char>  inbytes;                         // bytes crudos leídos del anillo
     Biquad eq[8][7];
     const int eqCh = (channels <= 8) ? channels : 0;    // EQ hasta 8 canales
+    Biquad peq[8][PEQ_MAX]; int peqN = 0;               // EQ paramétrico (nº de bandas vivo)
 
     // Rellena `want` frames de SALIDA en dst (float). Con resampler tira de él y lo realimenta
     // desde el anillo (a tasa de entrada); sin él copia directo del anillo. Devuelve frames.
@@ -754,19 +1007,33 @@ static int play_stream(unsigned reqRate, unsigned reqCh, bool exclusive,
             const float gnow = liveControl ? g_gainLive : gain;
             const bool doGain = canGain && gnow != 1.0f;
             const bool doEq = canGain && g_eqOn && eqCh > 0;
+            const bool doPeq = canGain && g_peqOn && eqCh > 0;
             if (doEq && InterlockedExchange(&g_eqDirty, 0)) {       // recalcula coeficientes al cambiar
                 EnterCriticalSection(&g_eqCs);
                 for (int c = 0; c < eqCh; c++) for (int bnd = 0; bnd < 7; bnd++) eq_coeffs(eq[c][bnd], bnd, g_eqGainReq[bnd], (double)outRate);
                 LeaveCriticalSection(&g_eqCs);
             }
-            if (doGain || doEq) {                                   // ganancia (RG×vol) primero, luego EQ
+            if (g_peqOn && InterlockedExchange(&g_peqDirty, 0)) {    // recalcula el EQ paramétrico al cambiar
+                EnterCriticalSection(&g_peqCs);
+                peqN = g_peqNReq < PEQ_MAX ? g_peqNReq : PEQ_MAX;
+                for (int c = 0; c < eqCh; c++) for (int bnd = 0; bnd < peqN; bnd++) pbiquad_coeffs(peq[c][bnd], g_peqReq[bnd].type, g_peqReq[bnd].freq, g_peqReq[bnd].q, g_peqReq[bnd].gain, (double)outRate);
+                LeaveCriticalSection(&g_peqCs);
+            }
+            if (doGain || doEq || (doPeq && peqN > 0)) {            // ganancia (RG×vol) → EQ gráfico → EQ paramétrico
                 for (UINT32 i = 0; i < gotFrames; i++)
                     for (int c = 0; c < chn; c++) {
                         float s = f[i * chn + c];
                         if (doGain) s *= gnow;
                         if (doEq) for (int bnd = 0; bnd < 7; bnd++) s = eq[c][bnd].process(s);
+                        if (doPeq) for (int bnd = 0; bnd < peqN; bnd++) s = peq[c][bnd].process(s);
                         f[i * chn + c] = s;
                     }
+            }
+            // convolución (tras el EQ): adopta una IR nueva, resetea en seek, procesa si está activa
+            if (canGain) {
+                if (InterlockedExchange(&g_convSwap, 0)) { EnterCriticalSection(&g_convCs); Convolver* old = g_conv; g_conv = g_convNew; g_convNew = nullptr; LeaveCriticalSection(&g_convCs); if (old) delete old; }
+                if (InterlockedExchange(&g_convReset, 0) && g_conv) g_conv->reset();
+                if (g_convOn && g_conv && g_conv->ch == chn) g_conv->process(f, gotFrames);
             }
             if (ditherOut) float_to_int(f, out, gotFrames, chn, intBytes, intValid, true);
             else memcpy(out, f, (size_t)gotFrames * frameBytes);
@@ -825,6 +1092,8 @@ int main(int argc, char** argv) {
     if (doSelftest) return selftest();   // autoprueba numérica: no necesita COM ni dispositivo
 
     InitializeCriticalSection(&g_eqCs);
+    InitializeCriticalSection(&g_peqCs);
+    InitializeCriticalSection(&g_convCs);
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (!HR_OK(hr)) { emit_error("CoInitializeEx falló"); return 1; }
 
@@ -854,6 +1123,8 @@ int main(int argc, char** argv) {
         rc = 2;
     }
 
+    if (g_conv) { delete g_conv; g_conv = nullptr; }
+    if (g_convNew) { delete g_convNew; g_convNew = nullptr; }
     CoUninitialize();
     return rc;
 }

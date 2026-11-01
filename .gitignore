@@ -13,6 +13,8 @@ app/spotify.json
 app/.spotify-token
 # carátulas cacheadas en local (Cover Art Archive); se re-descargan con covers.js
 app/cache/
+# impulsos de convolución (WAV propios de la máquina del usuario)
+app/impulses/
 # node
 node_modules/
 # artefactos de compilación del motor nativo (el código fuente sí se versiona)

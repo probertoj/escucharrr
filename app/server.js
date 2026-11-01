@@ -42,7 +42,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS scrobble_queue (
   CREATE TABLE IF NOT EXISTS tag (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, created_at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS tag_item (tag_id INTEGER NOT NULL REFERENCES tag(id) ON DELETE CASCADE, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, created_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (tag_id, subject_type, subject_id));
   CREATE INDEX IF NOT EXISTS ix_tag_item ON tag_item(subject_type, subject_id);
-  CREATE TABLE IF NOT EXISTS bookmark (id INTEGER PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));`);
+  CREATE TABLE IF NOT EXISTS bookmark (id INTEGER PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
+  CREATE TABLE IF NOT EXISTS dsp_preset (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, state TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));`);
 const lyrics = require('../data-layer/lyrics');
 let scrobCfg = null;
 function loadScrobbleCfg() { const p = path.join(__dirname, 'scrobble.json'); try { scrobCfg = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null; } catch (e) { scrobCfg = null; } return scrobCfg; }
@@ -99,6 +100,10 @@ const Q = {
   bmList: db.prepare(`SELECT id, name, state FROM bookmark ORDER BY name`),
   bmCreate: db.prepare(`INSERT INTO bookmark(name, state) VALUES(?, ?)`),
   bmDelete: db.prepare(`DELETE FROM bookmark WHERE id=?`),
+  // ── presets de DSP (EQ paramétrico + convolución), estilo Roon ──
+  dspList: db.prepare(`SELECT id, name, state FROM dsp_preset ORDER BY name`),
+  dspSave: db.prepare(`INSERT INTO dsp_preset(name, state) VALUES(?, ?) ON CONFLICT(name) DO UPDATE SET state=excluded.state`),
+  dspDelete: db.prepare(`DELETE FROM dsp_preset WHERE id=?`),
   prov: db.prepare(`SELECT field,source,source_ref FROM provenance WHERE subject_type='release_group' AND subject_id=?`),
   editions: db.prepare(`SELECT format,date,country FROM "release" WHERE release_group_id=? ORDER BY date`),
   tracks: db.prepare(`SELECT tr.id trackId, tr.recording_id, m.position disc, tr.position pos, tr.title, tr.length_ms,
@@ -422,6 +427,8 @@ async function handleNative(req, res, u) {
       if (body.exclusive !== undefined) opts.exclusive = !!body.exclusive;
       if (body.seekSec) opts.seekSec = body.seekSec;
       if (body.eq) opts.eq = body.eq;
+      if (body.peq) opts.peq = body.peq;
+      if (body.conv) opts.conv = { on: !!body.conv.on, path: body.conv.file ? impulsePath(body.conv.file) : (body.conv.path || '') };
       const state = await P.play(row.path, opts);
       logPlay({ track_id: body.track_id, source: 'native', zone: body.zone || 'este equipo (nativo)' });
       return sendJSON(res, { ok: true, state });
@@ -432,6 +439,8 @@ async function handleNative(req, res, u) {
     if (sub === 'seek') return sendJSON(res, { ok: true, state: await P.seek(Number(body.sec) || 0) });
     if (sub === 'volume') return sendJSON(res, { ok: true, state: await P.setGainDb(Number(body.db) || 0) });
     if (sub === 'eq') return sendJSON(res, { ok: true, state: P.setEq(!!body.on, Array.isArray(body.gains) ? body.gains : []) });
+    if (sub === 'peq') return sendJSON(res, { ok: true, state: P.setPeq(!!body.on, Array.isArray(body.bands) ? body.bands : []) });
+    if (sub === 'conv') return sendJSON(res, { ok: true, state: P.setConv(!!body.on, body.file ? impulsePath(body.file) : (body.path || '')) });
     if (sub === 'output') { if (body.deviceId !== undefined) P.setDevice(body.deviceId || null); if (body.exclusive !== undefined) P.setExclusive(!!body.exclusive); return sendJSON(res, { ok: true, state: P.state }); }
     res.writeHead(404); res.end('{}');
   } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
@@ -831,6 +840,60 @@ async function handleConfig(req, res, u) {
   } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 
+// ── DSP avanzado: impulsos de convolución (ficheros) + presets (EQ paramétrico + convolución) ──
+const _IMP = path.join(__dirname, 'impulses');
+function ensureImpDir() { try { if (!fs.existsSync(_IMP)) fs.mkdirSync(_IMP, { recursive: true }); } catch (e) {} }
+function impulsePath(file) { const base = path.basename(String(file || '')); const p = path.join(_IMP, base); return (base && fs.existsSync(p)) ? p : ''; }
+function listImpulses() { ensureImpDir(); try { return fs.readdirSync(_IMP).filter(f => /\.wav$/i.test(f)).map(f => { let size = 0; try { size = fs.statSync(path.join(_IMP, f)).size; } catch (e) {} return { file: f, size }; }); } catch (e) { return []; } }
+function serveImpulse(res, file) { const p = impulsePath(file); if (!p) { res.writeHead(404); return res.end('{}'); } try { const b = fs.readFileSync(p); res.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': b.length, 'Cache-Control': 'no-cache' }); res.end(b); } catch (e) { res.writeHead(500); res.end('{}'); } }
+// selector NATIVO de FICHERO de Windows (OpenFileDialog) para elegir un impulso WAV
+function pickFile(opts = {}) {
+  return new Promise(resolve => {
+    if (process.platform !== 'win32') return resolve({ ok: false, error: 'El selector nativo solo está disponible en Windows.' });
+    const ps = [
+      '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+      'Add-Type -AssemblyName System.Windows.Forms | Out-Null',
+      '$owner = New-Object System.Windows.Forms.Form',
+      '$owner.TopMost = $true; $owner.ShowInTaskbar = $false; $owner.Opacity = 0; $owner.Show() | Out-Null; $owner.Activate()',
+      '$d = New-Object System.Windows.Forms.OpenFileDialog',
+      '$d.Title = $env:ESC_DESC; $d.Filter = $env:ESC_FILTER; $d.CheckFileExists = $true',
+      'if ($env:ESC_INIT) { try { $d.InitialDirectory = $env:ESC_INIT } catch {} }',
+      '$r = $d.ShowDialog($owner); $owner.Close()',
+      'if ($r -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.FileName) }',
+    ].join('\n');
+    const env = Object.assign({}, process.env, { ESC_DESC: String(opts.desc || 'Elige un fichero'), ESC_FILTER: String(opts.filter || 'Todos (*.*)|*.*'), ESC_INIT: String(opts.init || '') });
+    let out = '', done = false; const finish = v => { if (!done) { done = true; resolve(v); } };
+    try {
+      const p = cp.spawn('powershell.exe', ['-NoProfile', '-STA', '-WindowStyle', 'Hidden', '-Command', ps], { env, windowsHide: true });
+      p.stdout.on('data', d => { out += d.toString('utf8'); });
+      p.on('error', e => finish({ ok: false, error: String(e.message) }));
+      p.on('close', () => { const sel = out.trim(); finish({ ok: true, path: sel, cancelled: !sel }); });
+    } catch (e) { finish({ ok: false, error: String(e.message) }); }
+  });
+}
+async function handleDsp(req, res, u) {
+  const sub = u.pathname.slice('/api/dsp/'.length);
+  try {
+    if (req.method === 'GET' && sub === 'presets') return sendJSON(res, { ok: true, presets: Q.dspList.all().map(r => ({ id: r.id, name: r.name, state: JSON.parse(r.state || '{}') })) });
+    if (req.method === 'GET' && sub === 'impulses') return sendJSON(res, { ok: true, impulses: listImpulses() });
+    if (req.method === 'GET' && sub === 'impulse') return serveImpulse(res, u.searchParams.get('f'));
+    const body = req.method === 'POST' ? await readBody(req) : {};
+    if (sub === 'preset') { const name = String(body.name || '').trim().slice(0, 60); if (!name) { res.writeHead(400); return res.end('{}'); } Q.dspSave.run(name, JSON.stringify(body.state || {})); return sendJSON(res, { ok: true, presets: Q.dspList.all().map(r => ({ id: r.id, name: r.name, state: JSON.parse(r.state || '{}') })) }); }
+    if (sub === 'preset/delete') { Q.dspDelete.run(parseInt(body.id, 10)); return sendJSON(res, { ok: true }); }
+    if (sub === 'impulse/browse') {
+      const r = await pickFile({ desc: 'Elige un impulso de convolución (WAV)', filter: 'WAV (*.wav)|*.wav|Todos (*.*)|*.*' });
+      if (!r.ok) return sendJSON(res, r);
+      if (r.cancelled) return sendJSON(res, { ok: true, cancelled: true });
+      ensureImpDir();
+      const dest = path.basename(r.path);
+      try { fs.copyFileSync(r.path, path.join(_IMP, dest)); } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+      return sendJSON(res, { ok: true, file: dest, impulses: listImpulses() });
+    }
+    if (sub === 'impulse/delete') { const p = impulsePath(body.file); if (p) { try { fs.unlinkSync(p); } catch (e) {} } return sendJSON(res, { ok: true, impulses: listImpulses() }); }
+    res.writeHead(404); res.end('{}');
+  } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
+}
+
 http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   if (u.pathname === '/api/events') {
@@ -873,6 +936,7 @@ http.createServer((req, res) => {
   if (u.pathname.startsWith('/api/upnp/')) return void handleUpnp(req, res, u);
   if (u.pathname.startsWith('/api/spotify/')) return void handleSpotify(req, res, u);
   if (u.pathname === '/api/config' || u.pathname.startsWith('/api/config/')) return void handleConfig(req, res, u);
+  if (u.pathname.startsWith('/api/dsp/')) return void handleDsp(req, res, u);
   if (u.pathname.startsWith('/api/scrobble/')) return void handleScrobble(req, res, u);
   if (u.pathname === '/api/lyrics') return void getLyrics(parseInt(u.searchParams.get('track'), 10)).then(r => sendJSON(res, r)).catch(() => sendJSON(res, { found: false }));
   if (u.pathname === '/api/playlists' || u.pathname === '/api/playlist' || u.pathname.startsWith('/api/playlist/')) return void handlePlaylists(req, res, u);

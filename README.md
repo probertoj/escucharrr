@@ -74,12 +74,14 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
   - `server.js` — API JSON (`/api/library`, `/api/album?id=`, …) desde SQLite y **streaming de
     audio** (`/api/stream?track=` con soporte de `Range` para seek) (node:http + node:sqlite).
   - `public/player.js` — **reproductor real**: doble "deck" `<audio>` → grafo Web Audio
-    (ganancia por pista con ReplayGain → **EQ** de 7 bandas `BiquadFilter` → ganancia maestra → salida),
+    (ganancia por pista con ReplayGain → **EQ** de 7 bandas `BiquadFilter` → **EQ paramétrico** (bandas
+    configurables) → **convolución** `ConvolverNode` (impulso WAV) → ganancia maestra → salida),
     **crossfade** real entre pistas al auto-avanzar (solapa los dos decks con rampas de ganancia),
     cola persistente al estilo "Swim" de Roon (historial de lo reproducido, **radio** que auto-extiende la
     cola con pistas afines de tu grafo cuando se acaba, y **deshacer** cambios de cola),
     barra de "ahora suena" con progreso/seek/volumen y auto-avance, panel de
-    ecualizador (presets) + crossfade + **normalización ReplayGain pista/álbum/off**,
+    ecualizador (presets) + crossfade + **normalización ReplayGain pista/álbum/off**, panel **DSP avanzado**
+    (EQ paramétrico por bandas + convolución con impulso WAV + **presets guardables** server-side, `/api/dsp/*`),
     y **selector de salida/zona** (`AudioContext.setSinkId`;
     la "zona" es nombrable y persistente, base para el multi-sala futuro; cada reproducción se registra con su zona),
     con un **conmutador de motor nativo** que enruta el transporte (play/pausa/seek/volumen) a la salida WASAPI
@@ -125,12 +127,14 @@ sobre componentes libres y **sin dependencia de licencia ni nube**.
     enumera dispositivos de salida (con su formato de mezcla) y reproduce PCM `f32le` en **modo compartido**
     o **exclusivo = bit-perfect** (sin tocar la muestra), con prioridad de hilo de audio (MMCSS). Grafo DSP:
     **resample** (sinc enventanado **Kaiser**, polifásico) → **ganancia maestra** → **EQ de 7 bandas** `biquad`
-    (mismas frecuencias que el player web), y **cuantización con dither TPDF** si la salida es PCM entero. El
-    resample iguala la entrada (tasa **nativa** del fichero) a la tasa de mezcla del dispositivo para que **WASAPI
-    no vuelva a remuestrear** (sustituye su SRC por uno de alta calidad: banda de paso plana a ~20 kHz, rechazo de
-    alias ~98–109 dB — medible con `escucharrr-engine --selftest`). Recibe el PCM por un **named pipe** y acepta
-    **control en vivo por stdin** (`gain`/`eq`/`inrate`/`pause`/`resume`/`flush`/`stop`): así el motor y el
-    dispositivo quedan vivos toda la reproducción. Ranuras de convolución y noise-shaping, documentadas para después.
+    → **EQ paramétrico** (bandas configurables: campana/shelf/paso bajo-alto/notch, RBJ) → **convolución** (FFT
+    overlap-add propia; carga un impulso WAV, lo resamplea a la tasa de salida) → **cuantización con dither TPDF**
+    si la salida es PCM entero. El resample iguala la entrada (tasa **nativa** del fichero) a la tasa de mezcla del
+    dispositivo para que **WASAPI no vuelva a remuestrear** (sustituye su SRC por uno de alta calidad: banda de paso
+    plana a ~20 kHz, rechazo de alias ~98–109 dB). Todo el DSP es **medible con `escucharrr-engine --selftest`**
+    (resampler, dither, EQ paramétrico y convolución, verificados contra su respuesta teórica). Recibe el PCM por un
+    **named pipe** y acepta **control en vivo por stdin** (`gain`/`eq`/`peq`/`conv`/`inrate`/`pause`/`resume`/`flush`/`stop`):
+    así el motor y el dispositivo quedan vivos toda la reproducción. Ranura de noise-shaping, documentada para después.
   - `native-player.js` — bridge Node: la **decodificación** la pone **ffmpeg** (ranura de decoder; libFLAC/dr_flac
     en el futuro) a la **tasa nativa** del fichero y el **resample** lo hace el motor; el **transporte** lo lleva el
     bridge — como el "core" de Roon posee las zonas y la UI es un

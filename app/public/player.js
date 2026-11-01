@@ -35,6 +35,17 @@ window.player = (function () {
   let xfade = 0; try { const x = parseFloat(localStorage.getItem(XKEY)); if (x >= 0 && x <= 12) xfade = x; } catch (e) {}
   const persistEq = () => { try { localStorage.setItem(EQKEY, JSON.stringify({ on: eqOn, g: eqGains })); } catch (e) {} };
   const persistX = () => { try { localStorage.setItem(XKEY, String(xfade)); } catch (e) {} };
+  // ── DSP avanzado: EQ paramétrico (bandas configurables) + convolución (impulso WAV) ──
+  // Tipos de banda; el índice es también el tipo que entiende el motor nativo.
+  const PEQKEY = 'escucharrr.peq', CONVKEY = 'escucharrr.conv';
+  const PEQTYPES = ['peak', 'lowshelf', 'highshelf', 'lowpass', 'highpass', 'notch'];
+  const PEQLABEL = { peak: 'Campana', lowshelf: 'Shelf grave', highshelf: 'Shelf agudo', lowpass: 'Paso bajo', highpass: 'Paso alto', notch: 'Notch' };
+  let peqOn = false, peqBands = [];
+  try { const p = JSON.parse(localStorage.getItem(PEQKEY)); if (p) { peqOn = !!p.on; if (Array.isArray(p.bands)) peqBands = p.bands.map(b => ({ type: b.type | 0, freq: +b.freq || 1000, q: +b.q || 1, gain: +b.gain || 0 })).slice(0, 16); } } catch (e) {}
+  let convOn = false, convFile = '';
+  try { const c = JSON.parse(localStorage.getItem(CONVKEY)); if (c) { convOn = !!c.on; convFile = c.file || ''; } } catch (e) {}
+  const persistPeq = () => { try { localStorage.setItem(PEQKEY, JSON.stringify({ on: peqOn, bands: peqBands })); } catch (e) {} };
+  const persistConv = () => { try { localStorage.setItem(CONVKEY, JSON.stringify({ on: convOn, file: convFile })); } catch (e) {} };
   // normalización ReplayGain: 'track' (cada tema a -18 LUFS) | 'album' (misma ganancia por disco, conserva dinámica) | 'off'
   let rgMode = 'track'; try { const m = localStorage.getItem(RGKEY); if (m === 'track' || m === 'album' || m === 'off') rgMode = m; } catch (e) {}
   const persistRg = () => { try { localStorage.setItem(RGKEY, rgMode); } catch (e) {} };
@@ -44,6 +55,7 @@ window.player = (function () {
   const decks = [{ el: mkEl(), src: null, gain: null, trackIdx: -1 }, { el: mkEl(), src: null, gain: null, trackIdx: -1 }];
   let cur0 = 0; const active = () => decks[cur0], other = () => decks[1 - cur0];
   let ctx = null, eqBands = [], masterGain = null;
+  let dspIn = null, dspOut = null, peqNodes = [], convNode = null, convBuffer = null;   // subgrafo DSP reconstruible
   let fading = false, fadeTimer = null;
 
   function ensureGraph() {
@@ -54,11 +66,50 @@ window.player = (function () {
       masterGain = ctx.createGain(); masterGain.gain.value = vol;                    // ganancia maestra = volumen
       eqBands = EQF.map((f, i) => { const b = ctx.createBiquadFilter(); b.type = i === 0 ? 'lowshelf' : i === EQF.length - 1 ? 'highshelf' : 'peaking'; b.frequency.value = f; if (b.type === 'peaking') b.Q.value = 1.1; b.gain.value = eqOn ? eqGains[i] : 0; return b; });
       for (let i = 0; i < eqBands.length - 1; i++) eqBands[i].connect(eqBands[i + 1]);
-      eqBands[eqBands.length - 1].connect(masterGain);
+      dspIn = ctx.createGain(); dspOut = ctx.createGain();                            // puntos del subgrafo DSP avanzado
+      eqBands[eqBands.length - 1].connect(dspIn);                                     // EQ gráfico → [EQ paramétrico] → [convolución] → maestra
+      dspOut.connect(masterGain);
       masterGain.connect(ctx.destination);
       decks.forEach(d => { d.src = ctx.createMediaElementSource(d.el); d.gain = ctx.createGain(); d.gain.gain.value = 0.0001; d.src.connect(d.gain); d.gain.connect(eqBands[0]); d.el.volume = 1; });
+      if (convFile) loadImpulse(convFile, true); else rebuildDsp();                   // arma el subgrafo con el estado persistido
       applySink();                                                                   // enruta a la salida/zona elegida
     } catch (e) { ctx = null; }
+  }
+  // Reconstruye el tramo dspIn → [paramétrico] → [convolución] → dspOut (sin tocar decks/EQ/maestra).
+  function rebuildDsp() {
+    if (!ctx || !dspIn || !dspOut) return;
+    try { dspIn.disconnect(); } catch (e) {}
+    peqNodes.forEach(n => { try { n.disconnect(); } catch (e) {} });
+    if (convNode) { try { convNode.disconnect(); } catch (e) {} }
+    peqNodes = [];
+    let node = dspIn;
+    if (peqOn && peqBands.length) {
+      const nyq = ctx.sampleRate / 2 - 1;
+      peqBands.forEach(b => {
+        const f = ctx.createBiquadFilter();
+        f.type = PEQTYPES[b.type] || 'peaking';
+        if (f.type === 'peak') f.type = 'peaking';
+        f.frequency.value = Math.max(10, Math.min(nyq, b.freq || 1000));
+        f.Q.value = b.q > 0 ? b.q : 0.707;
+        if (f.type === 'peaking' || f.type === 'lowshelf' || f.type === 'highshelf') f.gain.value = b.gain || 0;
+        node.connect(f); node = f; peqNodes.push(f);
+      });
+    }
+    if (convOn && convNode && convBuffer) { node.connect(convNode); node = convNode; }
+    node.connect(dspOut);
+  }
+  // Carga un impulso WAV del servidor en el ConvolverNode (normalize=false para respetar la IR tal cual).
+  async function loadImpulse(file, keep) {
+    if (!keep) { convFile = file || ''; persistConv(); }
+    if (!file) { convBuffer = null; if (convNode) { try { convNode.buffer = null; } catch (e) {} } rebuildDsp(); return; }
+    try {
+      const ab = await fetch('/api/dsp/impulse?f=' + encodeURIComponent(file)).then(r => r.ok ? r.arrayBuffer() : Promise.reject());
+      if (!ctx) return;
+      convBuffer = await ctx.decodeAudioData(ab);
+      if (!convNode) convNode = ctx.createConvolver();
+      convNode.normalize = false; convNode.buffer = convBuffer;
+      rebuildDsp();
+    } catch (e) { convBuffer = null; rebuildDsp(); }
   }
   // enruta el audio al dispositivo de la zona. Con Web Audio el que manda es el AudioContext
   // (setSinkId del <audio> queda anulado al conectarlo al grafo), por eso priorizamos ctx.setSinkId.
@@ -255,7 +306,7 @@ window.player = (function () {
     idx = i; save(); const c = cur(); if (!c) return;
     if (c.playable === false) { playing = false; nativeStartedIdx = -1; render(); return; }
     nativeBusy = true; playing = true; loggedIdx = idx; nativeMiss = 0; nativeStartedIdx = idx; trackStarted(); render();
-    const body = { track_id: c.trackId, deviceId: nativeDeviceId || null, exclusive: !!nativeExclusive, gainDb: nativeGainDb(c), zone: zone.name, eq: { on: eqOn, gains: eqGains } };
+    const body = { track_id: c.trackId, deviceId: nativeDeviceId || null, exclusive: !!nativeExclusive, gainDb: nativeGainDb(c), zone: zone.name, eq: { on: eqOn, gains: eqGains }, peq: { on: peqOn, bands: peqBands }, conv: { on: convOn, file: convFile } };
     if (opts && opts.seekSec) body.seekSec = opts.seekSec;
     njson('play', body).then(j => {
       nativeBusy = false;
@@ -274,6 +325,8 @@ window.player = (function () {
   function nativeVolumeApply() { clearTimeout(nativeVolTimer); nativeVolTimer = setTimeout(() => { const c = cur(); if (!c || !playing) return; nativeBusy = true; njson('volume', { db: nativeGainDb(c) }).then(() => nativeBusy = false).catch(() => nativeBusy = false); }, 300); }
   // EQ del motor nativo (en vivo): envía las bandas al servidor
   function nativeEqApply() { clearTimeout(nativeEqTimer); nativeEqTimer = setTimeout(() => { njson('eq', { on: eqOn, gains: eqGains }).catch(() => {}); }, 200); }
+  let nativeDspTimer = null;
+  function nativeDspApply() { clearTimeout(nativeDspTimer); nativeDspTimer = setTimeout(() => { njson('peq', { on: peqOn, bands: peqBands }).catch(() => {}); njson('conv', { on: convOn, file: convFile }).catch(() => {}); }, 200); }
   function setNativeMode(on) {
     on = !!on; if (on === nativeMode) return;
     const wasPlaying = playing, posSec = posMs() / 1000;
@@ -545,7 +598,53 @@ window.player = (function () {
     h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">' + Object.keys(EQPRE).map(k => `<span data-pre="${k}" style="cursor:pointer;font-size:12px;padding:3px 9px;border-radius:999px;background:var(--surface-2);text-transform:capitalize">${k}</span>`).join('') + '</div>';
     h += EQF.map((f, i) => `<div style="display:flex;align-items:center;gap:8px;margin:4px 0;opacity:${eqOn ? 1 : .5}"><span style="width:38px;font-size:11px;color:var(--text-2);text-align:right">${EQLAB[i]}</span><input class="eqband" data-i="${i}" type="range" min="-12" max="12" step="1" value="${eqGains[i]}" style="flex:1;accent-color:var(--accent)"><span id="eqval${i}" style="width:48px;font-size:11px;text-align:right">${(eqGains[i] > 0 ? '+' : '') + eqGains[i]} dB</span></div>`).join('');
     h += `<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px"><span style="font-weight:600">Crossfade</span><span id="xfadeval" style="font-size:12px;color:var(--text-2)">${xfade === 0 ? 'desactivado' : xfade.toFixed(1).replace('.0', '') + ' s'}</span></div><input data-act="xfade" type="range" min="0" max="12" step="0.5" value="${xfade}" style="width:100%;accent-color:var(--accent)"><div style="font-size:11px;color:var(--text-2);margin-top:3px">Fundido entre pistas al cambiar automáticamente.</div></div>`;
+    h += `<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px"><span data-act="dspopen" style="cursor:pointer;color:var(--accent);font-size:12.5px;display:inline-flex;align-items:center;gap:5px">${ic('eq', 14)}EQ paramétrico y convolución${(peqOn || convOn) ? ' · activo' : ''}</span></div>`;
     eqpanel.innerHTML = h;
+  }
+
+  // ── DSP avanzado: EQ paramétrico (bandas configurables) + convolución (impulso WAV) + presets ──
+  let dsppanel = null, dspImpulses = [], dspPresets = [];
+  function ensureDspPanel() {
+    if (dsppanel) return;
+    dsppanel = document.createElement('div'); dsppanel.id = 'dsppanel';
+    dsppanel.setAttribute('style', 'position:fixed;right:16px;bottom:62px;z-index:61;width:364px;max-width:calc(100vw - 32px);max-height:72vh;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:12px 14px;display:none;font-size:13px');
+    document.body.appendChild(dsppanel);
+    document.addEventListener('click', e => { if (dsppanel.style.display === 'block' && !e.target.closest('#dsppanel') && !e.target.closest('[data-act="dspopen"]')) dsppanel.style.display = 'none'; });
+  }
+  function toggleDspPanel() { ensureDspPanel(); if (dsppanel.style.display === 'block') { dsppanel.style.display = 'none'; return; } if (eqpanel) eqpanel.style.display = 'none'; if (zpanel) zpanel.style.display = 'none'; dsppanel.style.display = 'block'; renderDspPanel(); loadDspLists().then(() => { if (dsppanel.style.display === 'block') renderDspPanel(); }); }
+  async function loadDspLists() { try { const [im, pr] = await Promise.all([fetch('/api/dsp/impulses').then(x => x.json()), fetch('/api/dsp/presets').then(x => x.json())]); dspImpulses = (im && im.impulses) || []; dspPresets = (pr && pr.presets) || []; } catch (e) {} }
+  function markEqBtn() { const on = eqOn || xfade > 0 || peqOn || convOn; document.querySelectorAll('#nowbar [data-act="eq"], #npfs [data-act="eq"]').forEach(b => { b.style.color = on ? 'var(--accent)' : 'var(--text-2)'; }); }
+  function dspChanged() { persistPeq(); rebuildDsp(); markEqBtn(); if (nativeMode) nativeDspApply(); }
+  function setPeqEnabled(on) { peqOn = on; dspChanged(); renderDspPanel(); }
+  function addPeqBand() { if (peqBands.length >= 16) return; peqBands.push({ type: 0, freq: 1000, q: 1, gain: 0 }); if (!peqOn) peqOn = true; dspChanged(); renderDspPanel(); }
+  function removePeqBand(i) { peqBands.splice(i, 1); dspChanged(); renderDspPanel(); }
+  function updatePeqBand(i, k, v) { if (!peqBands[i]) return; if (k === 'type') peqBands[i].type = Math.max(0, PEQTYPES.indexOf(v)); else peqBands[i][k] = +v; persistPeq(); rebuildDsp(); if (nativeMode) nativeDspApply(); }
+  function setConvEnabled(on) { convOn = on; persistConv(); if (convOn && convFile && ctx && !convBuffer) loadImpulse(convFile, true); else rebuildDsp(); markEqBtn(); if (nativeMode) nativeDspApply(); renderDspPanel(); }
+  function chooseImpulse(file) { ensureGraph(); loadImpulse(file); if (file && !convOn) { convOn = true; persistConv(); } markEqBtn(); if (nativeMode) nativeDspApply(); renderDspPanel(); }
+  async function browseImpulse() { try { const r = await fetch('/api/dsp/impulse/browse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(x => x.json()); if (r.ok && r.file) { dspImpulses = r.impulses || dspImpulses; chooseImpulse(r.file); } else if (r.ok && r.cancelled) { } else alert((r && r.error) || 'No se pudo abrir el selector.'); } catch (e) { alert('No se pudo abrir el selector de fichero.'); } }
+  async function savePreset() { const name = (prompt('Nombre del preset DSP:') || '').trim(); if (!name) return; const state = { peq: { on: peqOn, bands: peqBands }, conv: { on: convOn, file: convFile }, eq: { on: eqOn, gains: eqGains } }; try { const r = await fetch('/api/dsp/preset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, state }) }).then(x => x.json()); if (r.ok) { dspPresets = r.presets || dspPresets; renderDspPanel(); } } catch (e) {} }
+  function loadPreset(name) { const p = dspPresets.find(x => x.name === name); if (!p) return; const s = p.state || {}; if (s.peq) { peqOn = !!s.peq.on; peqBands = (s.peq.bands || []).map(b => ({ type: b.type | 0, freq: +b.freq || 1000, q: +b.q || 1, gain: +b.gain || 0 })); } if (s.eq) { eqOn = !!s.eq.on; if (Array.isArray(s.eq.gains) && s.eq.gains.length === 7) eqGains = s.eq.gains.map(Number); applyEq(); persistEq(); } persistPeq(); if (s.conv) { convOn = !!s.conv.on; ensureGraph(); loadImpulse(s.conv.file || ''); } else rebuildDsp(); markEqBtn(); if (nativeMode) { nativeEqApply(); nativeDspApply(); } renderDspPanel(); }
+  async function deletePreset(name) { const p = dspPresets.find(x => x.name === name); if (!p) return; if (!confirm('¿Borrar el preset "' + name + '"?')) return; try { await fetch('/api/dsp/preset/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: p.id }) }); dspPresets = dspPresets.filter(x => x.name !== name); renderDspPanel(); } catch (e) {} }
+  function renderDspPanel() {
+    ensureDspPanel();
+    let h = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px"><span style="font-weight:600">DSP avanzado</span><span data-act="dspclose" style="cursor:pointer;color:var(--text-2);display:inline-flex">${ic('close', 16)}</span></div>`;
+    h += `<div style="display:flex;align-items:center;justify-content:space-between;margin:6px 0"><span style="font-weight:600;font-size:12.5px">EQ paramétrico</span><span data-act="peqtoggle" style="cursor:pointer;font-size:12px;padding:2px 10px;border-radius:999px;background:${peqOn ? 'var(--accent)' : 'var(--surface-2)'};color:${peqOn ? '#fff' : 'var(--text-2)'}">${peqOn ? 'Activado' : 'Desactivado'}</span></div>`;
+    h += `<div style="opacity:${peqOn ? 1 : .5}">`;
+    if (!peqBands.length) h += `<div style="font-size:11.5px;color:var(--text-2);margin:4px 0">Sin bandas. Añade una para empezar.</div>`;
+    peqBands.forEach((b, i) => {
+      h += `<div style="display:flex;gap:4px;align-items:center;margin:4px 0;flex-wrap:wrap">
+        <select class="pqt" data-i="${i}" style="font-size:11px">${PEQTYPES.map(t => `<option value="${t}" ${PEQTYPES[b.type] === t ? 'selected' : ''}>${PEQLABEL[t]}</option>`).join('')}</select>
+        <input class="pqf" data-i="${i}" type="number" min="10" max="24000" step="1" value="${Math.round(b.freq)}" style="width:62px;font-size:11px"><span style="font-size:10px;color:var(--text-2)">Hz</span>
+        <input class="pqq" data-i="${i}" type="number" min="0.1" max="18" step="0.1" value="${b.q}" style="width:46px;font-size:11px"><span style="font-size:10px;color:var(--text-2)">Q</span>
+        <input class="pqg" data-i="${i}" type="number" min="-24" max="24" step="0.5" value="${b.gain}" style="width:52px;font-size:11px"><span style="font-size:10px;color:var(--text-2)">dB</span>
+        <span class="pqrm" data-i="${i}" style="cursor:pointer;color:var(--text-2);display:inline-flex">${ic('trash', 14)}</span></div>`;
+    });
+    h += `<div data-act="peqadd" style="cursor:pointer;color:var(--accent);font-size:12px;margin-top:4px;display:inline-flex;align-items:center;gap:4px">${ic('plus', 13)}Añadir banda</div></div>`;
+    h += `<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px"><span style="font-weight:600;font-size:12.5px">Convolución</span><span data-act="convtoggle" style="cursor:pointer;font-size:12px;padding:2px 10px;border-radius:999px;background:${convOn ? 'var(--accent)' : 'var(--surface-2)'};color:${convOn ? '#fff' : 'var(--text-2)'}">${convOn ? 'Activada' : 'Desactivada'}</span></div>`;
+    h += `<div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap"><select id="convsel" style="flex:1;min-width:150px;font-size:11.5px"><option value="">— ningún impulso —</option>${dspImpulses.map(im => `<option value="${esc(im.file)}" ${im.file === convFile ? 'selected' : ''}>${esc(im.file)}</option>`).join('')}</select><span data-act="convbrowse" style="cursor:pointer;color:var(--accent);font-size:12px;padding:3px 9px;border:1px solid var(--border);border-radius:7px">Explorar…</span></div>`;
+    h += `<div style="font-size:11px;color:var(--text-2);margin-top:5px">Impulso WAV para corrección de sala / cabezal de altavoz. Convolución por FFT (~85 ms de latencia).</div></div>`;
+    h += `<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px"><div style="font-weight:600;font-size:12.5px;margin-bottom:6px">Presets</div><div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap"><select id="dsppre" style="flex:1;min-width:130px;font-size:11.5px"><option value="">— cargar preset —</option>${dspPresets.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('')}</select><span data-act="dspsave" style="cursor:pointer;color:var(--accent);font-size:12px;padding:3px 9px;border:1px solid var(--border);border-radius:7px">Guardar…</span><span data-act="dspdel" title="Borrar preset seleccionado" style="cursor:pointer;color:var(--text-2);padding:3px 6px;display:inline-flex">${ic('trash', 14)}</span></div></div>`;
+    dsppanel.innerHTML = h;
   }
 
   // interacción de la barra y los popovers (delegada)
@@ -560,6 +659,20 @@ window.player = (function () {
     const rg = e.target.closest('#eqpanel [data-rg]'); if (rg) { setRgMode(rg.dataset.rg); return; }
     const pre = e.target.closest('#eqpanel [data-pre]'); if (pre) { setPreset(pre.dataset.pre); return; }
     if (e.target.closest('#eqpanel [data-act="eqtoggle"]')) { setEqEnabled(!eqOn); return; }
+    if (e.target.closest('#eqpanel [data-act="dspopen"]')) { if (eqpanel) eqpanel.style.display = 'none'; toggleDspPanel(); return; }
+    const prm = e.target.closest('#dsppanel .pqrm'); if (prm) { removePeqBand(+prm.dataset.i); return; }
+    const dp = e.target.closest('#dsppanel [data-act]');
+    if (dp) {
+      const act = dp.dataset.act;
+      if (act === 'dspclose') dsppanel.style.display = 'none';
+      else if (act === 'peqtoggle') setPeqEnabled(!peqOn);
+      else if (act === 'peqadd') addPeqBand();
+      else if (act === 'convtoggle') setConvEnabled(!convOn);
+      else if (act === 'convbrowse') browseImpulse();
+      else if (act === 'dspsave') savePreset();
+      else if (act === 'dspdel') { const sel = document.getElementById('dsppre'); if (sel && sel.value) deletePreset(sel.value); }
+      return;
+    }
     const a = e.target.closest('#nowbar [data-act], #npfs [data-act]'); if (!a) return;
     const k = a.dataset.act;
     if (k === 'prev') prev();
@@ -579,18 +692,30 @@ window.player = (function () {
     const eb = e.target.closest('#eqpanel .eqband'); if (eb) { setEqBand(+eb.dataset.i, parseInt(eb.value, 10)); return; }
     const xf = e.target.closest('#eqpanel [data-act="xfade"]'); if (xf) { setXfade(parseFloat(xf.value)); }
   });
+  // cambios en el panel DSP (selects y campos numéricos: 'change' para no re-render mientras se teclea)
+  document.addEventListener('change', e => {
+    const t = e.target;
+    if (t.closest && t.closest('#dsppanel')) {
+      if (t.classList.contains('pqt')) { updatePeqBand(+t.dataset.i, 'type', t.value); return; }
+      if (t.classList.contains('pqf')) { updatePeqBand(+t.dataset.i, 'freq', t.value); return; }
+      if (t.classList.contains('pqq')) { updatePeqBand(+t.dataset.i, 'q', t.value); return; }
+      if (t.classList.contains('pqg')) { updatePeqBand(+t.dataset.i, 'gain', t.value); return; }
+      if (t.id === 'convsel') { chooseImpulse(t.value); return; }
+      if (t.id === 'dsppre') { if (t.value) loadPreset(t.value); return; }
+    }
+  });
 
   // biblioteca en vivo: el servidor avisa por SSE cuando reescanea; las vistas se refrescan
   try { const es = new EventSource('/api/events'); es.onmessage = e => { try { if (JSON.parse(e.data).type === 'library') document.dispatchEvent(new CustomEvent('escucharrr:changed')); } catch (x) {} }; } catch (e) {}
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', render); else render();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { render(); markEqBtn(); }); else { render(); setTimeout(markEqBtn, 0); }
   const getGain = () => (ctx ? masterGain.gain.value * (active().gain ? active().gain.gain.value : 1) : active().el.volume);  // ganancia efectiva (vol × ReplayGain)
   const getZone = () => ({ name: zone.name, deviceId: zone.deviceId, label: zone.label });
   const getAudio = () => ({ eqOn, eqGains: eqGains.slice(), xfade, rgMode });
   const getNative = () => ({ nativeMode, nativeDeviceId, nativeExclusive, nativePos, playing, startedIdx: nativeStartedIdx });
   // instantánea de ajustes para la página de Configuración (misma fuente que los paneles)
-  function getSettings() { return { xfade, rgMode, radio: radioOn, eqOn, eqGains: eqGains.slice(), eqFreqs: EQLAB.slice(), presets: Object.keys(EQPRE), volume: vol, zone: Object.assign({}, zone), nativeMode, upnpMode, upnpName: upnpDevName }; }
+  function getSettings() { return { xfade, rgMode, radio: radioOn, eqOn, eqGains: eqGains.slice(), eqFreqs: EQLAB.slice(), presets: Object.keys(EQPRE), volume: vol, zone: Object.assign({}, zone), nativeMode, upnpMode, upnpName: upnpDevName, peqOn, peqBands: peqBands.slice(), convOn, convFile }; }
 
   return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain, getZone, getAudio, getNative, setNativeMode, setRadio, undo,
-    getSettings, setXfade, setRgMode, setEqEnabled, setEqBand, setPreset, openOutput: toggleZPanel, openEq: toggleEqPanel };
+    getSettings, setXfade, setRgMode, setEqEnabled, setEqBand, setPreset, openOutput: toggleZPanel, openEq: toggleEqPanel, openDsp: toggleDspPanel };
 })();
