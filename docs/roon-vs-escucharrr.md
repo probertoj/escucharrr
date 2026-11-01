@@ -38,7 +38,7 @@ Evidencia RE de las pantallas de Roon (muestra del inventario `.broo`): `albumbr
 | Identificación de álbum | metadata server propio + fingerprint **mel** (`roon_mel_*`, audiosignaturecensus) | `identify.js` (AcoustID/Chromaprint) + `enrich.js` (MusicBrainz) | 🟡 (equivalente abierto; sin census propio) |
 | **Clásica: compositor + obra** | `composerbrowser`, `workbrowser`, `workdetails` — modelo obra/interpretación | `works.js` + `work.html`: obra por pista, compositores, versiones; "Obras" en el artista | 🟡 (núcleo hecho; faltan movimientos/partes de obra y un navegador de compositores dedicado) |
 | Editorial (bios/reseñas) | editorial licenciado | `editorial.js` (Wikipedia vía Wikidata) + Obsidian manda | ✅ (fuentes abiertas) |
-| Edición/corrección de metadatos | `edit.broo`, `correction.broo` (identificar, agrupar, corregir) | override por `user_edit` + Obsidian; **sin UI de edición/corrección** | 🟡 |
+| Edición/corrección de metadatos | `edit.broo`, `correction.broo` (identificar, agrupar, corregir) | edición EN LA PÁGINA de álbum (tier, estrellas, favorito, reseña) con `/api/edit` → `user_edit`/provenance='user'; falta corregir título/identify | ✅ (campos clave; identify pendiente) |
 | "Tus datos mandan" / procedencia | — | provenance + user_edit ganan a lo externo | ✅ **(ventaja nuestra)** |
 
 ## 3. Reproducción, cola y radio
