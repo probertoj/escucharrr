@@ -32,8 +32,15 @@ function migrate(db) {
   if (addCol(db, 'release_group', 'cover_mime', 'TEXT')) added.push('release_group.cover_mime');
   if (addCol(db, 'release_group', 'spotify_album_id', 'TEXT')) added.push('release_group.spotify_album_id');   // guardado en la biblioteca de Spotify
   if (addCol(db, 'release_group', 'spotify_url', 'TEXT')) added.push('release_group.spotify_url');
+  // Escaneo tolerante a red (modelo Roon, ver memoria roon-storage-scanner): no equiparar "no lo vi"
+  // con "ya no está". scan_seq = generación del último escaneo que VIO el fichero (en una carpeta
+  // leída con éxito); missing_since/_count = lápida: solo se retira tras N escaneos limpios sin verlo.
+  if (addCol(db, 'local_file', 'scan_seq', 'INTEGER')) added.push('local_file.scan_seq');
+  if (addCol(db, 'local_file', 'missing_since', 'TEXT')) added.push('local_file.missing_since');
+  if (addCol(db, 'local_file', 'missing_count', 'INTEGER DEFAULT 0')) added.push('local_file.missing_count');
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_isrc ON recording(isrc)');
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_acoustid ON recording(acoustid)');
+  db.exec('CREATE INDEX IF NOT EXISTS ix_file_size ON local_file(size_bytes)');   // para reconciliar movimientos/renombrados por identidad
   return added;
 }
 

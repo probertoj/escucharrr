@@ -18,18 +18,45 @@ function isUnder(file, root) {
 }
 
 // Quita las filas `local_file` cuyo fichero ya no existe en disco, SOLO bajo las raíces dadas.
-// Robusto ante unidades desmontadas Y ante parpadeos de red (SMB): si la raíz entera no existe no
-// poda nada bajo ella, y un fichero solo se confirma AUSENTE cuando su carpeta se pudo LEER y el
-// fichero no estaba en el listado. Nunca con `fs.existsSync` individual: sobre \\Diskstation un
-// existsSync sobre una carpeta que parpadea devuelve `false` sin lanzar error, y eso interpretaba
-// carpetas flojas como "ficheros borrados" y podaba datos buenos (un reescaneo llegó a vaciar 400+
-// pistas de ~200 carpetas ilegibles). Leer la carpeta una vez (con reintentos) cubre todos sus
-// ficheros a la vez y distingue "borrado de verdad" de "no he podido leerla ahora".
-function pruneMissingFiles(db, roots, log) {
+// Modelo Roon (ver memoria roon-storage-scanner): NUNCA equipara "no lo vi" con "ya no está".
+//  - La AUTORIDAD es el recorrido del escaneo, no una segunda lectura aquí: `opts.okDirs` son las
+//    carpetas enumeradas con éxito y `opts.seenPaths` todos los ficheros vistos en disco. Un fichero
+//    solo es candidato a retirar si su carpeta está en okDirs (la leímos) y su ruta NO está en
+//    seenPaths. Si su carpeta no se pudo leer (SMB caído), se conserva: no se confirma ausencia.
+//  - LÁPIDA: un candidato no se borra de golpe; se marca `missing_since`/`missing_count++` y solo se
+//    retira tras `missThreshold` escaneos limpios consecutivos sin verlo (un fallo transitorio nunca
+//    basta). Verlo de nuevo limpia la lápida (lo hace el upsert de scan.js).
+//  - GATE DE MONTAJE: si el montaje no está sano (raíz no enumerada o 0 ficheros), no se poda nada.
+// Sin opts (compatibilidad), cae a la confirmación conservadora por listado de carpeta (con reintentos).
+function pruneMissingFiles(db, roots, log, opts) {
   const live = (roots || []).filter(r => { try { return r && fs.existsSync(r); } catch (e) { return false; } });
   if (!live.length) return 0;
+  const nf = (opts && opts.nrm) || norm;
+  if (opts && opts.seenPaths && opts.okDirs) {
+    if (opts.mountHealthy === false) { if (log) log('poda: OMITIDA (montaje no sano)'); return 0; }
+    const thr = opts.missThreshold || 2;
+    const del = db.prepare('DELETE FROM local_file WHERE id=?');
+    const tomb = db.prepare("UPDATE local_file SET missing_since=COALESCE(missing_since, datetime('now')), missing_count=COALESCE(missing_count,0)+1 WHERE id=?");
+    let removed = 0, tombed = 0, unreadable = 0;
+    db.exec('BEGIN');
+    try {
+      for (const row of db.prepare('SELECT id, path, missing_count FROM local_file').all()) {
+        if (!live.some(r => isUnder(row.path, r))) continue;             // fichero de otra raíz no vigilada ahora
+        if (opts.seenPaths.has(nf(row.path))) continue;                  // visto en disco → presente (el upsert ya limpió la lápida)
+        if (!opts.okDirs.has(nf(path.dirname(row.path)))) { unreadable++; continue; }  // carpeta no leída este escaneo → no confirmar ausencia
+        // carpeta leída OK y fichero no visto → genuinamente ausente: lápida, y retira al llegar al umbral
+        if ((row.missing_count || 0) + 1 >= thr) { del.run(row.id); removed++; }
+        else { tomb.run(row.id); tombed++; }
+      }
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    if (removed && log) log(`poda: ${removed} fichero(s) ausente(s) retirado(s) (tras ${thr} escaneo(s) limpios)`);
+    if (tombed && log) log(`poda: ${tombed} fichero(s) marcado(s) ausente(s) por 1ª vez (lápida, aún no retirados)`);
+    if (unreadable && log) log(`poda: ${unreadable} fichero(s) conservado(s) (carpeta no leída este escaneo)`);
+    return removed;
+  }
+  // ── Camino de compatibilidad (sin opts): confirma por listado de carpeta con reintentos. ──
   const del = db.prepare('DELETE FROM local_file WHERE id=?');
-  // Cache de listados por carpeta: dir normalizado -> Set de nombres en minúscula, o null si ilegible.
   const dirCache = new Map();
   function sleepSync(ms) { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch (e) {} }
   function listing(dir) {

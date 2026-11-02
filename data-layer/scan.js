@@ -13,7 +13,16 @@ const DB_PATH = arg('db', 'escucharrr.db');
 const ROOT = arg('root');
 const DEMO = process.argv.includes('--demo');
 const PRUNE = !process.argv.includes('--no-prune');   // poda ficheros ausentes + GC del grafo
+// Umbral de lápida (modelo Roon): nº de escaneos limpios consecutivos sin ver un fichero antes de
+// retirarlo. Por defecto 2 (un fallo transitorio nunca basta). --prune-now fuerza 1 (retirada en
+// la primera pasada limpia) para cuando el usuario sabe que el montaje está sano.
+const MISS_THRESHOLD = process.argv.includes('--prune-now') ? 1 : parseInt(arg('miss-threshold', '2'), 10) || 2;
+// Generación de este escaneo: identifica los ficheros VISTOS (en carpetas leídas con éxito) ahora.
+const SCAN_SEQ = Date.now();
 if (!ROOT) { console.error('Falta --root <carpeta de música>'); process.exit(1); }
+
+// Normaliza una ruta para comparar bajo Windows (separadores + minúsculas). Igual que prune.js.
+const nrm = (p) => path.resolve(p).replace(/[\\/]+/g, '\\').toLowerCase();
 
 const db = new DatabaseSync(DB_PATH);
 db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
@@ -116,12 +125,21 @@ const S = {
   genreBy: db.prepare('SELECT id FROM genre WHERE name=?'),
   insGenre: db.prepare('INSERT INTO genre(name) VALUES(?)'),
   linkGenre: db.prepare('INSERT OR IGNORE INTO release_group_genre(release_group_id,genre_id) VALUES(?,?)'),
-  insFile: db.prepare(`INSERT INTO local_file(path,format,sample_rate,bit_depth,channels,duration_ms,size_bytes,mtime,isrc,acoustid,fingerprint,track_id,recording_id,match_by,match_conf)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  insFile: db.prepare(`INSERT INTO local_file(path,format,sample_rate,bit_depth,channels,duration_ms,size_bytes,mtime,isrc,acoustid,fingerprint,track_id,recording_id,match_by,match_conf,scan_seq,missing_since,missing_count)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,0)
      ON CONFLICT(path) DO UPDATE SET format=excluded.format,sample_rate=excluded.sample_rate,bit_depth=excluded.bit_depth,channels=excluded.channels,duration_ms=excluded.duration_ms,size_bytes=excluded.size_bytes,mtime=excluded.mtime,isrc=excluded.isrc,acoustid=excluded.acoustid,fingerprint=excluded.fingerprint,track_id=excluded.track_id,recording_id=excluded.recording_id,
+       -- visto en este escaneo: estampa la generación y limpia cualquier lápida
+       scan_seq=excluded.scan_seq, missing_since=NULL, missing_count=0,
        -- no degradar: conserva el match si el existente es más fuerte (p. ej. 'acoustid'/'isrc' de identify.js frente a 'tags' de un reescaneo)
        match_by=CASE WHEN COALESCE(excluded.match_conf,0)>=COALESCE(local_file.match_conf,0) THEN excluded.match_by ELSE local_file.match_by END,
        match_conf=CASE WHEN COALESCE(excluded.match_conf,0)>=COALESCE(local_file.match_conf,0) THEN excluded.match_conf ELSE local_file.match_conf END`),
+  // Reconciliación de movimientos/renombrados (modelo Roon: rebind por identidad, no borrar+recrear).
+  fileByPath: db.prepare('SELECT id FROM local_file WHERE path=?'),
+  fileByNorm: db.prepare('SELECT id, path FROM local_file WHERE path=? OR path=?'),   // formas NFC/NFD
+  moveByFinger: db.prepare('SELECT id, path FROM local_file WHERE fingerprint IS NOT NULL AND fingerprint=?'),
+  moveByIsrcSize: db.prepare('SELECT id, path FROM local_file WHERE isrc IS NOT NULL AND isrc=? AND size_bytes=?'),
+  moveBySizeDur: db.prepare('SELECT id, path FROM local_file WHERE size_bytes=? AND duration_ms IS NOT NULL AND duration_ms=?'),
+  renamePath: db.prepare('UPDATE local_file SET path=? WHERE id=?'),
   setRgMbid: db.prepare('UPDATE release_group SET mbid=? WHERE id=? AND mbid IS NULL'),
   setRelMbid: db.prepare('UPDATE "release" SET mbid=? WHERE id=? AND mbid IS NULL'),
   setRecMbid: db.prepare('UPDATE recording SET mbid=? WHERE id=? AND mbid IS NULL'),
@@ -149,18 +167,48 @@ function readdirRetry(dir, tries = 6) {
   }
   throw last;
 }
+// okDirs: carpetas enumeradas CON ÉXITO en este escaneo. seenPaths: ficheros de música VISTOS en
+// disco (normalizados), se parseen o no. La poda solo retira un fichero si su carpeta está en
+// okDirs y su ruta NO está en seenPaths — así un fallo de lectura (SMB) nunca marca nada ausente.
+const okDirs = new Set();
+const seenPaths = new Set();
 function walk(dir, out) {
   let ents; try { ents = readdirRetry(dir); } catch (e) { console.warn('  (carpeta ilegible tras reintentos, saltada):', dir, '(' + (e.code || e.message) + ')'); try { insSkip.run(dir, 'carpeta ilegible: ' + (e.code || e.message)); } catch (x) {} return; }
+  okDirs.add(nrm(dir));
   for (const e of ents) {
     const f = path.join(dir, e.name);
     let isDir = false; try { isDir = e.isDirectory(); } catch (x) {}
     if (isDir) walk(f, out);
-    else if (/\.(flac|wav|dsf|dff)$/i.test(e.name)) out.push(f);
+    else if (/\.(flac|wav|dsf|dff)$/i.test(e.name)) { out.push(f); seenPaths.add(nrm(f)); }
   }
 }
 const files = []; walk(path.resolve(ROOT), files);
+// Gate de montaje (modelo Roon "available but does not exist"): solo se puede podar si la RAÍZ se
+// enumeró con éxito y vimos algún fichero. Si no, el volumen/red está caído o incompleto → no restar.
+const mountHealthy = okDirs.has(nrm(ROOT)) && seenPaths.size > 0;
+if (!mountHealthy) console.warn('  [montaje] raíz no enumerada o sin ficheros: se OMITE toda poda (posible red/volumen caído)');
 
-let ok = 0, ident = 0;
+// Reconciliación de movimientos/renombrados (modelo Roon: rebind por identidad, no borrar+recrear).
+// Si una ruta es "nueva" pero corresponde a un fichero que ya teníamos (misma forma NFC/NFD, o misma
+// huella/ISRC+tamaño/tamaño+duración y su ruta antigua ya no está), renombramos la fila existente en
+// vez de insertar una nueva. Así se conserva el id, el análisis (loudness/peaks/gain) y el match, y
+// la ruta antigua no queda como "ausente" para podar. Solo paga coste una ruta nueva.
+function reconcileMove(file, size, durMs, isrc, fp) {
+  if (S.fileByPath.get(file)) return null;                 // ya existe por ruta exacta → upsert normal
+  try {                                                     // 1) misma ruta salvo normalización Unicode (carpetas acentuadas)
+    const nfc = file.normalize('NFC'), nfd = file.normalize('NFD');
+    if (nfc !== file || nfd !== file) { const r = S.fileByNorm.get(nfc, nfd); if (r && r.path !== file) { S.renamePath.run(file, r.id); return 'norm'; } }
+  } catch (e) {}
+  const gone = (p) => !seenPaths.has(nrm(p));               // la ruta antigua no se ha visto en este escaneo
+  const uniqueGone = (rows) => { const c = rows.filter(r => gone(r.path) && nrm(r.path) !== nrm(file)); return c.length === 1 ? c[0] : null; };
+  let src = fp ? uniqueGone(S.moveByFinger.all(fp)) : null;                                   // 2a) huella de audio: identidad exacta
+  if (!src && isrc && size != null) src = uniqueGone(S.moveByIsrcSize.all(isrc, size));       // 2b) ISRC + tamaño
+  if (!src && size != null && durMs != null) src = uniqueGone(S.moveBySizeDur.all(size, durMs)); // 2c) tamaño + duración
+  if (src) { S.renamePath.run(file, src.id); return 'move'; }
+  return null;
+}
+
+let ok = 0, ident = 0, moved = 0, normed = 0;
 db.exec('BEGIN');
 try {
   for (const file of files) {
@@ -206,7 +254,9 @@ try {
     }
     const matchBy = recMbid ? 'mb-tag' : (identified ? 'tags' : null);
     const matchConf = recMbid ? 0.95 : (identified ? 0.7 : null);
-    S.insFile.run(file, fmtLabel, inf.sampleRate, inf.bits, inf.channels, inf.durationMs, st.size, String(st.mtimeMs), isrc, acoustid, fingerprint, trackId, recId, matchBy, matchConf);
+    const rec = reconcileMove(file, st.size, inf.durationMs, isrc, fingerprint);   // rebind si es un movimiento/renombrado
+    if (rec === 'move') moved++; else if (rec === 'norm') normed++;
+    S.insFile.run(file, fmtLabel, inf.sampleRate, inf.bits, inf.channels, inf.durationMs, st.size, String(st.mtimeMs), isrc, acoustid, fingerprint, trackId, recId, matchBy, matchConf, SCAN_SEQ);
     ok++;
   }
   db.exec('COMMIT');
@@ -217,7 +267,9 @@ try {
 // borrar un .flac ya no deja su pista/álbum colgando. (--no-prune para desactivarla.)
 if (PRUNE) {
   const prune = require('./prune');
-  prune.pruneMissingFiles(db, [path.resolve(ROOT)], (m) => console.log('  ' + m));
+  // Poda tolerante a red: solo retira un fichero cuya carpeta se enumeró OK (okDirs) y que no se vio
+  // (seenPaths), y aun así con lápida (missing_count >= umbral). Gated al montaje sano.
+  prune.pruneMissingFiles(db, [path.resolve(ROOT)], (m) => console.log('  ' + m), { seenPaths, okDirs, mountHealthy, scanSeq: SCAN_SEQ, missThreshold: MISS_THRESHOLD, nrm });
   prune.pruneGraph(db, (m) => console.log('  ' + m));
 }
 
@@ -232,6 +284,7 @@ const nMb = db.prepare("SELECT COUNT(*) n FROM local_file WHERE match_by='mb-tag
 const nFp = db.prepare('SELECT COUNT(*) n FROM local_file WHERE fingerprint IS NOT NULL').get().n;
 console.log(`Escaneados ${ok} ficheros (${ident} identificados por tags) -> ${DB_PATH}`);
 console.log(`  identificadores embebidos: ${nMb} con MBID · ${nIsrc} con ISRC · ${nFp} con huella Chromaprint`);
+if (moved || normed) console.log(`  reconciliados por identidad: ${moved} movimiento(s)/renombrado(s) · ${normed} por normalización Unicode (sin borrar+recrear)`);
 
 if (DEMO) {
   const show = (l, rows) => { console.log('\n== ' + l + ' =='); rows.forEach(r => console.log('  ' + Object.values(r).join('  |  '))); };

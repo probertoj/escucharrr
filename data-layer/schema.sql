@@ -175,7 +175,11 @@ CREATE TABLE IF NOT EXISTS local_file (
   track_id     INTEGER REFERENCES track(id),
   recording_id INTEGER REFERENCES recording(id),
   match_by     TEXT,                          -- mb-tag | isrc | acoustid | tags | manual
-  match_conf   REAL
+  match_conf   REAL,
+  -- escaneo tolerante a red (modelo Roon): no equiparar "no lo vi" con "ya no está"
+  scan_seq      INTEGER,                        -- generación del último escaneo que VIO este fichero (carpeta leída OK)
+  missing_since TEXT,                           -- lápida: cuándo se detectó ausente por primera vez (NULL = presente)
+  missing_count INTEGER DEFAULT 0               -- escaneos limpios consecutivos sin verlo; se retira al llegar al umbral
 );
 
 -- Cola de scrobbles (local-first): cada escucha que supera el umbral se guarda aquí como
