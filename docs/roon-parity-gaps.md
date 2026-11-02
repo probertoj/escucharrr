@@ -24,7 +24,7 @@ Roon ofrece MUCHAS más facetas que nosotros. Inventario real extraído:
 | genres (+ sort alfabético / por biblioteca, "view more") | ✅ género (+ buscador) | sort alfabético opcional | P3 |
 | rating | ✅ valoración | — | — |
 | format | ✅ formato | — | — |
-| decade / released (fecha) | ✅ década | rango de fecha fino | P3 |
+| decade / **released (rango de año min/máx)** | ✅ década + **rango de año (desde/hasta)** | — (Roon: `menu_focus_year` con botones de década + steppers min/máx; mi primera mina solo vio `decade_option` y lo di por cubierto — corregido) | — |
 | **bit_depth** (profundidad de bits) | ❌ | tenemos `local_file.bit_depth` | **P1** |
 | **channels / channel_layout** | ❌ | tenemos `local_file.channels` | **P1** |
 | **added** (últimos 3/6 meses, "in the last…") | ❌ | tenemos `release_group.created_at` | **P1** |
