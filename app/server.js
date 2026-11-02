@@ -1014,6 +1014,19 @@ async function _ingRun() {
   } catch (e) { console.error('  [watch] error:', e.message); }
   finally { _ingRunning = false; if (_ingPending.size) { const r = [..._ingPending][0]; _ingPending.delete('rerun'); _ingSchedule(r === 'rerun' ? 'music' : r); } }
 }
+// Supresión de escrituras propias: cuando la app escribe una nota (write-back a Obsidian) ya
+// espeja el estado en la BD, así que el re-sync que dispararía el watcher es redundante y encima
+// bloquea la BD. Marcamos el fichero al escribirlo y el watcher lo ignora durante una ventana.
+const _selfWrites = new Map();   // basename en minúsculas -> expiry (ms)
+function markSelfWrite(relPath) { try { _selfWrites.set(path.basename(relPath).toLowerCase(), Date.now() + 10000); } catch (e) {} }
+function isSelfWrite(f) {
+  if (!f) return false;
+  const k = path.basename(f).toLowerCase();
+  const exp = _selfWrites.get(k);
+  if (exp == null) return false;
+  if (exp > Date.now()) return true;
+  _selfWrites.delete(k); return false;
+}
 function stopWatching() { for (const w of _watchers) { try { w.close(); } catch (e) {} } _watchers = []; stopPolling(); }
 // Vigila una carpeta con fs.watch, pero CAPTURA el evento 'error' asíncrono: en rutas de red
 // (UNC/SMB, p. ej. un NAS) el watch recursivo lanza UNKNOWN de forma asíncrona y, sin este
@@ -1032,7 +1045,7 @@ function startWatching() {   // (re)aplica el watcher según la config actual; s
   const c = watchConfig();
   if (!c) { console.log('biblioteca en vivo: desactivada (crea app/watch.json a partir de watch.example.json, o configúrala en Ajustes)'); return; }
   for (const root of c.music) if (fs.existsSync(root)) { if (isUnc(root)) addPoll(root); else safeWatch(root, 'música', (ev, f) => { if (!f || _AUD.test(f)) _ingSchedule('music'); }); }
-  if (c.vault && fs.existsSync(c.vault)) { if (isUnc(c.vault)) addPoll(c.vault); else safeWatch(c.vault, 'vault', (ev, f) => { if (!f || /\.md$/i.test(f)) _ingSchedule('vault'); }); }
+  if (c.vault && fs.existsSync(c.vault)) { if (isUnc(c.vault)) addPoll(c.vault); else safeWatch(c.vault, 'vault', (ev, f) => { if ((!f || /\.md$/i.test(f)) && !isSelfWrite(f)) _ingSchedule('vault'); }); }
 }
 async function rescanNow(kinds) {   // reescaneo manual inmediato
   const c = watchConfig(); if (!c) throw new Error('No hay carpetas configuradas (crea/edita la configuración de Biblioteca).');
@@ -1391,6 +1404,7 @@ async function writeObsidianNote(subjectType, subjectId, field, value) {
     catch (e) { werr = e; if (!/EPERM|EBUSY|EACCES/i.test(e.code || '')) throw e; await new Promise(r => setTimeout(r, 250)); }
   }
   if (werr) throw new Error('no se pudo escribir la nota (¿bloqueada por OneDrive?): ' + werr.message);
+  markSelfWrite(relPath);   // que el watcher no dispare un re-sync completo por nuestra propia escritura
   // espejar estado en la BD (como el sync): nota + enlace + about/bio con procedencia obsidian
   const fm = splitFrontmatter(content).fm;
   const noteId = Number(Q.noteUpsert.get(c.obs ? (c.obs.vault || vault) : vault, relPath, String(fs.statSync(absPath).mtimeMs), JSON.stringify(fm), text).id);
