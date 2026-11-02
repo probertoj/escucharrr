@@ -134,6 +134,14 @@ input:focus,select:focus,button:focus-visible{outline:none;border-color:var(--ac
 .gchip{display:inline-block;font-size:12px;background:var(--surface-2);color:var(--text-2);padding:4px 11px;border-radius:999px;transition:background .1s}
 a.gchip:hover{background:var(--border)}
 
+/* pestañas de la ficha de artista (estilo Roon: discografía/apariciones/producción/obras) */
+.atabs{display:flex;gap:2px;border-bottom:1px solid var(--border);margin:28px 0 18px;flex-wrap:wrap}
+.atab{background:none;border:none;border-bottom:2px solid transparent;border-radius:0;padding:8px 13px;margin-bottom:-1px;color:var(--text-2);font-size:16px;font-family:var(--serif);cursor:pointer;transition:color .12s,border-color .12s}
+.atab:hover{background:none;color:var(--text)}
+.atab.on{color:var(--text);border-bottom-color:var(--accent);font-weight:600}
+.atab:focus-visible{outline:none;box-shadow:none;color:var(--text)}
+.atabn{color:var(--muted);font-size:12px;font-family:var(--sans);font-weight:400;margin-left:2px}
+
 /* búsqueda */
 .search{position:relative;max-width:540px;margin:0 0 16px}
 .search input{width:100%;padding:10px 14px;border-radius:11px}

@@ -49,9 +49,22 @@ function renderArtist(a){
   const bprov=a.bio&&a.bio_source?('desde '+esc(a.bio_source.source)+provRef(a.bio_source)):'';
   rawBio=a.bio||'';
   const bio=`<div class="about" id="biobox"><div class="prov" style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span>${bprov}</span><span class="bioedit" style="cursor:pointer;color:var(--accent);font-size:12px;white-space:nowrap">${a.bio?'editar bio':'añadir bio'}</span></div><div class="biotext">${a.bio?mdRender(a.bio):'<span style="color:var(--text-2)">Sin biografía. Escribe la tuya — tus datos mandan.</span>'}</div></div>`;
-  const albums=(a.albums||[]).length?`<div class="sec">Álbumes <span style="color:var(--muted);font-size:14px;font-weight:400">${a.albums.length}</span></div><div class="grid">${a.albums.map(albumCard).join('')}</div>`:'<div class="count">Sin álbumes en tu biblioteca todavía.</div>';
-  const appears=(a.appears||[]).length?`<div class="sec">Aparece en</div><ul class="appears">`+a.appears.map(x=>`<li><span class="yr">${x.year||'—'}</span><span style="flex:1"><a href="album.html?id=${x.id}" style="color:var(--accent)">${esc(x.title)}</a> <span style="color:var(--text-2)">· ${esc(x.artist||'')}</span>${x.roles.length?`<div class="roles">${x.roles.map(esc).join(' · ')}</div>`:''}</span></li>`).join('')+`</ul>`:'';
-  const composed=(a.composed||[]).length?`<div class="sec">Obras <span style="color:var(--muted);font-size:14px;font-weight:400;font-family:var(--sans)">${a.composed.length}</span></div><div class="chips">${a.composed.map(w=>`<a class="chip" href="work.html?id=${w.id}">${esc(w.title)}</a>`).join('')}</div>`:'';
+  // Pestañas estilo Roon: discografía (artista principal) / apariciones (interpreta en otros) /
+  // producción (produce, mezcla, arregla…) / obras (compositor). Solo se muestran las que tienen contenido.
+  const appearsList=list=>`<ul class="appears">`+list.map(x=>`<li><span class="yr">${x.year||'—'}</span><span style="flex:1"><a href="album.html?id=${x.id}" style="color:var(--accent)">${esc(x.title)}</a> <span style="color:var(--text-2)">· ${esc(x.artist||'')}</span>${x.roles&&x.roles.length?`<div class="roles">${x.roles.map(esc).join(' · ')}</div>`:''}</span></li>`).join('')+`</ul>`;
+  const PROD_RE=/produc|ingenier|engineer|mezcl|mix|master|arregl|arrang|grab|record/i;
+  const appAll=a.appears||[];
+  const appProd=appAll.filter(x=>(x.roles||[]).some(r=>PROD_RE.test(r)));
+  const appPerf=appAll.filter(x=>!(x.roles||[]).some(r=>PROD_RE.test(r)));
+  const tabs=[];
+  if((a.albums||[]).length) tabs.push(['disco','Discografía',a.albums.length,`<div class="grid">${a.albums.map(albumCard).join('')}</div>`]);
+  if(appPerf.length) tabs.push(['apar','Apariciones',appPerf.length,appearsList(appPerf)]);
+  if(appProd.length) tabs.push(['prod','Producción',appProd.length,appearsList(appProd)]);
+  if((a.composed||[]).length) tabs.push(['obras','Obras',a.composed.length,`<div class="chips">${a.composed.map(w=>`<a class="chip" href="work.html?id=${w.id}">${esc(w.title)}</a>`).join('')}</div>`]);
+  const tabsHtml=tabs.length
+    ? `<div class="atabs">${tabs.map((t,i)=>`<button class="atab${i===0?' on':''}" data-tab="${t[0]}">${t[1]} <span class="atabn">${t[2]}</span></button>`).join('')}</div>`
+      +tabs.map((t,i)=>`<div class="atabpanel" data-tab="${t[0]}"${i===0?'':' hidden'}>${t[3]}</div>`).join('')
+    : '<div class="count">Sin álbumes en tu biblioteca todavía.</div>';
   app.innerHTML=`
     <div class="ahero">
       <div class="ava" style="background:${ava}">${esc((a.name||'?').slice(0,2).toUpperCase())}</div>
@@ -64,10 +77,12 @@ function renderArtist(a){
       </div>
     </div>
     ${bio}
-    ${composed}
-    ${albums}
-    ${appears}`;
+    ${tabsHtml}`;
 }
+// cambiar de pestaña (discografía/apariciones/producción/obras)
+document.addEventListener('click',e=>{const t=e.target.closest('#app .atab');if(!t)return;const k=t.dataset.tab;
+  document.querySelectorAll('#app .atab').forEach(b=>b.classList.toggle('on',b.dataset.tab===k));
+  document.querySelectorAll('#app .atabpanel').forEach(p=>p.hidden=(p.dataset.tab!==k));});
 function load(){fetch('/api/artist?id='+id).then(r=>r.json()).then(renderArtist).catch(e=>app.innerHTML='error: '+e.message);}
 load();
 document.addEventListener('escucharrr:changed',load);
