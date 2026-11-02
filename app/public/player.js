@@ -562,7 +562,9 @@ window.player = (function () {
     const urs = (ur && ur.ok && ur.items) ? ur.items : [];
     if (!urs.length) { box.textContent = 'No se encontraron dispositivos de red (UPnP/DLNA).'; return; }
     box.style.color = 'var(--text)';
-    box.innerHTML = urs.map(d => { const on = upnpMode && (upnpDeviceId === d.id); return `<div class="udev" data-id="${esc(d.id)}" data-name="${esc(d.name)}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer;${on ? 'background:var(--accent-bg);color:var(--accent)' : ''}"><span style="width:16px;display:inline-flex;justify-content:center">${on ? ic('check', 15) : ''}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(d.name)}${d.model ? ' · ' + esc(d.model) : ''}</span></div>`; }).join('');
+    box.innerHTML = urs.map(d => { const on = upnpMode && (upnpDeviceId === d.id); const cast = d.castable !== false;
+      const tag = d.kind === 'chromecast' ? 'Chromecast' : d.kind === 'airplay' ? 'AirPlay' : (d.model || 'DLNA');
+      return `<div class="udev" data-id="${esc(d.id)}" data-name="${esc(d.name)}" data-cast="${cast ? 1 : 0}" title="${cast ? '' : 'Detectado en la red. Reproducir en Chromecast/AirPlay usa un protocolo propietario, aún no soportado.'}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:${cast ? 'pointer' : 'default'};${cast ? '' : 'opacity:.6;'}${on ? 'background:var(--accent-bg);color:var(--accent)' : ''}"><span style="width:16px;display:inline-flex;justify-content:center">${on ? ic('check', 15) : ''}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(d.name)} <span style="color:var(--muted);font-size:11px">· ${esc(tag)}${cast ? '' : ' (detectado)'}</span></span></div>`; }).join('');
   }
 
   // ── letra de la pista (LRCLIB, con resaltado sincronizado tipo karaoke) ──
@@ -699,7 +701,7 @@ window.player = (function () {
     if (e.target.closest('#zonepanel [data-act="ntoggle"]')) { setNativeMode(!nativeMode); return; }
     const nd = e.target.closest('#zonepanel .ndev'); if (nd) { setNativeDevice(nd.dataset.id); return; }
     if (e.target.matches('#zonepanel [data-act="nexcl"]')) { setNativeExclusive(e.target.checked); return; }
-    const ud = e.target.closest('#zonepanel .udev'); if (ud) { setUpnpMode(true, ud.dataset.id, ud.dataset.name); return; }
+    const ud = e.target.closest('#zonepanel .udev'); if (ud) { if (ud.dataset.cast === '0') { try { (window.toast || window.alert)('Detectado, pero reproducir en Chromecast/AirPlay aún no está soportado (protocolo propietario).'); } catch (x) {} return; } setUpnpMode(true, ud.dataset.id, ud.dataset.name); return; }
     if (e.target.closest('#zonepanel [data-act="uoff"]')) { setUpnpMode(false); return; }
     const rg = e.target.closest('#eqpanel [data-rg]'); if (rg) { setRgMode(rg.dataset.rg); return; }
     const pre = e.target.closest('#eqpanel [data-pre]'); if (pre) { setPreset(pre.dataset.pre); return; }

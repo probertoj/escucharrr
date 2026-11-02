@@ -17,6 +17,7 @@ const NATIVE = (() => { try { return require('../engine/native-player'); } catch
 // Salida de RED (UPnP/DLNA): el servidor controla un renderer (p. ej. Eversolo) que descarga
 // la música de /api/stream. Ver engine/upnp.js y docs/dispositivos-de-red-y-roon.md.
 const UPNP = (() => { try { return require('../engine/upnp'); } catch (e) { return null; } })();
+const MDNS = (() => { try { return require('../engine/mdns'); } catch (e) { return null; } })();   // descubre Chromecast/AirPlay (solo visibles)
 let _np = null;
 function np() {
   if (!NATIVE) return null;
@@ -773,8 +774,12 @@ async function handleUpnp(req, res, u) {
   if (!UPNP) return sendJSON(res, { ok: false, error: 'salida de red no disponible en esta build' });
   try {
     if (req.method === 'GET' && sub === 'devices') {
-      const items = await upnpDevices(u.searchParams.get('refresh') === '1');
-      return sendJSON(res, { ok: true, items: items.map(d => ({ id: d.id, name: d.name, manufacturer: d.manufacturer, model: d.model, ip: d.ip })) });
+      const [items, cast] = await Promise.all([   // DLNA (SSDP) y Chromecast/AirPlay (mDNS) en paralelo
+        upnpDevices(u.searchParams.get('refresh') === '1'),
+        MDNS ? MDNS.discover({ timeoutMs: 2500 }).catch(() => []) : Promise.resolve([]),
+      ]);
+      const dlna = items.map(d => ({ id: d.id, name: d.name, manufacturer: d.manufacturer, model: d.model, ip: d.ip, kind: 'dlna', castable: true }));
+      return sendJSON(res, { ok: true, items: dlna.concat(cast) });
     }
     if (req.method === 'GET' && sub === 'state') return sendJSON(res, { ok: true, state: await upnpState() });
     const body = req.method === 'POST' ? await readBody(req) : {};
