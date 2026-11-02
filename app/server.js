@@ -46,7 +46,8 @@ function initAppSchema(d) {
   CREATE INDEX IF NOT EXISTS ix_tag_item ON tag_item(subject_type, subject_id);
   CREATE TABLE IF NOT EXISTS bookmark (id INTEGER PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS dsp_preset (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, state TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
-  CREATE TABLE IF NOT EXISTS radio_station (id INTEGER PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, homepage TEXT, favicon TEXT, created_at TEXT DEFAULT (datetime('now')));`);
+  CREATE TABLE IF NOT EXISTS radio_station (id INTEGER PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, homepage TEXT, favicon TEXT, created_at TEXT DEFAULT (datetime('now')));
+  CREATE TABLE IF NOT EXISTS skipped_file (path TEXT, reason TEXT, at TEXT DEFAULT (datetime('now')));`);
   // Índices sobre las claves foráneas del grafo: sin ellos, recorrer release_group -> release -> medium -> track -> local_file
   // hace scans anidados por álbum (inviable con decenas de miles de discos). Cada uno en su try por si el grafo aún no existe.
   for (const ix of [
@@ -1620,6 +1621,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/tracks/facets') return sendJSON(res, trackFacets());
     if (u.pathname === '/api/folders') return sendJSON(res, folderList({ root: u.searchParams.get('root'), path: u.searchParams.get('path') }));
     if (u.pathname === '/api/works') return sendJSON(res, { items: db.prepare(`SELECT w.id, w.title, w.type, (SELECT group_concat(DISTINCT a.name) FROM credit c JOIN artist a ON a.id=c.artist_id WHERE c.entity_type='work' AND c.entity_id=w.id AND c.role='composición') composer, (SELECT COUNT(DISTINCT tr.id) FROM recording r JOIN track tr ON tr.recording_id=r.id WHERE r.work_id=w.id) perf FROM work w ORDER BY w.title`).all() });
+    if (u.pathname === '/api/skipped') { let total = 0, items = []; try { total = db.prepare('SELECT COUNT(*) n FROM skipped_file').get().n; items = db.prepare('SELECT path, reason FROM skipped_file ORDER BY path LIMIT 500').all(); } catch (e) {} return sendJSON(res, { total, items }); }
     if (u.pathname === '/api/album') { const a = album(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/search') return sendJSON(res, search(u.searchParams.get('q'), Math.min(parseInt(u.searchParams.get('n') || '20', 10) || 20, 100)));
     if (u.pathname === '/api/artist') { const a = artist(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }

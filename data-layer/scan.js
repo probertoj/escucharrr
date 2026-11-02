@@ -18,6 +18,10 @@ if (!ROOT) { console.error('Falta --root <carpeta de música>'); process.exit(1)
 const db = new DatabaseSync(DB_PATH);
 db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
 require('./migrate').migrate(db);              // columnas isrc/acoustid/fingerprint si faltan
+// Registro de ficheros/carpetas saltados (errores de lectura, p. ej. SMB del NAS) para mostrarlo en Ajustes.
+db.exec(`CREATE TABLE IF NOT EXISTS skipped_file (path TEXT, reason TEXT, at TEXT DEFAULT (datetime('now')))`);
+db.exec('DELETE FROM skipped_file');
+const insSkip = db.prepare('INSERT INTO skipped_file(path, reason) VALUES(?, ?)');
 
 // ── parsers de cabecera (solo lectura, sin cargar el fichero entero) ──────────
 function readFlac(file) {
@@ -135,7 +139,7 @@ const ensureGenre = (name) => { const r = S.genreBy.get(name); return r ? r.id :
 
 // ── recorrido ─────────────────────────────────────────────────────────────────
 function walk(dir, out) {
-  let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { console.warn('  (carpeta ilegible, saltada):', dir, '(' + (e.code || e.message) + ')'); return; }
+  let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { console.warn('  (carpeta ilegible, saltada):', dir, '(' + (e.code || e.message) + ')'); try { insSkip.run(dir, 'carpeta ilegible: ' + (e.code || e.message)); } catch (x) {} return; }
   for (const e of ents) {
     const f = path.join(dir, e.name);
     let isDir = false; try { isDir = e.isDirectory(); } catch (x) {}
@@ -150,7 +154,7 @@ db.exec('BEGIN');
 try {
   for (const file of files) {
     const ext = path.extname(file).slice(1).toLowerCase();
-    let parsed = null; try { parsed = ext === 'flac' ? readFlac(file) : ext === 'dsf' ? readDsf(file) : ext === 'dff' ? readDff(file) : readWav(file); } catch (e) { console.warn('  error leyendo', path.basename(file), e.message); }
+    let parsed = null; try { parsed = ext === 'flac' ? readFlac(file) : ext === 'dsf' ? readDsf(file) : ext === 'dff' ? readDff(file) : readWav(file); } catch (e) { console.warn('  error leyendo', path.basename(file), e.message); try { insSkip.run(file, 'error al leer: ' + (e.code || e.message)); } catch (x) {} }
     if (!parsed) continue;
     const fmtLabel = (ext === 'dsf' || ext === 'dff') ? dsdLabel(parsed.info.sampleRate) : ext.toUpperCase();
     const st = fs.statSync(file), t = parsed.tags, inf = parsed.info;

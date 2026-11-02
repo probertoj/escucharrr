@@ -87,6 +87,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     <div class="row" style="display:block"><div class="k" style="margin-bottom:8px">Fuente Obsidian <span class="d" style="font-weight:400">(opcional; tus notas mandan)</span></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input id="obsvault" placeholder="ruta del vault" style="flex:1;min-width:200px"><button id="browseobs">Explorar…</button><input id="obsfolder" placeholder="carpeta de álbumes" style="width:160px"><button id="saveobs">Guardar</button></div></div>
     <div class="row"><div class="lbl"><div class="k">Reescanear la biblioteca ahora</div><div class="d" id="rescanstatus">vuelve a escanear las carpetas y la fuente Obsidian</div></div><button id="rescanbtn">Reescanear ahora</button></div>
+    <div class="row" style="display:block"><div class="k" style="margin-bottom:6px">Ficheros saltados en el último escaneo <span id="skipcount" style="color:var(--muted);font-weight:400"></span></div><div id="skiplist" class="d" style="max-height:220px;overflow:auto;font-size:12px;line-height:1.5">cargando…</div></div>
   </div></div>
 
   <div class="grp"><h2><span class="gi">${window.icon('backup',18)}</span> Copia de seguridad</h2><div class="body">
@@ -222,6 +223,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
   function loadBackups() { fetch('/api/backup/list').then(r => r.json()).then(j => { if (j.ok) { BACKUPS = j.backups || []; renderBackups(); } }).catch(() => { const box = document.getElementById('bklist'); if (box) box.textContent = 'No se pudo cargar.'; }); }
   loadBackups();
+  // ficheros saltados en el último escaneo (errores de lectura, p. ej. SMB del NAS)
+  fetch('/api/skipped').then(r => r.json()).then(j => {
+    const cnt = document.getElementById('skipcount'), box = document.getElementById('skiplist'); if (!box) return;
+    cnt.textContent = j.total ? '(' + j.total + ')' : '';
+    if (!j.total) { box.innerHTML = '<span style="color:var(--text-2)">Ninguno — todas las carpetas se leyeron bien.</span>'; return; }
+    box.innerHTML = (j.items || []).map(s => `<div style="padding:2px 0;border-bottom:1px solid var(--border)"><span style="color:var(--text-2)">${esc(s.path)}</span> <span style="color:var(--muted)">· ${esc(s.reason || '')}</span></div>`).join('') + (j.total > (j.items || []).length ? `<div style="color:var(--muted);margin-top:6px">…y ${j.total - j.items.length} más</div>` : '');
+  }).catch(() => { const box = document.getElementById('skiplist'); if (box) box.textContent = 'No se pudo cargar.'; });
   document.getElementById('bknow').addEventListener('click', async () => { const b = document.getElementById('bknow'); b.disabled = true; b.textContent = 'Creando…'; try { const r = await fetch('/api/backup/now', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(x => x.json()); if (r.ok) { BACKUPS = r.backups || []; renderBackups(); bkMsg('Copia creada: ' + fmtBk(r.file), true); } else bkMsg('No se pudo crear: ' + (r.error || ''), false); } catch (e) { bkMsg('No se pudo contactar con el servidor.', false); } b.disabled = false; b.textContent = 'Crear copia'; });
   document.getElementById('bklist').addEventListener('click', async e => {
     const rb = e.target.closest('.bkrestore');
