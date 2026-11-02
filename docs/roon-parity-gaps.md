@@ -35,7 +35,7 @@ Roon ofrece MUCHAS más facetas que nosotros. Inventario real extraído:
 | **has_cover / has_liner_notes / has_pdf / has_additional_images** | ❌ | solo has_cover es viable (arte embebido); el resto no lo trackeamos | P3 |
 | **countries (países) / labels (sellos)** | ❌ | `release.country`/tabla `label`; datos pobres hoy | P3 |
 | multiple_formats / contiguous_tracks | ❌ | nicho; el escáner fusiona a un formato por álbum | P3 |
-| **Inspector** (facetas de salud, ver §6) | ◑ Identificado + Con género | faltan duplicados/corrupto/sin audio/ubicaciones | P2 |
+| **Inspector** (facetas de salud, ver §6) | ◑ Identificado, Con género, **Con versiones**, **Multidisco** | faltan corrupto/sin audio(ya cubierto por "Audio local")/ubicaciones de almacenamiento/exportable | P3 |
 
 Revisión EXHAUSTIVA del Focus (Nov 2 2026): inventario completo de `albumbrowser_focus_*`
 cotejado. Facetas principales de álbum ya cubiertas; solo quedan las de datos pobres/caros
