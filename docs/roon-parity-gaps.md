@@ -150,11 +150,14 @@ para multi-room: UPnP/DLNA/AirPlay. Sin cambios aquí.
 
 ---
 
-## Cola de trabajo priorizada (lo que implanto proactivamente)
-- **P1** Focus: facetas **bit depth**, **canales**, **añadido recientemente**; sorts **date_added**, **random**. ← en curso
-- **P1** Reseña/portada: plegado de reseña + (futuro) selector de fuente; preferencia de portada archivo/meta.
-- **P2** Inspector (identificado/duplicados/sin género), "más/último reproducido", tabs de artista, versiones de álbum, ficheros saltados en Ajustes.
-- **P3** Correcciones manuales, fotos/booklet, clásica (obras/movimientos), import date, localización.
+## Cola de trabajo priorizada
+Hecho (Nov 2 2026): portadas desde arte embebido FLAC; Focus acotado + buscador por columna;
+facetas **bit depth / canales / añadido** + sort **date_added / random**; **Inspector: Identificado + Con género**;
+render de markdown de notas (reseña/bio); **write-back a Obsidian** (guardar la reseña en el .md, preservando frontmatter — va MÁS ALLÁ de Roon, que no reescribe tus ficheros); virtualización del grid.
+Pendiente:
+- **P1** Reseña: plegado + **selector de fuente** (editorial/archivo/Obsidian/tuya); preferencia de portada archivo/meta/mejor.
+- **P2** Inspector: duplicados, corrupto, sin audio, ubicaciones; "más/último reproducido"; tabs de artista (apariciones/compilaciones/producción); versiones de álbum; ficheros saltados en Ajustes (tenemos el log de ENOENT del NAS); write-back de bio de artista.
+- **P3** Correcciones manuales de pistas/discos, fotos/booklet, clásica (obras/movimientos), import date, localización, preferencias de metadatos por-campo.
 
 _Documento vivo: el RE del cuerpo compilado de las `.broo` y del modelo de datos del Core
 sigue abierto; esto recoge la capa de UI (99 pantallas) a un nivel mucho más fino que antes._
