@@ -47,6 +47,17 @@ function initAppSchema(d) {
   CREATE TABLE IF NOT EXISTS bookmark (id INTEGER PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS dsp_preset (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, state TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS radio_station (id INTEGER PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, homepage TEXT, favicon TEXT, created_at TEXT DEFAULT (datetime('now')));`);
+  // Índices sobre las claves foráneas del grafo: sin ellos, recorrer release_group -> release -> medium -> track -> local_file
+  // hace scans anidados por álbum (inviable con decenas de miles de discos). Cada uno en su try por si el grafo aún no existe.
+  for (const ix of [
+    `CREATE INDEX IF NOT EXISTS ix_release_rg ON "release"(release_group_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_medium_release ON medium(release_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_track_medium ON track(medium_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_track_recording ON track(recording_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_rgg_rg ON release_group_genre(release_group_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_flag_subject ON flag(subject_type, subject_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_rating_subject ON rating(subject_type, subject_id)`,
+  ]) { try { d.exec(ix); } catch (e) {} }
 }
 let db = new DatabaseSync(DB_PATH);
 initAppSchema(db);
@@ -75,12 +86,18 @@ async function spotifyAccessToken() {
 function buildQ(db) { return {
   genresOf: db.prepare(`SELECT group_concat(g.name,'|') gs FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id WHERE rgg.release_group_id=?`),
   formatOf: db.prepare(`SELECT rel.format f FROM "release" rel WHERE rel.release_group_id=? LIMIT 1`),
+  // Lista de biblioteca: columnas base baratas. listen_later/has_audio/played/géneros/formato/tags
+  // se resuelven en conjunto (ver libraryList), no con subconsultas correladas por fila.
   library: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.tier_rank,
-      (SELECT label FROM tier WHERE key=a.tier_key) tier_label, a.album_stars, a.is_favorite,
-      EXISTS(SELECT 1 FROM flag f WHERE f.subject_type='release_group' AND f.subject_id=a.id AND f.flag='listen_later') listen_later,
-      EXISTS(SELECT 1 FROM "release" r JOIN medium m ON m.release_id=r.id JOIN track t ON t.medium_id=m.id JOIN local_file lf ON lf.track_id=t.id WHERE r.release_group_id=a.id) has_audio,
-      EXISTS(SELECT 1 FROM play p JOIN track tr ON (p.track_id=tr.id OR p.recording_id=tr.recording_id) JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE rel.release_group_id=a.id) played
+      (SELECT label FROM tier WHERE key=a.tier_key) tier_label, a.album_stars, a.is_favorite
      FROM v_album a ORDER BY a.title`),
+  // ── índices en conjunto para la lista (una pasada cada uno, no N+1) ──
+  audioIds:  db.prepare(`SELECT DISTINCT rel.release_group_id id FROM local_file lf JOIN track tr ON (tr.id=lf.track_id OR tr.recording_id=lf.recording_id) JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id`),
+  playedIds: db.prepare(`SELECT DISTINCT rel.release_group_id id FROM play p JOIN track tr ON (p.track_id=tr.id OR p.recording_id=tr.recording_id) JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id`),
+  laterIds:  db.prepare(`SELECT subject_id id FROM flag WHERE subject_type='release_group' AND flag='listen_later'`),
+  genresAll: db.prepare(`SELECT rgg.release_group_id id, group_concat(g.name,'|') gs FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id GROUP BY rgg.release_group_id`),
+  formatAll: db.prepare(`SELECT release_group_id id, format f FROM "release" WHERE format IS NOT NULL GROUP BY release_group_id`),
+  tagsAll:   db.prepare(`SELECT ti.subject_id id, group_concat(t.name,'|') gs FROM tag_item ti JOIN tag t ON t.id=ti.tag_id WHERE ti.subject_type='release_group' GROUP BY ti.subject_id`),
   album: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.tier_rank,
       (SELECT label FROM tier WHERE key=a.tier_key) tier_label, a.album_stars, a.is_favorite,
       EXISTS(SELECT 1 FROM flag f WHERE f.subject_type='release_group' AND f.subject_id=a.id AND f.flag='listen_later') listen_later,
@@ -196,12 +213,13 @@ function buildQ(db) { return {
   discUnrated: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
      FROM v_album a WHERE a.tier_key IS NULL ORDER BY a.first_release DESC, a.title LIMIT 18`),
   discUnratedCount: db.prepare(`SELECT count(*) n FROM v_album WHERE tier_key IS NULL`),
+  // "Vuelve a estos" (muy valorados que no has reproducido): el conjunto de álbumes reproducidos
+  // es diminuto, así que lo calculamos una vez con NOT IN en vez de un NOT EXISTS correlado por fila.
   discRevisit: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
      FROM v_album a
-     WHERE a.tier_rank>=4 AND NOT EXISTS(
-       SELECT 1 FROM play p JOIN track tr ON (p.track_id=tr.id OR p.recording_id=tr.recording_id)
-       JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
-       WHERE rel.release_group_id=a.id)
+     WHERE a.tier_rank>=4 AND a.id NOT IN (
+       SELECT rel.release_group_id FROM play p JOIN track tr ON (p.track_id=tr.id OR p.recording_id=tr.recording_id)
+       JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id)
      ORDER BY a.tier_rank DESC, RANDOM() LIMIT 12`),
   discRandom: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
      FROM v_album a ORDER BY RANDOM() LIMIT 6`),
@@ -281,13 +299,15 @@ function buildQ(db) { return {
   discListenLater: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
      FROM v_album a JOIN flag f ON f.subject_type='release_group' AND f.subject_id=a.id AND f.flag='listen_later'
      ORDER BY f.set_at DESC LIMIT 18`),
-  discNotRecent: db.prepare(`SELECT * FROM (
-       SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite,
-         (SELECT MAX(p.played_at) FROM play p JOIN track tr ON (p.track_id=tr.id OR p.recording_id=tr.recording_id)
-            JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
-            WHERE rel.release_group_id=a.id) last_played
-       FROM v_album a)
-     WHERE last_played IS NOT NULL AND last_played < datetime('now', ?) ORDER BY last_played ASC LIMIT 12`),
+  // "Hace tiempo que no suena": arrancamos desde play (pocas filas) y agrupamos por álbum,
+  // luego unimos a v_album por PK. Evita calcular un MAX correlado por cada álbum de la biblioteca.
+  discNotRecent: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite, lp.last_played
+     FROM (SELECT rel.release_group_id rgid, MAX(p.played_at) last_played
+             FROM play p JOIN track tr ON (p.track_id=tr.id OR p.recording_id=tr.recording_id)
+             JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
+             GROUP BY rel.release_group_id) lp
+     JOIN v_album a ON a.id = lp.rgid
+     WHERE lp.last_played < datetime('now', ?) ORDER BY lp.last_played ASC LIMIT 12`),
 }; }
 let Q = buildQ(db);
 function logPlay(j) {
@@ -381,7 +401,23 @@ function album(id) {
   return a;
 }
 function libraryList() {
-  return Q.library.all().map(a => { a.genres = (Q.genresOf.get(a.id).gs || '').split('|').filter(Boolean); a.format = (Q.formatOf.get(a.id) || {}).f || null; a.tags = Q.tagsOfAlbum.all(a.id).map(r => r.name); return a; });
+  const rows = Q.library.all();
+  // una pasada por índice (set-based) en vez de 3+ consultas por álbum: O(n) total, no O(n) por fila
+  const audio = new Set(Q.audioIds.all().map(r => r.id));
+  const played = new Set(Q.playedIds.all().map(r => r.id));
+  const later = new Set(Q.laterIds.all().map(r => r.id));
+  const genres = new Map(Q.genresAll.all().map(r => [r.id, (r.gs || '').split('|').filter(Boolean)]));
+  const format = new Map(Q.formatAll.all().map(r => [r.id, r.f]));
+  const tags = new Map(Q.tagsAll.all().map(r => [r.id, (r.gs || '').split('|').filter(Boolean)]));
+  for (const a of rows) {
+    a.genres = genres.get(a.id) || [];
+    a.format = format.get(a.id) || null;
+    a.tags = tags.get(a.id) || [];
+    a.listen_later = later.has(a.id) ? 1 : 0;
+    a.has_audio = audio.has(a.id) ? 1 : 0;
+    a.played = played.has(a.id) ? 1 : 0;
+  }
+  return rows;
 }
 function work(id) {
   const w = Q.workGet.get(id); if (!w) return null;

@@ -52,7 +52,7 @@ function avals(a,key){
   if(key==='tier')return a.tier_key?[a.tier_key]:[];
   if(key==='genre')return a.genres||[];
   if(key==='tag')return a.tags||[];
-  if(key==='decade')return a.year?[String(Math.floor(a.year/10)*10)+'s']:[];
+  if(key==='decade'){const y=parseInt(a.year,10);return (y>=1000&&y<=9999)?[String(Math.floor(y/10)*10)+'s']:[];}
   if(key==='type')return a.primary_type?[a.primary_type.toLowerCase()]:[];
   if(key==='format')return a.format?[a.format]:[];
   if(BOOLK[key])return [a[BOOLK[key]]?'sí':'no'];
