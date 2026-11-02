@@ -17,6 +17,7 @@
   var ITEMS = [
     { href: 'home.html', label: 'Inicio', ico: 'home' },
     { href: 'index.html', label: 'Biblioteca', ico: 'library', root: true },
+    { href: 'tracks.html', label: 'Pistas', ico: 'music' },
     { href: 'discover.html', label: 'Descubrir', ico: 'discover' },
     { href: 'genres.html', label: 'Géneros', ico: 'genres' },
     { href: 'playlists.html', label: 'Listas', ico: 'lists' },

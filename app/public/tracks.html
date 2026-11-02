@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — pistas</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.trow{display:flex;align-items:center;gap:12px;padding:8px 8px;margin:0 -8px;border-radius:9px;border-bottom:1px solid var(--border);transition:background .1s}
+.trow:hover{background:var(--surface-2)}
+.trow .pbtn{flex:none;border:none;background:none;color:var(--accent);cursor:pointer;padding:0 2px;display:inline-flex;align-items:center}
+.trow .cov{flex:none;width:40px;height:40px;border-radius:6px;overflow:hidden;box-shadow:var(--shadow);background:var(--surface-2)}
+.trow .cov img{width:100%;height:100%;object-fit:cover;display:block}
+.trow .meta{flex:1;min-width:0}
+.trow .t{font-weight:600;font-size:14px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.trow .s{font-size:12.5px;color:var(--text-2);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.trow .s a{color:var(--text-2)}
+.trow .fmt{flex:none;font-size:10.5px;color:var(--muted);letter-spacing:.03em}
+.trow .dur{flex:none;color:var(--text-2);font-size:12.5px;font-variant-numeric:tabular-nums;width:46px;text-align:right}
+#more{margin:18px auto 6px;display:block}
+.empty{color:var(--text-2);margin-top:20px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Pistas</h1>
+  <div class="count" id="count">cargando…</div>
+  <div class="toolbar">
+    <div class="search" style="margin:0;flex:1;max-width:460px"><input id="q" type="search" placeholder="Buscar pistas, artistas, álbumes…" autocomplete="off"></div>
+    <div class="spacer"></div>
+    <label style="color:var(--text-2);font-size:13px">Ordenar</label>
+    <select id="sort">
+      <option value="title">Por título</option>
+      <option value="album">Por álbum</option>
+      <option value="duration">Por duración</option>
+    </select>
+    <button id="dir" title="Ascendente / descendente">↑</button>
+  </div>
+  <div id="list"></div>
+  <button id="more" style="display:none">Cargar más</button>
+</div>
+
+<script>
+const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const mmss=ms=>{if(!ms)return '';const s=Math.round(ms/1000);return Math.floor(s/60)+':'+String(s%60).padStart(2,'0');};
+function cover(id){return id?`<img src="/api/cover?rg=${id}" alt="" loading="lazy">`:'';}
+let TRACKS=[], total=0, offset=0, loading=false, done=false;
+let q='', sort='title', dir='asc';
+function rowHtml(t,i){
+  const album=t.albumId?`<a href="album.html?id=${t.albumId}">${esc(t.album||'')}</a>`:esc(t.album||'');
+  return `<div class="trow">
+    <button class="pbtn" data-i="${i}" title="Reproducir" aria-label="Reproducir">${window.icon('play',15)}</button>
+    <div class="cov">${cover(t.albumId)}</div>
+    <div class="meta"><div class="t">${esc(t.title||'—')}</div><div class="s">${esc(t.artist||'—')}${t.album?' · '+album:''}</div></div>
+    <div class="fmt">${esc(t.format||'')}</div>
+    <div class="dur">${mmss(t.length_ms)}</div>
+  </div>`;}
+function appendRows(items){
+  const list=document.getElementById('list');
+  const start=TRACKS.length;
+  TRACKS=TRACKS.concat(items);
+  const h=items.map((t,k)=>rowHtml(t,start+k)).join('');
+  list.insertAdjacentHTML('beforeend',h);
+}
+function updateCount(){document.getElementById('count').textContent=q?`${total} resultado${total===1?'':'s'} para «${q}»`:`${total} pistas`;}
+function load(reset){
+  if(loading||(done&&!reset))return; loading=true;
+  if(reset){TRACKS=[];offset=0;done=false;document.getElementById('list').innerHTML='';}
+  const url='/api/tracks?limit=100&offset='+offset+'&sort='+sort+'&dir='+dir+(q?'&q='+encodeURIComponent(q):'');
+  fetch(url).then(r=>r.json()).then(j=>{
+    loading=false; total=j.total||0; const items=j.items||[];
+    appendRows(items); offset=TRACKS.length;
+    if(!items.length||TRACKS.length>=total)done=true;
+    updateCount();
+    document.getElementById('more').style.display=done?'none':'block';
+  }).catch(e=>{loading=false;document.getElementById('count').textContent='error: '+e.message;});
+}
+// reproducir: la lista cargada hace de cola, arrancando en la pista pulsada
+document.addEventListener('click',e=>{const b=e.target.closest('.pbtn');if(!b)return;const i=+b.dataset.i;if(window.player&&TRACKS[i])player.playTracks(TRACKS,i);});
+// búsqueda (debounce) y orden
+let qt; document.getElementById('q').addEventListener('input',e=>{clearTimeout(qt);qt=setTimeout(()=>{q=e.target.value.trim();load(true);},250);});
+document.getElementById('sort').addEventListener('change',e=>{sort=e.target.value;load(true);});
+document.getElementById('dir').addEventListener('click',function(){dir=dir==='asc'?'desc':'asc';this.textContent=dir==='asc'?'↑':'↓';load(true);});
+document.getElementById('more').addEventListener('click',()=>load(false));
+// scroll infinito
+window.addEventListener('scroll',()=>{if(!done&&!loading&&(window.innerHeight+window.scrollY)>=document.body.offsetHeight-600)load(false);},{passive:true});
+load(true);
+document.addEventListener('escucharrr:changed',()=>load(true));
+</script>
+<script src="icons.js" defer></script>
+<script src="nav.js" defer></script>
+<script src="player.js" defer></script>
+</body>
+</html>

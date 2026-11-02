@@ -54,6 +54,7 @@ function initAppSchema(d) {
     `CREATE INDEX IF NOT EXISTS ix_medium_release ON medium(release_id)`,
     `CREATE INDEX IF NOT EXISTS ix_track_medium ON track(medium_id)`,
     `CREATE INDEX IF NOT EXISTS ix_track_recording ON track(recording_id)`,
+    `CREATE INDEX IF NOT EXISTS ix_recording_title ON recording(title)`,   // explorador de pistas: orden/paginación por título
     `CREATE INDEX IF NOT EXISTS ix_rgg_rg ON release_group_genre(release_group_id)`,
     `CREATE INDEX IF NOT EXISTS ix_flag_subject ON flag(subject_type, subject_id)`,
     `CREATE INDEX IF NOT EXISTS ix_rating_subject ON rating(subject_type, subject_id)`,
@@ -501,6 +502,38 @@ function libraryList() {
   }
   for (const g of vgroups.values()) if (g.length > 1) for (const a of g) a.has_versions = 1;
   return rows;
+}
+// Explorador de pistas (como el trackbrowser de Roon). Con 254k pistas va en el servidor:
+// búsqueda + orden + paginación. Una pista por fila (join a un único local_file) para no duplicar.
+function tracksList(opts) {
+  const limit = Math.min(Math.max(parseInt(opts.limit, 10) || 100, 1), 200);
+  const offset = Math.max(parseInt(opts.offset, 10) || 0, 0);
+  const q = String(opts.q || '').trim();
+  const dir = opts.dir === 'desc' ? 'DESC' : 'ASC';
+  const orderExpr = opts.sort === 'album' ? 'alb' : opts.sort === 'duration' ? 'len' : 'r.title';   // título (indexado) por defecto
+  const base = `FROM track tr JOIN recording r ON r.id=tr.recording_id
+     JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id`;
+  let where = '', args = [];
+  if (q) { const like = '%' + q + '%'; where = ` WHERE (COALESCE(tr.title,r.title) LIKE ? OR rg.title LIKE ? OR EXISTS(SELECT 1 FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id,r.artist_credit_id) AND acn.name LIKE ?))`; args = [like, like, like]; }
+  // 1ª pasada: la página de pistas (sin local_file, para que el ORDER BY/LIMIT no recorra 250k ficheros)
+  const sel = `SELECT tr.id trackId, tr.recording_id rid,
+       COALESCE(tr.title, r.title) title,
+       (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id, r.artist_credit_id) ORDER BY acn.position LIMIT 1) artist,
+       rg.id albumId, rg.title album, COALESCE(tr.length_ms, r.length_ms) length_ms
+     ${base}${where} ORDER BY ${orderExpr} ${dir}, tr.id LIMIT ? OFFSET ?`;
+  const rows = db.prepare(sel).all(...args, limit, offset);
+  const total = q ? db.prepare(`SELECT COUNT(*) n ${base}${where}`).get(...args).n : Q.cTracks.get().n;
+  // 2ª pasada: datos de fichero (formato/reproducible/ganancia) SOLO de las pistas devueltas
+  if (rows.length) {
+    const tids = rows.map(r => r.trackId), rids = rows.map(r => r.rid).filter(x => x != null);
+    const ph = n => Array(n).fill('?').join(',');
+    const lfs = db.prepare(`SELECT track_id, recording_id, format, gain_db, peak_dbfs, album_gain_db, album_peak_dbfs FROM local_file WHERE track_id IN (${ph(tids.length)})${rids.length ? ' OR recording_id IN (' + ph(rids.length) + ')' : ''}`).all(...tids, ...rids);
+    const byTid = new Map(), byRid = new Map();
+    for (const f of lfs) { if (f.track_id != null && !byTid.has(f.track_id)) byTid.set(f.track_id, f); if (f.recording_id != null && !byRid.has(f.recording_id)) byRid.set(f.recording_id, f); }
+    for (const r of rows) { const f = byTid.get(r.trackId) || byRid.get(r.rid) || null; r.format = f ? f.format : null; r.playable = !!f; r.gain_db = f ? f.gain_db : null; r.peak_dbfs = f ? f.peak_dbfs : null; r.album_gain_db = f ? f.album_gain_db : null; r.album_peak_dbfs = f ? f.album_peak_dbfs : null; }
+  }
+  const items = rows.map(t => ({ trackId: t.trackId, recording_id: t.rid, title: t.title, artist: t.artist, albumId: t.albumId, album: t.album, length_ms: t.length_ms, format: t.format, playable: t.playable, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs }));
+  return { total, offset, limit, items };
 }
 function work(id) {
   const w = Q.workGet.get(id); if (!w) return null;
@@ -1527,6 +1560,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/peaks') { const pk = peaksOf(parseInt(u.searchParams.get('track'), 10)); return pk ? sendJSON(res, { peaks: pk }) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/settings') return sendJSON(res, settingsInfo());
     if (u.pathname === '/api/library') return sendJSON(res, libraryList());
+    if (u.pathname === '/api/tracks') return sendJSON(res, tracksList({ q: u.searchParams.get('q'), sort: u.searchParams.get('sort'), dir: u.searchParams.get('dir'), offset: u.searchParams.get('offset'), limit: u.searchParams.get('limit') }));
     if (u.pathname === '/api/album') { const a = album(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/search') return sendJSON(res, search(u.searchParams.get('q'), Math.min(parseInt(u.searchParams.get('n') || '20', 10) || 20, 100)));
     if (u.pathname === '/api/artist') { const a = artist(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
