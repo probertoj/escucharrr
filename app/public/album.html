@@ -77,7 +77,7 @@ function renderAlbum(a){
         <div style="color:var(--text-2);font-size:13px">${esc(a.primary_type||'álbum')} · ${a.year||'—'}</div>
         <h1>${esc(a.title)}</h1>
         <div style="font-size:15px">${artistLink}</div>
-        ${(a.tracks||[]).length?`<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn-accent" id="playalbum" style="display:inline-flex;align-items:center;gap:6px">${window.icon('play',15)}Reproducir</button><button id="addalbum" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('plus',15)}Añadir a lista</button></div>`:''}
+        ${(a.tracks||[]).length?`<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn-accent" id="playalbum" style="display:inline-flex;align-items:center;gap:6px">${window.icon('play',15)}Reproducir</button><button id="addalbum" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('plus',15)}Añadir a lista</button><button id="identifyalbum" title="${a.mbid?'Ya identificado con MusicBrainz — reidentificar':'Emparejar con MusicBrainz por nº de pistas y duraciones'}" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon(a.mbid?'check':'search',15)}${a.mbid?'Reidentificar':'Identificar'}</button></div>`:''}
         <div class="meta">
           <span><span class="k">Tier</span> ${tier}</span>
           <span><span class="k">Valoración</span> ${stars}</span>
@@ -142,6 +142,56 @@ function openAboutEditor(){
   document.getElementById('aboutsave').onclick=()=>{ const v=ta.value; editField('about',v).then(r=>{ if(r.ok){toast(v.trim()?'Reseña guardada':'Reseña quitada');load();}else toast(r.error||'error'); }); };
   document.getElementById('aboutobs').onclick=()=>{ const v=ta.value; if(!v.trim()){toast('Escribe algo primero');return;}
     fetch('/api/obsidian/write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subject_type:'release_group',subject_id:id,field:'about',value:v})}).then(r=>r.json()).then(r=>{ if(r.ok){toast((r.created?'Nota creada: ':'Guardado en ')+r.path);load();}else toast(r.error||'error'); }).catch(e=>toast('error: '+e.message)); };
+}
+
+// ── Wizard de IDENTIFICACIÓN (estilo Roon): empareja el álbum con MusicBrainz por nº de pistas
+// + perfil de duraciones (no por búsqueda de texto). GET /api/identify, luego /api/identify/apply. ──
+document.addEventListener('click',e=>{ if(e.target.closest('#identifyalbum')){ openIdentify(); } });
+function idClose(){ const m=document.getElementById('idwiz'); if(m) m.remove(); }
+function openIdentify(){
+  idClose();
+  const m=document.createElement('div'); m.id='idwiz';
+  m.setAttribute('style','position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:6vh 16px 16px;overflow:auto');
+  m.innerHTML=`<div id="idcard" style="width:100%;max-width:640px;background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.3);overflow:hidden">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px;border-bottom:1px solid var(--border)">
+      <div style="font-weight:600;font-size:15px;display:inline-flex;align-items:center;gap:7px">${window.icon('search',16)}Identificar álbum</div>
+      <span id="idx" title="Cerrar" style="cursor:pointer;color:var(--text-2);display:inline-flex">${window.icon('close',17)}</span>
+    </div>
+    <div id="idbody" style="padding:16px"><div style="color:var(--text-2);font-size:13px">Buscando candidatos en MusicBrainz… (puede tardar unos segundos)</div></div>
+  </div>`;
+  document.body.appendChild(m);
+  m.addEventListener('click',ev=>{ if(ev.target===m||ev.target.closest('#idx')) idClose(); });
+  fetch('/api/identify?rg='+id).then(r=>r.json()).then(renderIdentify).catch(e=>{ const b=document.getElementById('idbody'); if(b) b.innerHTML='<div style="color:var(--no,#A32D2D)">Error: '+esc(e.message)+'</div>'; });
+}
+function renderIdentify(r){
+  const b=document.getElementById('idbody'); if(!b) return;
+  if(!r||!r.ok){ b.innerHTML='<div style="color:#A32D2D">No se pudo consultar: '+esc((r&&r.error)||'error')+'</div>'; return; }
+  const p=r.profile||{}, cands=r.candidates||[];
+  const prof=`<div style="font-size:13px;color:var(--text-2);margin-bottom:12px">Tu álbum: <b style="color:var(--text)">${esc(p.title||'')}</b> — ${esc(p.artist||'')} · ${p.trackCount||0} pistas${p.barcode?' · barcode '+esc(p.barcode):''}</div>`;
+  if(!cands.length){ b.innerHTML=prof+'<div style="color:var(--text-2)">Sin candidatos en MusicBrainz. Prueba a corregir artista/título en los tags.</div>'; return; }
+  const chip=(label)=>`<span style="font-size:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:999px;padding:1px 7px;color:var(--text-2)">${label}</span>`;
+  const rows=cands.map((c,i)=>{
+    const pts=[]; if(c.parts){ if(c.parts.barcode) pts.push(chip('barcode ✓')); if(c.parts.trackCount) pts.push(chip('nº pistas ✓')); pts.push(chip('dur '+Math.round((c.parts.dur||0)*100)+'%')); }
+    const best=i===0?'border-color:var(--accent);background:color-mix(in srgb,var(--accent) 7%,var(--surface))':'';
+    const pct=Math.max(0,Math.min(100,Math.round((c.score||0)*100)));
+    return `<div class="idcand" style="display:flex;gap:12px;align-items:center;padding:10px 12px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;${best}">
+      <div style="width:42px;text-align:center;flex:none"><div style="font-weight:700;font-size:15px">${pct}</div><div style="font-size:9px;color:var(--text-2)">puntos</div></div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.title||'(sin título)')}</div>
+        <div style="font-size:12px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.artist||'')} · ${esc(c.date||'?')}${c.country?' '+esc(c.country):''} · ${c.trackCount||0} pistas</div>
+        <div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">${pts.join('')}</div>
+      </div>
+      <button class="iduse" data-mbid="${esc(c.mbid)}" style="flex:none;cursor:pointer;background:var(--accent);color:#fff;border:none;border-radius:8px;padding:7px 13px;font-size:13px">Usar</button>
+    </div>`;
+  }).join('');
+  b.innerHTML=prof+rows+'<div style="font-size:11px;color:var(--text-2);margin-top:4px">Al elegir una edición se fija el MBID y se traen sus metadatos (créditos, fechas, portada…), como en Roon.</div>';
+  b.querySelectorAll('.iduse').forEach(btn=>btn.addEventListener('click',()=>applyIdentify(btn.dataset.mbid,btn)));
+}
+function applyIdentify(mbid,btn){
+  if(!mbid) return; btn.disabled=true; btn.textContent='Aplicando…';
+  fetch('/api/identify/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rg:id,release_mbid:mbid})})
+    .then(r=>r.json()).then(r=>{ if(r.ok){ idClose(); toast(r.enriching?'Identificado · enriqueciendo metadatos…':'Álbum identificado'); load(); } else { btn.disabled=false; btn.textContent='Usar'; toast(r.error||'error'); } })
+    .catch(e=>{ btn.disabled=false; btn.textContent='Usar'; toast('error: '+e.message); });
 }
 
 // Reproducir: encola el álbum y arranca (el player registra la escucha)

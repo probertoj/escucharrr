@@ -32,6 +32,9 @@ const PUB = path.join(__dirname, 'public');
 if (!fs.existsSync(DB_PATH)) { console.error('No existe', DB_PATH, '\nGenera la BD con las herramientas de ../data-layer.'); process.exit(1); }
 // Scrobbling local-first (Last.fm + ListenBrainz): cola en SQLite + drenador con reintentos.
 const scrobble = require('../data-layer/scrobble');
+// Wizard de IDENTIFICACIÓN de álbum (modelo Roon: empareja por nº de pistas + perfil de duraciones
+// contra MusicBrainz). Ver data-layer/identify-album.js y docs/roon-parity-gaps.md.
+const identifyAlbum = require('../data-layer/identify-album');
 // Esquema de las tablas propias de la app (idempotente). Extraído a función para poder re-aplicarlo
 // al REABRIR la BD tras una restauración de copia de seguridad.
 function initAppSchema(d) {
@@ -452,6 +455,7 @@ function album(id) {
   if (a.reviews.length) { a.about = a.reviews[0].text; a.about_source = { source: a.reviews[0].source, source_ref: a.reviews[0].ref }; }
   else { a.about = null; a.about_source = null; }
   a.editions = Q.editions.all(id);
+  a.mbid = (db.prepare('SELECT mbid FROM release_group WHERE id=?').get(id) || {}).mbid || null;   // ¿identificado? (para el wizard)
   a.cover_pref = (Q.coverPref.get(id) || {}).value || 'auto';   // fuente de portada elegida (auto/file/download/none)
   a.hidden = Q.flagGet.get('release_group', id, 'hidden') ? 1 : 0;
   a.versions = versionsOf(id, a.title);   // otras ediciones del mismo álbum en tu biblioteca
@@ -1546,6 +1550,36 @@ async function handleEdit(req, res) {
   catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 
+// ── IDENTIFICAR un álbum sin MBID (wizard estilo Roon) ──────────────────────────
+// GET  /api/identify?rg=ID         → candidatos de MusicBrainz puntuados por duración (red, ~1,1 s/candidato)
+// POST /api/identify/apply {rg, release_mbid, enrich?} → fija el MBID (y, opcional, encadena enrich --rg)
+async function handleIdentifySuggest(req, res, u) {
+  try {
+    const rg = parseInt(u.searchParams.get('rg'), 10);
+    if (!rg) { res.writeHead(400); return res.end(JSON.stringify({ ok: false, error: 'falta rg' })); }
+    const r = await identifyAlbum.suggest(db, rg);
+    return sendJSON(res, { ok: true, profile: r.profile, candidates: r.candidates });
+  } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+}
+async function handleIdentifyApply(req, res) {
+  try {
+    const b = await readBody(req);
+    const rg = parseInt(b.rg, 10);
+    const mbid = String(b.release_mbid || '').trim();
+    if (!rg || !/^[0-9a-f-]{36}$/i.test(mbid)) { res.writeHead(400); return res.end(JSON.stringify({ ok: false, error: 'rg o release_mbid inválido' })); }
+    const r = await identifyAlbum.applyMbid(db, rg, mbid);
+    sseBroadcast('library');
+    // Como Roon, identificar debería traer también los metadatos: encadena enrich SOLO de este álbum
+    // (proceso aparte, como el watcher; WAL + busy_timeout sostienen al escritor extra). Fire-and-forget.
+    if (b.enrich !== false) {
+      _spawnIngest([path.join(_DL, 'enrich.js'), '--db', DB_PATH, '--rg', String(rg)])
+        .then((out) => { if (out) console.log('  [identify] enrich rg', rg, '→', out); sseBroadcast('library'); })
+        .catch(() => {});
+    }
+    return sendJSON(res, { ok: true, releaseMbid: r.releaseMbid, rgMbid: r.rgMbid, enriching: b.enrich !== false });
+  } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+}
+
 // ── Guardar la reseña/bio DE VUELTA en la nota de Obsidian (son .md) ──────────────
 // Preserva el frontmatter tal cual y reemplaza solo el cuerpo; escritura atómica
 // (fichero temporal + rename) dentro del vault; espeja el estado en la BD como hace el sync.
@@ -1667,6 +1701,8 @@ http.createServer((req, res) => {
   if (req.method === 'POST' && u.pathname === '/api/obsidian/write') return void handleObsidianWrite(req, res);
   if (u.pathname.startsWith('/api/scrobble/')) return void handleScrobble(req, res, u);
   if (u.pathname === '/api/lyrics') return void getLyrics(parseInt(u.searchParams.get('track'), 10)).then(r => sendJSON(res, r)).catch(() => sendJSON(res, { found: false }));
+  if (u.pathname === '/api/identify' && req.method === 'GET') return void handleIdentifySuggest(req, res, u);
+  if (u.pathname === '/api/identify/apply' && req.method === 'POST') return void handleIdentifyApply(req, res);
   if (u.pathname === '/api/playlists' || u.pathname === '/api/playlist' || u.pathname.startsWith('/api/playlist/')) return void handlePlaylists(req, res, u);
   try {
     if (u.pathname === '/api/stream') return streamAudio(req, res, parseInt(u.searchParams.get('track'), 10));
