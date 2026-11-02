@@ -65,9 +65,14 @@ input:focus,select:focus,button:focus-visible{outline:none;border-color:var(--ac
 
 /* Focus / facetas */
 .focus{border:1px solid var(--border);border-radius:13px;padding:10px;margin:8px 0 14px;overflow-x:auto;background:var(--surface)}
-.facets{display:flex;gap:14px;min-width:min-content}
-.fcol{min-width:152px}
-.fcol h4{margin:4px 8px 6px;font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.07em;text-transform:uppercase}
+.facets{display:flex;gap:14px;min-width:min-content;align-items:flex-start}
+/* cada faceta acota su alto y desplaza su lista por dentro (estilo Roon): el panel no crece
+   con 765 géneros; para facetas largas, un buscador filtra los valores dentro de la columna. */
+.fcol{min-width:158px;max-width:210px;display:flex;flex-direction:column;max-height:44vh}
+.fcol h4{margin:4px 8px 6px;font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.07em;text-transform:uppercase;display:flex;justify-content:space-between;gap:6px}
+.fcol h4 .fcount{font-weight:500;letter-spacing:0;text-transform:none}
+.ffilter{margin:0 6px 6px;padding:4px 8px;font-size:12px;border-radius:7px;width:calc(100% - 12px)}
+.fvals{overflow-y:auto;overflow-x:hidden;flex:1;min-height:0}
 .fv{display:flex;justify-content:space-between;gap:10px;font-size:13px;padding:5px 8px;border-radius:7px;cursor:pointer;transition:background .1s}
 .fv:hover{background:var(--surface-2)}
 .fv.on{background:var(--accent-bg);color:var(--accent);font-weight:500}

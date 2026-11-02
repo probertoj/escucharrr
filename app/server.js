@@ -107,6 +107,11 @@ function buildQ(db) { return {
   about: db.prepare(`SELECT value v FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='about'`),
   aboutExt: db.prepare(`SELECT about v FROM release_group WHERE id=?`),   // reseña editorial externa (Wikipedia)
   coverOf: db.prepare(`SELECT cover_path, cover_mime FROM release_group WHERE id=?`),   // carátula cacheada (Cover Art Archive)
+  // ficheros FLAC del álbum, para extraer el arte embebido (como Roon lee de los propios ficheros)
+  filesForAlbum: db.prepare(`SELECT DISTINCT lf.path FROM local_file lf
+     JOIN track tr ON (tr.id=lf.track_id OR tr.recording_id=lf.recording_id)
+     JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
+     WHERE rel.release_group_id=? AND lf.format='FLAC' LIMIT 5`),
   albumIdOf: db.prepare(`SELECT rel.release_group_id aid FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE tr.id=?`),
   spotifyLocal: db.prepare(`SELECT rg.id, rg.title, (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) artist, (SELECT barcode FROM "release" rel WHERE rel.release_group_id=rg.id AND rel.barcode IS NOT NULL LIMIT 1) barcode FROM release_group rg`),
   spotifySet: db.prepare(`UPDATE release_group SET spotify_album_id=?, spotify_url=? WHERE id=?`),
@@ -797,16 +802,68 @@ function coverSvg(id) {
     `<rect width="300" height="300" fill="${p[0]}"/><rect y="186" width="300" height="114" fill="${p[1]}"/>` +
     `<circle cx="210" cy="108" r="51" fill="#FAC775"/><rect x="45" y="45" width="18" height="126" fill="#FAECE7"/></svg>`;
 }
+// Arte embebido en FLAC (bloque METADATA tipo 6 PICTURE): como Roon, la portada sale del
+// propio fichero, sin red. El bloque está al principio del archivo, así que leerlo es barato
+// aun por SMB (no se carga el audio). Devuelve {mime, ext, data} o null.
+const ART_MIME_EXT = { 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
+function flacPicture(file) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const magic = Buffer.alloc(4); if (fs.readSync(fd, magic, 0, 4, 0) < 4 || magic.toString('latin1') !== 'fLaC') return null;
+    let off = 4;
+    for (;;) {
+      const h = Buffer.alloc(4); if (fs.readSync(fd, h, 0, 4, off) < 4) break; off += 4;
+      const last = (h[0] & 0x80) !== 0, type = h[0] & 0x7f, len = (h[1] << 16) | (h[2] << 8) | h[3];
+      if (type === 6) {                                 // PICTURE
+        const b = Buffer.alloc(len); if (fs.readSync(fd, b, 0, len, off) < len) return null;
+        let p = 0; const u = () => { const v = b.readUInt32BE(p); p += 4; return v; };
+        u();                                            // tipo de imagen (portada=3, etc.)
+        const ml = u(); const mime = b.toString('latin1', p, p + ml).toLowerCase(); p += ml;
+        const dl = u(); p += dl;                         // descripción (saltar)
+        p += 16;                                         // ancho/alto/profundidad/colores
+        const imglen = u();
+        if (p + imglen > b.length) return null;
+        return { mime, ext: ART_MIME_EXT[mime] || 'bin', data: b.subarray(p, p + imglen) };
+      }
+      off += len;
+      if (last) break;
+    }
+    return null;
+  } finally { fs.closeSync(fd); }
+}
+const ART_DIR = path.join(__dirname, 'cache', 'art');
 function serveCover(res, id) {
   const row = Number.isFinite(id) ? Q.coverOf.get(id) : null;
-  if (row && row.cover_path) {
+  if (row && row.cover_path) {                          // 1) portada descargada (Cover Art Archive)
     const p = path.join(__dirname, row.cover_path);
     if (p.startsWith(__dirname) && fs.existsSync(p)) {
       res.writeHead(200, { 'Content-Type': row.cover_mime || 'image/jpeg', 'Cache-Control': 'public, max-age=86400' });
       return fs.createReadStream(p).pipe(res);
     }
   }
-  res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'public, max-age=3600' });
+  if (Number.isFinite(id)) {                             // 2) arte embebido en los FLAC (cacheado en disco)
+    try {
+      for (const ext of ['jpg', 'png', 'webp', 'gif']) {
+        const c = path.join(ART_DIR, id + '.' + ext);
+        if (fs.existsSync(c)) { res.writeHead(200, { 'Content-Type': 'image/' + (ext === 'jpg' ? 'jpeg' : ext), 'Cache-Control': 'public, max-age=86400' }); return fs.createReadStream(c).pipe(res); }
+      }
+      if (!fs.existsSync(path.join(ART_DIR, id + '.none'))) {   // marcador: ya buscamos y no había, no reintentar
+        try { fs.mkdirSync(ART_DIR, { recursive: true }); } catch (e) {}
+        let pic = null;
+        for (const f of Q.filesForAlbum.all(id)) { try { pic = flacPicture(f.path); } catch (e) { pic = null; } if (pic) break; }
+        if (pic) {
+          try { fs.writeFileSync(path.join(ART_DIR, id + '.' + pic.ext), pic.data); } catch (e) {}
+          res.writeHead(200, { 'Content-Type': pic.mime, 'Cache-Control': 'public, max-age=86400' });
+          return res.end(pic.data);
+        }
+        try { fs.writeFileSync(path.join(ART_DIR, id + '.none'), ''); } catch (e) {}
+      }
+    } catch (e) {}
+  }
+  // 3) SVG geométrico de respaldo. SIN cachear: es un marcador temporal; si luego aparece
+  // la portada (arte embebido recién cacheado o descarga del Cover Art Archive), se ve ya,
+  // en vez de quedar pegado el placeholder durante una hora.
+  res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(coverSvg(id));
 }
 

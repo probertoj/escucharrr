@@ -72,16 +72,22 @@ function passes(a){
   if(txt&&!((a.title+' '+a.artist).toLowerCase().includes(txt)))return false;
   return true;}
 
+const ffilters={};   // texto de filtro por faceta (clave -> texto), se conserva al repintar
 function renderFacets(){
   const box=document.getElementById('facets'); if(!box)return;
   let h=facetDefs.map(([k,label])=>{const m=valsOf(k);const keys=Object.keys(m);if(!keys.length)return '';
     const vs=keys.sort((x,y)=>k==='tier'?TR[y]-TR[x]:(k==='decade'?y.localeCompare(x):m[y]-m[x]));
-    return `<div class="fcol"><h4>${label}</h4>`+vs.map(v=>{const st=sel[k][v]||'';
-      return `<div class="fv ${st==='inc'?'on':st==='exc'?'exc':''}" data-k="${k}" data-v="${esc0(v)}" title="Clic: incluir → excluir → quitar">${st==='exc'?'<span class="fvsign">−</span>':''}<span>${esc0(vlabel(k,v))}</span><span class="n">${m[v]}</span></div>`;}).join('')+`</div>`;}).join('');
+    const search=keys.length>8?`<input class="ffilter" data-k="${k}" placeholder="filtrar…" autocomplete="off">`:'';
+    return `<div class="fcol"><h4><span>${label}</span><span class="fcount">${keys.length}</span></h4>${search}<div class="fvals">`+vs.map(v=>{const st=sel[k][v]||'';
+      return `<div class="fv ${st==='inc'?'on':st==='exc'?'exc':''}" data-k="${k}" data-v="${esc0(v)}" data-lbl="${esc0(String(vlabel(k,v)).toLowerCase())}" title="Clic: incluir → excluir → quitar">${st==='exc'?'<span class="fvsign">−</span>':''}<span>${esc0(vlabel(k,v))}</span><span class="n">${m[v]}</span></div>`;}).join('')+`</div></div>`;}).join('');
   const rm=[[5,'5★'],[4,'4★ o más'],[3,'3★ o más'],[2,'2★ o más'],[1,'1★ o más']];
-  h+=`<div class="fcol"><h4>Valoración</h4>`+rm.map(([v,l])=>{const n=ALBUMS.filter(a=>a.album_stars>=v).length;const on=minR===v;
-    return `<div class="fv ${on?'on':''}" data-rat="${v}"><span>${l}</span><span class="n">${n}</span></div>`;}).join('')+`</div>`;
-  box.innerHTML=h;}
+  h+=`<div class="fcol"><h4><span>Valoración</span></h4><div class="fvals">`+rm.map(([v,l])=>{const n=ALBUMS.filter(a=>a.album_stars>=v).length;const on=minR===v;
+    return `<div class="fv ${on?'on':''}" data-rat="${v}"><span>${l}</span><span class="n">${n}</span></div>`;}).join('')+`</div></div>`;
+  box.innerHTML=h;
+  applyFfilters();}
+function applyFfilters(){document.querySelectorAll('#facets .ffilter').forEach(f=>{const q=ffilters[f.dataset.k]||'';f.value=q;filterCol(f.closest('.fcol'),q);});}
+function filterCol(col,q){q=q.toLowerCase();col.querySelectorAll('.fv').forEach(fv=>{fv.style.display=(!q||(fv.dataset.lbl||'').includes(q))?'':'none';});}
+document.getElementById('facets').addEventListener('input',e=>{const f=e.target.closest('.ffilter');if(!f)return;ffilters[f.dataset.k]=f.value;filterCol(f.closest('.fcol'),f.value);});
 function renderChips(){
   const box=document.getElementById('chips'); const c=[];
   facetDefs.forEach(([k])=>{const s=sel[k];for(const v in s)c.push([k,v,(s[v]==='exc'?'≠ ':'')+vlabel(k,v),s[v]]);});
