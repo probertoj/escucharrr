@@ -138,8 +138,19 @@ const ensureRec = (title, cid, len) => { const r = S.recBy.get(title, cid); retu
 const ensureGenre = (name) => { const r = S.genreBy.get(name); return r ? r.id : Number(S.insGenre.run(name).lastInsertRowid); };
 
 // ── recorrido ─────────────────────────────────────────────────────────────────
+// Espera síncrona (bloqueante) para reintentos sobre rutas de red (SMB): un readdir/stat sobre
+// \\Diskstation puede fallar de forma transitoria (timeout, ENOENT fugaz) y recuperarse enseguida.
+function sleepSync(ms) { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch (e) {} }
+function readdirRetry(dir, tries = 4) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try { return fs.readdirSync(dir, { withFileTypes: true }); }
+    catch (e) { last = e; if (i < tries - 1) sleepSync(250 * (i + 1)); }   // 250/500/750ms
+  }
+  throw last;
+}
 function walk(dir, out) {
-  let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { console.warn('  (carpeta ilegible, saltada):', dir, '(' + (e.code || e.message) + ')'); try { insSkip.run(dir, 'carpeta ilegible: ' + (e.code || e.message)); } catch (x) {} return; }
+  let ents; try { ents = readdirRetry(dir); } catch (e) { console.warn('  (carpeta ilegible tras reintentos, saltada):', dir, '(' + (e.code || e.message) + ')'); try { insSkip.run(dir, 'carpeta ilegible: ' + (e.code || e.message)); } catch (x) {} return; }
   for (const e of ents) {
     const f = path.join(dir, e.name);
     let isDir = false; try { isDir = e.isDirectory(); } catch (x) {}
@@ -154,7 +165,10 @@ db.exec('BEGIN');
 try {
   for (const file of files) {
     const ext = path.extname(file).slice(1).toLowerCase();
-    let parsed = null; try { parsed = ext === 'flac' ? readFlac(file) : ext === 'dsf' ? readDsf(file) : ext === 'dff' ? readDff(file) : readWav(file); } catch (e) { console.warn('  error leyendo', path.basename(file), e.message); try { insSkip.run(file, 'error al leer: ' + (e.code || e.message)); } catch (x) {} }
+    const parseOne = () => ext === 'flac' ? readFlac(file) : ext === 'dsf' ? readDsf(file) : ext === 'dff' ? readDff(file) : readWav(file);
+    let parsed = null, perr = null;
+    for (let i = 0; i < 2 && !parsed; i++) { try { parsed = parseOne(); } catch (e) { perr = e; if (i === 0) sleepSync(200); } }   // un reintento (SMB transitorio)
+    if (!parsed && perr) { console.warn('  error leyendo', path.basename(file), perr.message); try { insSkip.run(file, 'error al leer: ' + (perr.code || perr.message)); } catch (x) {} }
     if (!parsed) continue;
     const fmtLabel = (ext === 'dsf' || ext === 'dff') ? dsdLabel(parsed.info.sampleRate) : ext.toUpperCase();
     const st = fs.statSync(file), t = parsed.tags, inf = parsed.info;
