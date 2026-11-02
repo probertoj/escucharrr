@@ -142,9 +142,12 @@ if (cfg.albumsFolder && !fs.existsSync(dir)) {
   console.warn('  aviso: la carpeta de álbumes "' + cfg.albumsFolder + '" no existe en el vault; uso la raíz del vault');
   cfg.albumsFolder = ''; dir = vaultRoot;
 }
+// Sync INCREMENTAL: --only <nombre.md> procesa una sola nota (el watcher lo usa cuando cambia
+// un .md), evitando el pase completo del vault y el rebuild de FTS que bloquean la BD.
+const ONLY = arg('only', null);
 let files = [];
-try { files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.md')); }
-catch (e) { console.error('  no se puede leer la carpeta del vault:', dir, '(' + (e.code || e.message) + '); 0 notas'); }
+if (ONLY) { const base = path.basename(String(ONLY)); files = fs.existsSync(path.join(dir, base)) ? [base] : []; }
+else { try { files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.md')); } catch (e) { console.error('  no se puede leer la carpeta del vault:', dir, '(' + (e.code || e.message) + '); 0 notas'); } }
 let n = 0, skipped = 0;
 const idx = buildAlbumIndex();
 db.exec('BEGIN');
@@ -216,7 +219,10 @@ if (PRUNE && fs.existsSync(dir)) {
   let gone = 0;
   db.exec('BEGIN');
   try {
-    for (const nt of db.prepare('SELECT id, path FROM obsidian_note').all()) {
+    const notesToCheck = ONLY
+      ? db.prepare('SELECT id, path FROM obsidian_note WHERE path LIKE ?').all('%' + path.basename(String(ONLY)))
+      : db.prepare('SELECT id, path FROM obsidian_note').all();
+    for (const nt of notesToCheck) {
       if (!inFolder(nt.path)) continue;                                  // nota de otra carpeta no sincronizada ahora
       let exists = false; try { exists = fs.existsSync(path.join(vaultRoot, nt.path)); } catch (e) {}
       if (exists) continue;
@@ -231,17 +237,16 @@ if (PRUNE && fs.existsSync(dir)) {
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
   if (gone) console.log(`  poda: ${gone} nota(s) ausente(s) quitada(s)`);
-  prune.pruneGraph(db, (m) => console.log('  ' + m));
+  if (!ONLY) prune.pruneGraph(db, (m) => console.log('  ' + m));   // el GC completo del grafo no hace falta por una sola nota
 }
 
-// Reconstruir el índice de búsqueda (instantánea = prefijo FTS5; completa = bm25)
-db.exec('DELETE FROM search_fts');
-db.exec(`INSERT INTO search_fts(name,kind,subject_type,subject_id)
-  SELECT name,'artist','artist',id FROM artist`);
-db.exec(`INSERT INTO search_fts(name,kind,subject_type,subject_id)
-  SELECT title,'album','release_group',id FROM release_group`);
-db.exec(`INSERT INTO search_fts(name,kind,subject_type,subject_id)
-  SELECT title,'track','recording',id FROM recording`);
+// Reconstruir el índice de búsqueda: solo en el pase COMPLETO (un enrich-only por nota no cambia títulos)
+if (!ONLY) {
+  db.exec('DELETE FROM search_fts');
+  db.exec(`INSERT INTO search_fts(name,kind,subject_type,subject_id) SELECT name,'artist','artist',id FROM artist`);
+  db.exec(`INSERT INTO search_fts(name,kind,subject_type,subject_id) SELECT title,'album','release_group',id FROM release_group`);
+  db.exec(`INSERT INTO search_fts(name,kind,subject_type,subject_id) SELECT title,'track','recording',id FROM recording`);
+}
 
 console.log(`Enriquecidos ${n} discos desde el vault${CREATE_MISSING ? '' : ` (${skipped} notas sin disco, ignoradas)`} -> ${DB_PATH}`);
 

@@ -1135,6 +1135,17 @@ function watchConfig() {
 function _spawnIngest(args) { return new Promise(r => { const p = cp.spawn(process.execPath, args, { cwd: _DL }); let o = ''; p.stdout.on('data', d => o += d); p.stderr.on('data', d => o += d); p.on('close', () => r(o.trim().split('\n').pop() || '')); }); }
 let _ingPending = new Set(), _ingTimer = null, _ingRunning = false;
 function _ingSchedule(kind) { _ingPending.add(kind); clearTimeout(_ingTimer); _ingTimer = setTimeout(_ingRun, 1500); }   // debounce 1.5 s
+// Sync INCREMENTAL de una sola nota (cuando cambia un .md en el vault): obsidian-sync --only,
+// que evita el pase completo del vault y el rebuild de FTS (no bloquea la BD como el full).
+const _ingNotePending = new Map();
+function _ingNote(f) {
+  const base = path.basename(f); clearTimeout(_ingNotePending.get(base));
+  _ingNotePending.set(base, setTimeout(async () => {
+    _ingNotePending.delete(base);
+    const c = watchConfig(); if (!c || !c.obsidianConfig) return;
+    try { const out = await _spawnIngest([path.join(_DL, 'obsidian-sync.js'), '--db', DB_PATH, '--config', c.obsidianConfig, '--only', base]); if (out) console.log('  [watch] nota:', out); sseBroadcast('library'); } catch (e) {}
+  }, 1500));
+}
 async function _ingRun() {
   if (_ingRunning) { _ingPending.add('rerun'); return; }
   const c = watchConfig(); if (!c) { _ingPending.clear(); return; }
@@ -1177,7 +1188,7 @@ function startWatching() {   // (re)aplica el watcher según la config actual; s
   const c = watchConfig();
   if (!c) { console.log('biblioteca en vivo: desactivada (crea app/watch.json a partir de watch.example.json, o configúrala en Ajustes)'); return; }
   for (const root of c.music) if (fs.existsSync(root)) { if (isUnc(root)) addPoll(root); else safeWatch(root, 'música', (ev, f) => { if (!f || _AUD.test(f)) _ingSchedule('music'); }); }
-  if (c.vault && fs.existsSync(c.vault)) { if (isUnc(c.vault)) addPoll(c.vault); else safeWatch(c.vault, 'vault', (ev, f) => { if ((!f || /\.md$/i.test(f)) && !isSelfWrite(f)) _ingSchedule('vault'); }); }
+  if (c.vault && fs.existsSync(c.vault)) { if (isUnc(c.vault)) addPoll(c.vault); else safeWatch(c.vault, 'vault', (ev, f) => { if (isSelfWrite(f)) return; if (f && /\.md$/i.test(f)) _ingNote(f); else if (!f) _ingSchedule('vault'); }); }
 }
 async function rescanNow(kinds) {   // reescaneo manual inmediato
   const c = watchConfig(); if (!c) throw new Error('No hay carpetas configuradas (crea/edita la configuración de Biblioteca).');
