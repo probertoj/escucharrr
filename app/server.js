@@ -113,6 +113,7 @@ function buildQ(db) { return {
   about: db.prepare(`SELECT value v FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='about'`),
   aboutExt: db.prepare(`SELECT about v FROM release_group WHERE id=?`),   // reseña editorial externa (Wikipedia)
   coverOf: db.prepare(`SELECT cover_path, cover_mime FROM release_group WHERE id=?`),   // carátula cacheada (Cover Art Archive)
+  coverPref: db.prepare(`SELECT value FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='cover_pref'`),   // preferencia de fuente de portada (Roon: use_file/use_meta/use_best/clear)
   // ficheros FLAC del álbum, para extraer el arte embebido (como Roon lee de los propios ficheros)
   filesForAlbum: db.prepare(`SELECT DISTINCT lf.path FROM local_file lf
      JOIN track tr ON (tr.id=lf.track_id OR tr.recording_id=lf.recording_id)
@@ -443,6 +444,7 @@ function album(id) {
   if (a.reviews.length) { a.about = a.reviews[0].text; a.about_source = { source: a.reviews[0].source, source_ref: a.reviews[0].ref }; }
   else { a.about = null; a.about_source = null; }
   a.editions = Q.editions.all(id);
+  a.cover_pref = (Q.coverPref.get(id) || {}).value || 'auto';   // fuente de portada elegida (auto/file/download/none)
   a.versions = versionsOf(id, a.title);   // otras ediciones del mismo álbum en tu biblioteca
   a.tracks = Q.tracks.all(id);
   a.credits = Q.credits.all(id).map(c => ({ role: c.role, instrument: c.instrument, artists: (c.artists || '').split(',') }));
@@ -908,37 +910,46 @@ function flacPicture(file) {
   } finally { fs.closeSync(fd); }
 }
 const ART_DIR = path.join(__dirname, 'cache', 'art');
-function serveCover(res, id) {
-  const row = Number.isFinite(id) ? Q.coverOf.get(id) : null;
-  if (row && row.cover_path) {                          // 1) portada descargada (Cover Art Archive)
+function tryDownloadedCover(res, row) {   // portada descargada (Cover Art Archive)
+  if (row && row.cover_path) {
     const p = path.join(__dirname, row.cover_path);
     if (p.startsWith(__dirname) && fs.existsSync(p)) {
       res.writeHead(200, { 'Content-Type': row.cover_mime || 'image/jpeg', 'Cache-Control': 'public, max-age=86400' });
-      return fs.createReadStream(p).pipe(res);
+      fs.createReadStream(p).pipe(res); return true;
     }
   }
-  if (Number.isFinite(id)) {                             // 2) arte embebido en los FLAC (cacheado en disco)
-    try {
-      for (const ext of ['jpg', 'png', 'webp', 'gif']) {
-        const c = path.join(ART_DIR, id + '.' + ext);
-        if (fs.existsSync(c)) { res.writeHead(200, { 'Content-Type': 'image/' + (ext === 'jpg' ? 'jpeg' : ext), 'Cache-Control': 'public, max-age=86400' }); return fs.createReadStream(c).pipe(res); }
+  return false;
+}
+function tryEmbeddedCover(res, id) {   // arte embebido en los FLAC (cacheado en disco)
+  try {
+    for (const ext of ['jpg', 'png', 'webp', 'gif']) {
+      const c = path.join(ART_DIR, id + '.' + ext);
+      if (fs.existsSync(c)) { res.writeHead(200, { 'Content-Type': 'image/' + (ext === 'jpg' ? 'jpeg' : ext), 'Cache-Control': 'public, max-age=86400' }); fs.createReadStream(c).pipe(res); return true; }
+    }
+    if (!fs.existsSync(path.join(ART_DIR, id + '.none'))) {   // marcador: ya buscamos y no había, no reintentar
+      try { fs.mkdirSync(ART_DIR, { recursive: true }); } catch (e) {}
+      let pic = null;
+      for (const f of Q.filesForAlbum.all(id)) { try { pic = flacPicture(f.path); } catch (e) { pic = null; } if (pic) break; }
+      if (pic) {
+        try { fs.writeFileSync(path.join(ART_DIR, id + '.' + pic.ext), pic.data); } catch (e) {}
+        res.writeHead(200, { 'Content-Type': pic.mime, 'Cache-Control': 'public, max-age=86400' });
+        res.end(pic.data); return true;
       }
-      if (!fs.existsSync(path.join(ART_DIR, id + '.none'))) {   // marcador: ya buscamos y no había, no reintentar
-        try { fs.mkdirSync(ART_DIR, { recursive: true }); } catch (e) {}
-        let pic = null;
-        for (const f of Q.filesForAlbum.all(id)) { try { pic = flacPicture(f.path); } catch (e) { pic = null; } if (pic) break; }
-        if (pic) {
-          try { fs.writeFileSync(path.join(ART_DIR, id + '.' + pic.ext), pic.data); } catch (e) {}
-          res.writeHead(200, { 'Content-Type': pic.mime, 'Cache-Control': 'public, max-age=86400' });
-          return res.end(pic.data);
-        }
-        try { fs.writeFileSync(path.join(ART_DIR, id + '.none'), ''); } catch (e) {}
-      }
-    } catch (e) {}
-  }
-  // 3) SVG geométrico de respaldo. SIN cachear: es un marcador temporal; si luego aparece
-  // la portada (arte embebido recién cacheado o descarga del Cover Art Archive), se ve ya,
-  // en vez de quedar pegado el placeholder durante una hora.
+      try { fs.writeFileSync(path.join(ART_DIR, id + '.none'), ''); } catch (e) {}
+    }
+  } catch (e) {}
+  return false;
+}
+// Portada según la preferencia del usuario por álbum (Roon: archivo/metadatos/mejor/ninguna).
+// Por defecto 'auto' = descargada > embebida > SVG. El SVG de respaldo no se cachea.
+function serveCover(res, id) {
+  if (!Number.isFinite(id)) { res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end(coverSvg(id)); }
+  const row = Q.coverOf.get(id);
+  const pref = (Q.coverPref.get(id) || {}).value || 'auto';
+  if (pref === 'none') { /* a SVG */ }
+  else if (pref === 'file') { if (tryEmbeddedCover(res, id)) return; }
+  else if (pref === 'download') { if (tryDownloadedCover(res, row)) return; }
+  else { if (tryDownloadedCover(res, row)) return; if (tryEmbeddedCover(res, id)) return; }   // auto
   res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(coverSvg(id));
 }
@@ -1373,6 +1384,12 @@ function handleEditSync(body) {
     const v = body.value == null ? '' : String(body.value);
     if (v.trim() === '') { Q.edDelUserEdit.run(st, sid, field); Q.edDelProv.run(st, sid, field); return { field, value: null }; }
     Q.edSetUserEdit.run(st, sid, field, v); Q.edSetProv.run(st, sid, field);
+    return { field, value: v };
+  }
+  if (field === 'cover_pref') {   // fuente de portada: auto/file/download/none (Roon: use_best/use_file/use_meta/clear)
+    const v = String(body.value || 'auto');
+    if (!['auto', 'file', 'download', 'none'].includes(v)) throw new Error('preferencia de portada inválida');
+    if (v === 'auto') Q.edDelUserEdit.run(st, sid, 'cover_pref'); else Q.edSetUserEdit.run(st, sid, 'cover_pref', v);
     return { field, value: v };
   }
   throw new Error('campo no editable');

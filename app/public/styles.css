@@ -109,6 +109,11 @@ input:focus,select:focus,button:focus-visible{outline:none;border-color:var(--ac
 /* página de álbum */
 .hero{display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start;margin-bottom:26px}
 .hero .cov{width:236px;height:236px;border-radius:14px;overflow:hidden;flex:none;box-shadow:var(--shadow-lg)}
+/* preferencia de fuente de portada por álbum (estilo Roon: archivo/metadatos/mejor/ninguna) */
+.coverpref{display:flex;flex-wrap:wrap;gap:4px;margin-top:9px;width:236px}
+.cpref{font-size:11px;padding:3px 9px;border-radius:999px;border:1px solid var(--border);color:var(--text-2);cursor:pointer;transition:background .12s,color .12s}
+.cpref:hover{color:var(--text)}
+.cpref.on{background:var(--accent-bg);color:var(--accent);border-color:transparent;font-weight:600}
 .hero h1{font-size:33px;margin:3px 0 2px}
 .meta{display:flex;gap:10px 22px;flex-wrap:wrap;align-items:center;font-size:14px;margin:14px 0}
 .meta .k{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em;margin-right:5px}

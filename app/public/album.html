@@ -62,7 +62,7 @@ function renderAlbum(a){
   const versions=(a.versions||[]).length?`<div class="sec">Otras versiones <span style="color:var(--muted);font-size:14px;font-weight:400;font-family:var(--sans)">${a.versions.length}</span></div><div class="versions">`+a.versions.map(v=>`<a class="verrow" href="album.html?id=${v.id}"><span class="vt">${esc(v.title)}</span><span class="vm">${[v.format,v.year].filter(Boolean).map(esc).join(' · ')}</span></a>`).join('')+`</div>`:'';
   app.innerHTML=`
     <div class="hero">
-      <div class="cov">${cover(a.id)}</div>
+      <div style="flex:none"><div class="cov"><img src="/api/cover?rg=${a.id}&p=${encodeURIComponent(a.cover_pref||'auto')}" alt="" draggable="false" style="width:100%;height:100%;object-fit:cover;display:block"></div><div class="coverpref">${[['auto','Auto'],['file','Archivo'],['download','Descargada'],['none','Ninguna']].map(([v,l])=>`<span class="cpref${(a.cover_pref||'auto')===v?' on':''}" data-v="${v}" title="Fuente de la portada">${l}</span>`).join('')}</div></div>
       <div style="flex:1;min-width:240px">
         <div style="color:var(--text-2);font-size:13px">${esc(a.primary_type||'álbum')} · ${a.year||'—'}</div>
         <h1>${esc(a.title)}</h1>
@@ -111,6 +111,7 @@ document.addEventListener('click',e=>{
   const sc=e.target.closest('#app .st'); if(sc){ const v=+sc.dataset.stars; editField('stars',v).then(r=>{ if(r.ok){toast(v?'Valoración guardada':'Valoración quitada');load();}else toast(r.error||'error'); }); return; }
   const fc=e.target.closest('#app .faved'); if(fc){ const on=fc.dataset.fav==='1'; editField('favorite',on).then(r=>{ if(r.ok){toast(on?'Añadido a favoritos':'Quitado de favoritos');load();}else toast(r.error||'error'); }); return; }
   const ll=e.target.closest('#app .llater'); if(ll){ const on=ll.dataset.ll==='1'; editField('listen_later',on).then(r=>{ if(r.ok){toast(on?'En «escuchar más tarde»':'Quitado de «más tarde»');load();}else toast(r.error||'error'); }); return; }
+  const cp=e.target.closest('#app .cpref'); if(cp){ editField('cover_pref',cp.dataset.v).then(r=>{ if(r.ok){toast('Portada: '+cp.textContent);load();}else toast(r.error||'error'); }); return; }
   const rt=e.target.closest('#app .revtoggle'); if(rt){ const box=document.getElementById('aboutbox'); const col=box.classList.toggle('collapsed'); rt.textContent=col?'Ver más':'Ver menos'; return; }
   const rs=e.target.closest('#app .revsrc'); if(rs){ showReview(+rs.dataset.i); return; }
   const ae=e.target.closest('#app .aboutedit'); if(ae){ openAboutEditor(); return; }
