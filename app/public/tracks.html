@@ -26,7 +26,8 @@
   <h1>Pistas</h1>
   <div class="count" id="count">cargando…</div>
   <div class="toolbar">
-    <div class="search" style="margin:0;flex:1;max-width:460px"><input id="q" type="search" placeholder="Buscar pistas, artistas, álbumes…" autocomplete="off"></div>
+    <div class="search" style="margin:0;flex:1;max-width:420px"><input id="q" type="search" placeholder="Buscar pistas, artistas, álbumes…" autocomplete="off"></div>
+    <button id="focusbtn">▸ Focus</button>
     <div class="spacer"></div>
     <label style="color:var(--text-2);font-size:13px">Ordenar</label>
     <select id="sort">
@@ -36,6 +37,8 @@
     </select>
     <button id="dir" title="Ascendente / descendente">↑</button>
   </div>
+  <div class="focus" id="focus" hidden><div class="facets" id="facets"></div></div>
+  <div class="chips" id="chips"></div>
   <div id="list"></div>
   <button id="more" style="display:none">Cargar más</button>
 </div>
@@ -46,6 +49,20 @@ const mmss=ms=>{if(!ms)return '';const s=Math.round(ms/1000);return Math.floor(s
 function cover(id){return id?`<img src="/api/cover?rg=${id}" alt="" loading="lazy">`:'';}
 let TRACKS=[], total=0, offset=0, loading=false, done=false;
 let q='', sort='title', dir='asc';
+// ── Focus de pista (facetas de calidad: formato/profundidad/frecuencia/canales) ──
+const FACETDEFS=[['format','Formato'],['bitdepth','Profundidad'],['samplerate','Frecuencia'],['channels','Canales']];
+const fsel={format:null,bitdepth:null,samplerate:null,channels:null};
+let facets=null;
+function srLabel(hz){if(!hz)return hz;const k=hz/1000;return (Number.isInteger(k)?k:String(k).replace('.',','))+' kHz';}
+function chLabel(n){return n===1?'Mono':n===2?'Estéreo':n>2?(n+' canales'):n;}
+function vlabel(key,v){if(key==='bitdepth')return v+' bits';if(key==='samplerate')return srLabel(v);if(key==='channels')return chLabel(v);return v;}
+function loadFacets(){if(facets){renderFacets();return;}fetch('/api/tracks/facets').then(r=>r.json()).then(j=>{facets=j;renderFacets();});}
+function renderFacets(){const box=document.getElementById('facets');if(!facets)return;
+  box.innerHTML=FACETDEFS.map(([k,label])=>{const vals=facets[k]||[];if(!vals.length)return '';
+    return `<div class="fcol"><h4><span>${label}</span><span class="fcount">${vals.length}</span></h4><div class="fvals">`+vals.map(o=>`<div class="fv ${String(fsel[k])===String(o.v)?'on':''}" data-k="${k}" data-v="${esc(o.v)}"><span>${esc(vlabel(k,o.v))}</span><span class="n">${o.n}</span></div>`).join('')+`</div></div>`;}).join('');}
+function renderChips(){const box=document.getElementById('chips');const c=[];FACETDEFS.forEach(([k])=>{if(fsel[k]!=null)c.push([k,vlabel(k,fsel[k])]);});
+  box.innerHTML=c.length?c.map(x=>`<span class="chip" data-ck="${x[0]}">${esc(x[1])} ${window.icon('close',12)}</span>`).join('')+`<span class="chip" data-clear="1" style="background:var(--surface-2);color:var(--text-2)">Limpiar</span>`:'';}
+function focusParams(){return FACETDEFS.map(([k])=>fsel[k]!=null?'&'+k+'='+encodeURIComponent(fsel[k]):'').join('');}
 function rowHtml(t,i){
   const album=t.albumId?`<a href="album.html?id=${t.albumId}">${esc(t.album||'')}</a>`:esc(t.album||'');
   return `<div class="trow">
@@ -63,20 +80,31 @@ function appendRows(items){
   list.insertAdjacentHTML('beforeend',h);
 }
 function updateCount(){document.getElementById('count').textContent=q?`${total} resultado${total===1?'':'s'} para «${q}»`:`${total} pistas`;}
+let reqSeq=0;   // token: un reset (nuevo filtro/búsqueda) supersede al anterior; se ignora la respuesta obsoleta
 function load(reset){
-  if(loading||(done&&!reset))return; loading=true;
+  if(!reset && (loading||done))return;   // paginar: no duplicar; reset: siempre procede
   if(reset){TRACKS=[];offset=0;done=false;document.getElementById('list').innerHTML='';}
-  const url='/api/tracks?limit=100&offset='+offset+'&sort='+sort+'&dir='+dir+(q?'&q='+encodeURIComponent(q):'');
+  loading=true; const my=++reqSeq;
+  const url='/api/tracks?limit=100&offset='+offset+'&sort='+sort+'&dir='+dir+(q?'&q='+encodeURIComponent(q):'')+focusParams();
   fetch(url).then(r=>r.json()).then(j=>{
+    if(my!==reqSeq)return;   // respuesta de una petición ya superada
     loading=false; total=j.total||0; const items=j.items||[];
     appendRows(items); offset=TRACKS.length;
     if(!items.length||TRACKS.length>=total)done=true;
     updateCount();
     document.getElementById('more').style.display=done?'none':'block';
-  }).catch(e=>{loading=false;document.getElementById('count').textContent='error: '+e.message;});
+  }).catch(e=>{if(my!==reqSeq)return;loading=false;document.getElementById('count').textContent='error: '+e.message;});
 }
 // reproducir: la lista cargada hace de cola, arrancando en la pista pulsada
 document.addEventListener('click',e=>{const b=e.target.closest('.pbtn');if(!b)return;const i=+b.dataset.i;if(window.player&&TRACKS[i])player.playTracks(TRACKS,i);});
+// Focus: abrir/cerrar panel, filtrar por faceta (selección única por columna), chips
+document.getElementById('focusbtn').onclick=function(){const fp=document.getElementById('focus');fp.hidden=!fp.hidden;this.textContent=(fp.hidden?'▸':'▾')+' Focus';if(!fp.hidden)loadFacets();};
+document.addEventListener('click',e=>{
+  const fv=e.target.closest('#facets .fv');
+  if(fv){const k=fv.dataset.k,v=fv.dataset.v;fsel[k]=(String(fsel[k])===String(v))?null:v;renderFacets();renderChips();load(true);return;}
+  const ch=e.target.closest('#chips .chip');
+  if(ch){if(ch.dataset.clear)FACETDEFS.forEach(([k])=>fsel[k]=null);else fsel[ch.dataset.ck]=null;renderFacets();renderChips();load(true);return;}
+});
 // búsqueda (debounce) y orden
 let qt; document.getElementById('q').addEventListener('input',e=>{clearTimeout(qt);qt=setTimeout(()=>{q=e.target.value.trim();load(true);},250);});
 document.getElementById('sort').addEventListener('change',e=>{sort=e.target.value;load(true);});

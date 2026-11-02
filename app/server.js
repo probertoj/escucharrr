@@ -511,18 +511,28 @@ function tracksList(opts) {
   const q = String(opts.q || '').trim();
   const dir = opts.dir === 'desc' ? 'DESC' : 'ASC';
   const orderExpr = opts.sort === 'album' ? 'alb' : opts.sort === 'duration' ? 'len' : 'r.title';   // título (indexado) por defecto
-  const base = `FROM track tr JOIN recording r ON r.id=tr.recording_id
-     JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id`;
-  let where = '', args = [];
-  if (q) { const like = '%' + q + '%'; where = ` WHERE (COALESCE(tr.title,r.title) LIKE ? OR rg.title LIKE ? OR EXISTS(SELECT 1 FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id,r.artist_credit_id) AND acn.name LIKE ?))`; args = [like, like, like]; }
-  // 1ª pasada: la página de pistas (sin local_file, para que el ORDER BY/LIMIT no recorra 250k ficheros)
+  // filtros de faceta Focus de pista (sobre local_file; join por track_id, que cubre el 99,6%)
+  const lfConds = [], lfArgs = [];
+  if (opts.format) { lfConds.push('lf.format=?'); lfArgs.push(String(opts.format)); }
+  if (opts.bitdepth) { lfConds.push('lf.bit_depth=?'); lfArgs.push(parseInt(opts.bitdepth, 10)); }
+  if (opts.samplerate) { lfConds.push('lf.sample_rate=?'); lfArgs.push(parseInt(opts.samplerate, 10)); }
+  if (opts.channels) { lfConds.push('lf.channels=?'); lfArgs.push(parseInt(opts.channels, 10)); }
+  const hasLf = lfConds.length > 0;
+  const base = `FROM track tr JOIN recording r ON r.id=tr.recording_id`
+    + (hasLf ? ` JOIN local_file lf ON lf.track_id=tr.id` : ``)
+    + ` JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id`;
+  const conds = [], args = [];
+  if (q) { const like = '%' + q + '%'; conds.push(`(COALESCE(tr.title,r.title) LIKE ? OR rg.title LIKE ? OR EXISTS(SELECT 1 FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id,r.artist_credit_id) AND acn.name LIKE ?))`); args.push(like, like, like); }
+  if (hasLf) { conds.push(...lfConds); args.push(...lfArgs); }
+  const where = conds.length ? ' WHERE ' + conds.join(' AND ') : '';
+  // 1ª pasada: la página de pistas (sin datos de fichero, para que el ORDER BY/LIMIT no los recorra)
   const sel = `SELECT tr.id trackId, tr.recording_id rid,
        COALESCE(tr.title, r.title) title,
        (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id, r.artist_credit_id) ORDER BY acn.position LIMIT 1) artist,
        rg.id albumId, rg.title album, COALESCE(tr.length_ms, r.length_ms) length_ms
      ${base}${where} ORDER BY ${orderExpr} ${dir}, tr.id LIMIT ? OFFSET ?`;
   const rows = db.prepare(sel).all(...args, limit, offset);
-  const total = q ? db.prepare(`SELECT COUNT(*) n ${base}${where}`).get(...args).n : Q.cTracks.get().n;
+  const total = (q || hasLf) ? db.prepare(`SELECT COUNT(*) n ${base}${where}`).get(...args).n : Q.cTracks.get().n;
   // 2ª pasada: datos de fichero (formato/reproducible/ganancia) SOLO de las pistas devueltas
   if (rows.length) {
     const tids = rows.map(r => r.trackId), rids = rows.map(r => r.rid).filter(x => x != null);
@@ -1016,7 +1026,20 @@ function settingsInfo() {
 
 // ── biblioteca en vivo: watcher de carpetas + eventos SSE a la UI ───────────────
 const sseClients = new Set();
-function sseBroadcast(type) { const line = `data: ${JSON.stringify({ type, t: Date.now() })}\n\n`; for (const r of sseClients) { try { r.write(line); } catch (e) {} } }
+function sseBroadcast(type) { if (type === 'library') _trackFacetsCache = null; const line = `data: ${JSON.stringify({ type, t: Date.now() })}\n\n`; for (const r of sseClients) { try { r.write(line); } catch (e) {} } }
+// Facetas del explorador de pistas (formato/profundidad/frecuencia/canales). Se calculan sobre
+// local_file en una pasada y se cachean (solo cambian al reescanear).
+let _trackFacetsCache = null;
+function trackFacets() {
+  if (_trackFacetsCache) return _trackFacetsCache;
+  const rows = db.prepare(`SELECT format, bit_depth, sample_rate, channels, COUNT(*) n FROM local_file WHERE track_id IS NOT NULL GROUP BY format, bit_depth, sample_rate, channels`).all();
+  const acc = { format: new Map(), bitdepth: new Map(), samplerate: new Map(), channels: new Map() };
+  const add = (m, k, n) => { if (k == null || k === '') return; m.set(k, (m.get(k) || 0) + n); };
+  for (const r of rows) { add(acc.format, r.format, r.n); add(acc.bitdepth, r.bit_depth, r.n); add(acc.samplerate, r.sample_rate, r.n); add(acc.channels, r.channels, r.n); }
+  const toArr = m => [...m.entries()].map(([v, n]) => ({ v, n })).sort((a, b) => b.n - a.n);
+  _trackFacetsCache = { format: toArr(acc.format), bitdepth: toArr(acc.bitdepth), samplerate: toArr(acc.samplerate), channels: toArr(acc.channels) };
+  return _trackFacetsCache;
+}
 const _DL = path.join(__dirname, '..', 'data-layer');
 const _AUD = /\.(flac|wav|mp3|m4a|ogg|opus|aiff?|dsf|dff)$/i;
 let _watchers = [];
@@ -1560,7 +1583,8 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/peaks') { const pk = peaksOf(parseInt(u.searchParams.get('track'), 10)); return pk ? sendJSON(res, { peaks: pk }) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/settings') return sendJSON(res, settingsInfo());
     if (u.pathname === '/api/library') return sendJSON(res, libraryList());
-    if (u.pathname === '/api/tracks') return sendJSON(res, tracksList({ q: u.searchParams.get('q'), sort: u.searchParams.get('sort'), dir: u.searchParams.get('dir'), offset: u.searchParams.get('offset'), limit: u.searchParams.get('limit') }));
+    if (u.pathname === '/api/tracks') return sendJSON(res, tracksList({ q: u.searchParams.get('q'), sort: u.searchParams.get('sort'), dir: u.searchParams.get('dir'), offset: u.searchParams.get('offset'), limit: u.searchParams.get('limit'), format: u.searchParams.get('format'), bitdepth: u.searchParams.get('bitdepth'), samplerate: u.searchParams.get('samplerate'), channels: u.searchParams.get('channels') }));
+    if (u.pathname === '/api/tracks/facets') return sendJSON(res, trackFacets());
     if (u.pathname === '/api/album') { const a = album(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/search') return sendJSON(res, search(u.searchParams.get('q'), Math.min(parseInt(u.searchParams.get('n') || '20', 10) || 20, 100)));
     if (u.pathname === '/api/artist') { const a = artist(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
