@@ -18,24 +18,44 @@ function isUnder(file, root) {
 }
 
 // Quita las filas `local_file` cuyo fichero ya no existe en disco, SOLO bajo las raíces dadas.
-// Robusto ante unidades desmontadas: si la raíz entera no existe no poda nada bajo ella (evita
-// vaciar la biblioteca cuando un disco está desconectado), y cada fichero se confirma ausente
-// individualmente con fs.existsSync antes de borrarlo.
+// Robusto ante unidades desmontadas Y ante parpadeos de red (SMB): si la raíz entera no existe no
+// poda nada bajo ella, y un fichero solo se confirma AUSENTE cuando su carpeta se pudo LEER y el
+// fichero no estaba en el listado. Nunca con `fs.existsSync` individual: sobre \\Diskstation un
+// existsSync sobre una carpeta que parpadea devuelve `false` sin lanzar error, y eso interpretaba
+// carpetas flojas como "ficheros borrados" y podaba datos buenos (un reescaneo llegó a vaciar 400+
+// pistas de ~200 carpetas ilegibles). Leer la carpeta una vez (con reintentos) cubre todos sus
+// ficheros a la vez y distingue "borrado de verdad" de "no he podido leerla ahora".
 function pruneMissingFiles(db, roots, log) {
   const live = (roots || []).filter(r => { try { return r && fs.existsSync(r); } catch (e) { return false; } });
   if (!live.length) return 0;
   const del = db.prepare('DELETE FROM local_file WHERE id=?');
-  let n = 0;
+  // Cache de listados por carpeta: dir normalizado -> Set de nombres en minúscula, o null si ilegible.
+  const dirCache = new Map();
+  function sleepSync(ms) { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch (e) {} }
+  function listing(dir) {
+    const key = norm(dir);
+    if (dirCache.has(key)) return dirCache.get(key);
+    let names = null;
+    for (let i = 0; i < 4; i++) {   // reintentos ante fallo transitorio de SMB: 400/800/1200ms
+      try { names = new Set(fs.readdirSync(dir).map(x => x.toLowerCase())); break; }
+      catch (e) { if (i < 3) sleepSync(400 * (i + 1)); }
+    }
+    dirCache.set(key, names);
+    return names;
+  }
+  let n = 0, kept = 0;
   db.exec('BEGIN');
   try {
     for (const row of db.prepare('SELECT id, path FROM local_file').all()) {
       if (!live.some(r => isUnder(row.path, r))) continue;      // fichero de otra raíz no vigilada ahora
-      let gone = false; try { gone = !fs.existsSync(row.path); } catch (e) { gone = false; }
-      if (gone) { del.run(row.id); n++; }
+      const names = listing(path.dirname(row.path));
+      if (names === null) { kept++; continue; }                 // carpeta ilegible: no se confirma ausencia
+      if (!names.has(path.basename(row.path).toLowerCase())) { del.run(row.id); n++; }
     }
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
   if (n && log) log(`poda: ${n} fichero(s) ausente(s) quitado(s)`);
+  if (kept && log) log(`poda: ${kept} fichero(s) conservado(s) (carpeta ilegible, no se confirma ausencia)`);
   return n;
 }
 

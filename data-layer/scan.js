@@ -141,11 +141,11 @@ const ensureGenre = (name) => { const r = S.genreBy.get(name); return r ? r.id :
 // Espera síncrona (bloqueante) para reintentos sobre rutas de red (SMB): un readdir/stat sobre
 // \\Diskstation puede fallar de forma transitoria (timeout, ENOENT fugaz) y recuperarse enseguida.
 function sleepSync(ms) { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch (e) {} }
-function readdirRetry(dir, tries = 4) {
+function readdirRetry(dir, tries = 6) {
   let last;
   for (let i = 0; i < tries; i++) {
     try { return fs.readdirSync(dir, { withFileTypes: true }); }
-    catch (e) { last = e; if (i < tries - 1) sleepSync(250 * (i + 1)); }   // 250/500/750ms
+    catch (e) { last = e; if (i < tries - 1) sleepSync(400 * (i + 1)); }   // 400/800/1200/1600/2000ms (SMB se recupera lento)
   }
   throw last;
 }
