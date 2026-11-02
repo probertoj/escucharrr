@@ -301,6 +301,13 @@ function buildQ(db) { return {
   edDelUserEdit: db.prepare(`DELETE FROM user_edit WHERE subject_type=? AND subject_id=? AND field=?`),
   edSetProv: db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at) VALUES(?,?,?,'user',NULL,datetime('now')) ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source='user', source_ref=NULL, fetched_at=datetime('now')`),
   edDelProv: db.prepare(`DELETE FROM provenance WHERE subject_type=? AND subject_id=? AND field=?`),
+  // ── escribir de vuelta en la nota de Obsidian (son .md): localizar nota, espejar estado ──
+  noteForSubject: db.prepare(`SELECT n.id, n.path FROM obsidian_link l JOIN obsidian_note n ON n.id=l.note_id WHERE l.subject_type=? AND l.subject_id=? LIMIT 1`),
+  albumName: db.prepare(`SELECT title, artist FROM v_album WHERE id=?`),
+  artistName: db.prepare(`SELECT name FROM artist WHERE id=?`),
+  noteUpsert: db.prepare(`INSERT INTO obsidian_note(vault,path,mtime,frontmatter_json,body_md) VALUES(?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, frontmatter_json=excluded.frontmatter_json, body_md=excluded.body_md RETURNING id`),
+  noteLink: db.prepare(`INSERT OR REPLACE INTO obsidian_link(note_id,subject_type,subject_id,match_by,match_conf) VALUES(?,?,?,'manual',1.0)`),
+  edSetProvObs: db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at) VALUES(?,?,?,'obsidian',?,datetime('now')) ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source='obsidian', source_ref=excluded.source_ref, fetched_at=datetime('now')`),
   tierKeys: db.prepare(`SELECT key, label, rank FROM tier ORDER BY rank DESC`),
   // ── Descubrir: "escuchar más tarde" (flag) y "hace tiempo que no suena" (último play antiguo) ──
   discListenLater: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
@@ -1302,6 +1309,76 @@ async function handleEdit(req, res) {
   catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 
+// ── Guardar la reseña/bio DE VUELTA en la nota de Obsidian (son .md) ──────────────
+// Preserva el frontmatter tal cual y reemplaza solo el cuerpo; escritura atómica
+// (fichero temporal + rename) dentro del vault; espeja el estado en la BD como hace el sync.
+function sanitizeName(s) { return String(s || '').replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180); }
+function splitFrontmatter(text) {   // devuelve {head: bloque --- crudo con su salto, fm: objeto}
+  if (!text.startsWith('---')) return { head: '', fm: {} };
+  const end = text.indexOf('\n---', 3);
+  if (end < 0) return { head: '', fm: {} };
+  const block = text.slice(3, end);
+  const head = text.slice(0, end + 4) + '\n';   // incluye el cierre ---
+  const fm = {};
+  for (const line of block.split(/\r?\n/)) { const m = line.match(/^\s*([^:#][^:]*?)\s*:\s*(.*)$/); if (m) fm[m[1].trim().toLowerCase()] = m[2].trim().replace(/^["']|["']$/g, ''); }
+  return { head, fm };
+}
+async function writeObsidianNote(subjectType, subjectId, field, value) {
+  if (!['release_group', 'artist'].includes(subjectType) || !subjectId) throw new Error('sujeto inválido');
+  const text = String(value == null ? '' : value);
+  if (!text.trim()) throw new Error('escribe algo antes de guardarlo en la nota');
+  const c = watchConfig();
+  if (!c || !c.vault || !fs.existsSync(c.vault)) throw new Error('Obsidian no está configurado (añade el vault en Ajustes)');
+  const vault = c.vault;
+  const existing = Q.noteForSubject.get(subjectType, subjectId);
+  let relPath, absPath, created = false;
+  if (existing && existing.path) {
+    relPath = existing.path;
+    absPath = path.join(vault, relPath);
+  } else {                                           // crear nota nueva
+    let fname;
+    if (subjectType === 'release_group') { const a = Q.albumName.get(subjectId); if (!a) throw new Error('álbum no encontrado'); fname = sanitizeName((a.artist ? a.artist + ' - ' : '') + a.title) + '.md'; }
+    else { const a = Q.artistName.get(subjectId); if (!a) throw new Error('artista no encontrado'); fname = sanitizeName(a.name) + '.md'; }
+    const af = (c.obs && c.obs.albumsFolder && fs.existsSync(path.join(vault, c.obs.albumsFolder))) ? c.obs.albumsFolder : '';
+    relPath = af ? path.join(af, fname) : fname;
+    absPath = path.join(vault, relPath);
+    created = true;
+  }
+  // guard: dentro del vault y .md
+  const rp = path.resolve(absPath);
+  if (!rp.startsWith(path.resolve(vault) + path.sep) || !/\.md$/i.test(rp)) throw new Error('ruta de nota inválida');
+  // construir contenido: conservar frontmatter existente; si es nueva, frontmatter mínimo para re-emparejar
+  let head = '';
+  if (fs.existsSync(absPath)) { head = splitFrontmatter(fs.readFileSync(absPath, 'utf8')).head; }
+  else if (subjectType === 'release_group') { const a = Q.albumName.get(subjectId); head = `---\nartist: ${a.artist || ''}\nalbum: ${a.title || ''}\n---\n\n`; }
+  const content = head + text + '\n';
+  // Escritura directa con reintentos. En vaults de OneDrive el rename sobre un fichero existente
+  // falla (EPERM: el fichero está bloqueado mientras se sincroniza) y dejaría temporales huérfanos;
+  // la escritura directa in-place sí funciona, y reintentamos ante bloqueos transitorios.
+  try { fs.mkdirSync(path.dirname(absPath), { recursive: true }); } catch (e) {}
+  let werr = null;
+  for (let i = 0; i < 4; i++) {
+    try { fs.writeFileSync(absPath, content, 'utf8'); werr = null; break; }
+    catch (e) { werr = e; if (!/EPERM|EBUSY|EACCES/i.test(e.code || '')) throw e; await new Promise(r => setTimeout(r, 250)); }
+  }
+  if (werr) throw new Error('no se pudo escribir la nota (¿bloqueada por OneDrive?): ' + werr.message);
+  // espejar estado en la BD (como el sync): nota + enlace + about/bio con procedencia obsidian
+  const fm = splitFrontmatter(content).fm;
+  const noteId = Number(Q.noteUpsert.get(c.obs ? (c.obs.vault || vault) : vault, relPath, String(fs.statSync(absPath).mtimeMs), JSON.stringify(fm), text).id);
+  Q.noteLink.run(noteId, subjectType, subjectId);
+  Q.edSetUserEdit.run(subjectType, subjectId, field, text);
+  Q.edSetProvObs.run(subjectType, subjectId, field, relPath);
+  return { ok: true, path: relPath, created };
+}
+async function handleObsidianWrite(req, res) {
+  try {
+    const b = await readBody(req);
+    const r = await writeObsidianNote(String(b.subject_type || ''), parseInt(b.subject_id, 10), String(b.field || 'about'), b.value);
+    sseBroadcast('library');
+    return sendJSON(res, r);
+  } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+}
+
 http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   if (u.pathname === '/api/events') {
@@ -1349,6 +1426,7 @@ http.createServer((req, res) => {
   if (u.pathname.startsWith('/api/backup/')) return void handleBackup(req, res, u);
   if (u.pathname === '/api/history') return sendJSON(res, history(parseInt(u.searchParams.get('n'), 10), parseInt(u.searchParams.get('offset'), 10)));
   if (req.method === 'POST' && u.pathname === '/api/edit') return void handleEdit(req, res);
+  if (req.method === 'POST' && u.pathname === '/api/obsidian/write') return void handleObsidianWrite(req, res);
   if (u.pathname.startsWith('/api/scrobble/')) return void handleScrobble(req, res, u);
   if (u.pathname === '/api/lyrics') return void getLyrics(parseInt(u.searchParams.get('track'), 10)).then(r => sendJSON(res, r)).catch(() => sendJSON(res, { found: false }));
   if (u.pathname === '/api/playlists' || u.pathname === '/api/playlist' || u.pathname.startsWith('/api/playlist/')) return void handlePlaylists(req, res, u);

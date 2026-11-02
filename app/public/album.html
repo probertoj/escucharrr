@@ -98,11 +98,13 @@ function openAboutEditor(){
   const box=document.getElementById('aboutbox'); if(!box||box.querySelector('textarea'))return;
   const existing=rawAbout;   // el markdown original, no el texto ya renderizado
   const tx=document.createElement('div'); tx.style.marginTop='8px';
-  tx.innerHTML=`<textarea id="aboutta" style="width:100%;min-height:90px;font:inherit;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);box-sizing:border-box"></textarea><div style="margin-top:6px;display:flex;gap:8px"><button id="aboutsave" class="btn-accent" style="padding:6px 14px">Guardar</button><button id="aboutcancel" style="padding:6px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer">Cancelar</button></div>`;
+  tx.innerHTML=`<textarea id="aboutta" style="width:100%;min-height:90px;font:inherit;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);box-sizing:border-box" placeholder="Markdown: # títulos, **negrita**, - listas…"></textarea><div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="aboutsave" class="btn-accent" style="padding:6px 14px">Guardar</button><button id="aboutobs" title="Escribe la reseña en el fichero .md del vault de Obsidian (conserva el frontmatter)" style="padding:6px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer">Guardar en Obsidian</button><button id="aboutcancel" style="padding:6px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer">Cancelar</button></div>`;
   box.appendChild(tx);
   const ta=document.getElementById('aboutta'); ta.value=existing; ta.focus();
   document.getElementById('aboutcancel').onclick=()=>tx.remove();
   document.getElementById('aboutsave').onclick=()=>{ const v=ta.value; editField('about',v).then(r=>{ if(r.ok){toast(v.trim()?'Reseña guardada':'Reseña quitada');load();}else toast(r.error||'error'); }); };
+  document.getElementById('aboutobs').onclick=()=>{ const v=ta.value; if(!v.trim()){toast('Escribe algo primero');return;}
+    fetch('/api/obsidian/write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subject_type:'release_group',subject_id:id,field:'about',value:v})}).then(r=>r.json()).then(r=>{ if(r.ok){toast((r.created?'Nota creada: ':'Guardado en ')+r.path);load();}else toast(r.error||'error'); }).catch(e=>toast('error: '+e.message)); };
 }
 
 // Reproducir: encola el álbum y arranca (el player registra la escucha)
