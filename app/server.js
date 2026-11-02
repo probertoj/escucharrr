@@ -521,6 +521,55 @@ function libraryList() {
   for (const g of vgroups.values()) if (g.length > 1) for (const a of g) a.has_versions = 1;
   return rows;
 }
+// ── Inspector (facetas de SALUD de la biblioteca, como el inspector_* de Roon) ──
+// Audita la colección con datos que ya tenemos: identificado (MBID), sin género, sin audio
+// local, sin portada cacheada, multidisco y posibles duplicados (mismo artista+título). Barato
+// y set-based. Los "sin identificar" enlazan a la ficha, donde vive el wizard de identificación.
+const INSPECTOR_BUCKETS = {
+  unidentified: { label: 'Sin identificar', hint: 'Sin MBID: no reciben créditos/portada/obra del enriquecido. Identifícalos desde su ficha.',
+    where: 'rg.mbid IS NULL' },
+  no_genre: { label: 'Sin género', hint: 'No tienen ningún género asignado.',
+    where: `NOT EXISTS (SELECT 1 FROM release_group_genre g WHERE g.release_group_id=a.id)` },
+  no_audio: { label: 'Sin audio local', hint: 'Álbum en el grafo sin ningún fichero reproducible (p. ej. tras perder el montaje).',
+    where: `NOT EXISTS (SELECT 1 FROM "release" rel JOIN medium m ON m.release_id=rel.id JOIN track tr ON tr.medium_id=m.id JOIN local_file lf ON (lf.track_id=tr.id OR lf.recording_id=tr.recording_id) WHERE rel.release_group_id=a.id)` },
+  multidisc: { label: 'Multidisco', hint: 'Más de un disco (box sets, dobles).',
+    where: `(SELECT COUNT(*) FROM "release" rel JOIN medium m ON m.release_id=rel.id WHERE rel.release_group_id=a.id) > 1` },
+};
+function inspectorCounts() {
+  const rows = db.prepare('SELECT a.id, a.title, a.artist FROM v_album a').all();
+  const total = rows.length;
+  const out = { total, buckets: {} };
+  for (const [key, def] of Object.entries(INSPECTOR_BUCKETS)) {
+    out.buckets[key] = { label: def.label, hint: def.hint, count: db.prepare(`SELECT COUNT(*) n FROM v_album a JOIN release_group rg ON rg.id=a.id WHERE ${def.where}`).get().n };
+  }
+  // identificados (complemento de sin identificar)
+  out.buckets.identified = { label: 'Identificados', hint: 'Con MBID: reciben créditos, obra, sello y portada del enriquecido.', count: total - out.buckets.unidentified.count, positive: true };
+  // posibles duplicados: mismo artista + título exactos en más de un álbum (importación doble)
+  const dupGroups = db.prepare(`SELECT lower(artist)||'||'||lower(title) k, COUNT(*) n FROM v_album GROUP BY k HAVING n>1`).all();
+  out.buckets.duplicates = { label: 'Posibles duplicados', hint: 'Mismo artista y título en varios álbumes (importación doble). Revisa y, si procede, oculta uno.', count: dupGroups.reduce((s, g) => s + g.n, 0), computed: 'dup' };
+  return out;
+}
+function inspectorBucket(bucket, limit, offset) {
+  limit = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500);
+  offset = Math.max(parseInt(offset, 10) || 0, 0);
+  if (bucket === 'duplicates') {
+    // agrupa por artista+título exactos; devuelve los álbumes de los grupos con >1, juntos
+    const rows = db.prepare(`SELECT a.id,a.title,a.artist,a.year, lower(a.artist)||'||'||lower(a.title) k
+      FROM v_album a WHERE lower(a.artist)||'||'||lower(a.title) IN
+        (SELECT lower(artist)||'||'||lower(title) FROM v_album GROUP BY 1 HAVING COUNT(*)>1)
+      ORDER BY k, a.year`).all();
+    return { bucket, total: rows.length, items: rows.slice(offset, offset + limit).map(r => ({ id: r.id, title: r.title, artist: r.artist, year: r.year })) };
+  }
+  if (bucket === 'identified') {
+    const total = db.prepare(`SELECT COUNT(*) n FROM v_album a JOIN release_group rg ON rg.id=a.id WHERE rg.mbid IS NOT NULL`).get().n;
+    const items = db.prepare(`SELECT a.id,a.title,a.artist,a.year FROM v_album a JOIN release_group rg ON rg.id=a.id WHERE rg.mbid IS NOT NULL ORDER BY a.title LIMIT ? OFFSET ?`).all(limit, offset);
+    return { bucket, total, items };
+  }
+  const def = INSPECTOR_BUCKETS[bucket]; if (!def) return { bucket, total: 0, items: [] };
+  const total = db.prepare(`SELECT COUNT(*) n FROM v_album a JOIN release_group rg ON rg.id=a.id WHERE ${def.where}`).get().n;
+  const items = db.prepare(`SELECT a.id,a.title,a.artist,a.year FROM v_album a JOIN release_group rg ON rg.id=a.id WHERE ${def.where} ORDER BY a.title LIMIT ? OFFSET ?`).all(limit, offset);
+  return { bucket, total, items };
+}
 // Explorador de pistas (como el trackbrowser de Roon). Con 254k pistas va en el servidor:
 // búsqueda + orden + paginación. Una pista por fila (join a un único local_file) para no duplicar.
 function tracksList(opts) {
@@ -1727,6 +1776,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/discover') return sendJSON(res, discover({ day: u.searchParams.get('day'), notRecentDays: u.searchParams.get('nrdays') }));
     if (u.pathname === '/api/radio') { const seed = parseInt(u.searchParams.get('seed'), 10); const ex = (u.searchParams.get('exclude') || '').split(',').map(x => parseInt(x, 10)).filter(Boolean); return sendJSON(res, { tracks: seed ? radio(seed, ex, u.searchParams.get('n')) : [] }); }
     if (u.pathname === '/api/home') return sendJSON(res, home());
+    if (u.pathname === '/api/inspector') { const bk = u.searchParams.get('bucket'); return sendJSON(res, bk ? inspectorBucket(bk, u.searchParams.get('limit'), u.searchParams.get('offset')) : inspectorCounts()); }
     if (u.pathname === '/' || u.pathname === '') return sendFile(res, 'index.html');
     return sendFile(res, u.pathname.replace(/^\//, ''));
   } catch (e) { res.writeHead(500); res.end(String(e.message)); }

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — inspector</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+  <div style="margin-bottom:14px"><a href="/" style="color:var(--accent);display:inline-flex;align-items:center;gap:5px"><span data-icon="arrow-left" data-s="15"></span>Biblioteca</a></div>
+  <div id="app">cargando…</div>
+</div>
+
+<script>
+const TC={excel:['#0F6E56','#E1F5EE'],si:['#639922','#EAF3DE'],ok:['#BA7517','#FAEEDA'],meh:['#5F5E5A','#F1EFE8'],no:['#A32D2D','#FCEBEB']},TN={excel:'Excel',si:'Sí',ok:'Ok',meh:'Meh',no:'No'};
+const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function cover(id){return `<img src="/api/cover?rg=${id}" alt="" loading="lazy" draggable="false" style="width:100%;height:100%;object-fit:cover;display:block">`;}
+function albumCard(a){return `<a class="card" href="album.html?id=${a.id}">
+  <div class="cov">${cover(a.id)}</div>
+  <div class="t">${esc(a.title)}</div><div class="s">${esc(a.artist)} · ${a.year||'—'}</div></a>`;}
+
+// orden de presentación: primero los que piden acción, luego el positivo
+const ORDER=['unidentified','no_genre','no_audio','duplicates','multidisc','identified'];
+let COUNTS=null, cur=null, curOffset=0, curTotal=0;
+
+function pct(n,total){ return total?Math.round(n*100/total):0; }
+function renderDash(d){
+  COUNTS=d;
+  const card=(key)=>{ const b=d.buckets[key]; if(!b) return '';
+    const warn=!b.positive && b.count>0;
+    const col=b.positive?'var(--ok,#0F6E56)':(warn?'var(--accent)':'var(--text-2)');
+    return `<div class="hcard${cur===key?' on':''}" data-bucket="${key}" style="cursor:pointer;border:1px solid ${cur===key?'var(--accent)':'var(--border)'};border-radius:12px;padding:13px 15px;min-width:168px;flex:1 1 168px;background:${cur===key?'color-mix(in srgb,var(--accent) 7%,var(--surface))':'var(--surface)'}">
+      <div style="font-size:26px;font-weight:700;line-height:1;color:${col}">${b.count.toLocaleString('es')}</div>
+      <div style="font-weight:600;margin-top:5px;font-size:14px">${esc(b.label)}</div>
+      <div style="font-size:11px;color:var(--text-2);margin-top:2px">${pct(b.count,d.total)}% de la biblioteca</div>
+    </div>`; };
+  app.innerHTML=`
+    <div style="color:var(--text-2);font-size:13px">salud de la biblioteca</div>
+    <h1 style="margin-bottom:2px">Inspector</h1>
+    <div class="count">${d.total.toLocaleString('es')} álbumes en total</div>
+    <div id="hcards" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:16px">${ORDER.map(card).join('')}</div>
+    <div id="hlist" style="margin-top:22px"></div>`;
+  if(cur) openBucket(cur);
+}
+function openBucket(bucket){
+  cur=bucket; curOffset=0; curTotal=0;
+  document.querySelectorAll('#hcards .hcard').forEach(c=>{ const on=c.dataset.bucket===bucket; c.classList.toggle('on',on); c.style.borderColor=on?'var(--accent)':'var(--border)'; c.style.background=on?'color-mix(in srgb,var(--accent) 7%,var(--surface))':'var(--surface)'; });
+  const b=COUNTS.buckets[bucket];
+  const list=document.getElementById('hlist');
+  list.innerHTML=`<div class="sec" style="margin-top:0">${esc(b.label)} <span style="color:var(--muted);font-weight:400;font-size:14px;font-family:var(--sans)">${b.count.toLocaleString('es')}</span></div>
+    <div style="color:var(--text-2);font-size:13px;margin:-6px 0 12px">${esc(b.hint||'')}</div>
+    <div id="hgrid" class="grid"></div>
+    <div id="hmore" style="margin-top:14px;text-align:center"></div>`;
+  loadMore();
+}
+function loadMore(){
+  const more=document.getElementById('hmore'); if(more) more.innerHTML='<span style="color:var(--text-2);font-size:13px">cargando…</span>';
+  fetch(`/api/inspector?bucket=${encodeURIComponent(cur)}&limit=60&offset=${curOffset}`).then(r=>r.json()).then(r=>{
+    curTotal=r.total; const grid=document.getElementById('hgrid'); if(!grid) return;
+    if(curOffset===0 && !r.items.length){ grid.innerHTML='<div style="color:var(--text-2)">Nada por aquí. ✓</div>'; document.getElementById('hmore').innerHTML=''; return; }
+    grid.insertAdjacentHTML('beforeend', r.items.map(albumCard).join(''));
+    curOffset+=r.items.length;
+    const more=document.getElementById('hmore');
+    more.innerHTML = curOffset<curTotal ? `<button id="morebtn" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 18px;font-size:14px">Cargar más (${(curTotal-curOffset).toLocaleString('es')} restantes)</button>` : `<span style="color:var(--text-2);font-size:12px">${curTotal.toLocaleString('es')} mostrados</span>`;
+  }).catch(e=>{ const m=document.getElementById('hmore'); if(m) m.innerHTML='<span style="color:#A32D2D">error: '+esc(e.message)+'</span>'; });
+}
+document.addEventListener('click',e=>{
+  const c=e.target.closest('#hcards .hcard'); if(c){ openBucket(c.dataset.bucket); window.scrollTo({top:0,behavior:'smooth'}); return; }
+  if(e.target.closest('#morebtn')){ loadMore(); return; }
+});
+// permite abrir directo un bucket por hash: inspector.html#unidentified
+const h=(location.hash||'').replace('#','');
+fetch('/api/inspector').then(r=>r.json()).then(d=>{ if(h && d.buckets[h]) cur=h; renderDash(d); }).catch(e=>app.innerHTML='error: '+e.message);
+</script>
+<script src="icons.js" defer></script>
+<script src="nav.js" defer></script>
+<script src="player.js" defer></script>
+</body>
+</html>
