@@ -162,7 +162,8 @@ Hecho (Nov 2 2026): portadas desde arte embebido FLAC; Focus acotado + buscador 
 facetas **bit depth / canales / añadido** + sort **date_added / random**; **Inspector: Identificado + Con género**;
 render de markdown de notas (reseña/bio); **write-back a Obsidian** (guardar la reseña en el .md, preservando frontmatter — va MÁS ALLÁ de Roon, que no reescribe tus ficheros); virtualización del grid; **pestañas de artista** (Discografía/Apariciones/Producción/Obras); **"Otras versiones"** de álbum (release_groups hermanos: deluxe/remaster/año/país; 302 grupos / 615 álbumes).
 Pendiente:
-- **P1** Preferencia de portada archivo/meta/mejor (`edit_album_main_image_use_*`). (Reseña con **selector de fuente** tuya/Obsidian/editorial → HECHO Nov 2; falta solo el plegado largo.)
+- **P1 → HECHO (Nov 2)**: reseña con **selector de fuente** (tuya/Obsidian/editorial), **plegado** de reseñas/bios largas, y **preferencia de portada** por álbum (Auto/Archivo/Descargada/Ninguna). El bloque P1 queda completo.
+- **Siguiente mayor**: pantalla/Focus de **pistas** (trackbrowser) — Roon la tiene y nosotros no; con 254k pistas requiere búsqueda/paginación en el servidor (decisión de arquitectura distinta a la biblioteca, que carga todo).
 - **P2** Inspector: duplicados, corrupto, sin audio, ubicaciones; "más/último reproducido"; agrupar/fusionar versiones (edit); ficheros saltados en Ajustes (tenemos el log de ENOENT del NAS); write-back de bio de artista.
 
 Infra (Nov 2 2026): el watcher ya NO re-sincroniza el vault por nuestras propias escrituras (supresión por fichero, ~10s); los cambios externos sí. Pendiente mayor: el obsidian-sync es un pase COMPLETO del vault en una transacción (bloquea la BD); hacerlo incremental (solo la nota cambiada) es el siguiente nivel.
