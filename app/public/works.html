@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — obras</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.wrow{display:flex;align-items:baseline;gap:12px;padding:9px 8px;margin:0 -8px;border-radius:9px;border-bottom:1px solid var(--border)}
+.wrow:hover{background:var(--surface-2)}
+.wrow .t{flex:1;min-width:0;font-size:14.5px}
+.wrow .c{flex:none;color:var(--text-2);font-size:12.5px}
+.wrow .p{flex:none;color:var(--muted);font-size:12px;width:90px;text-align:right}
+.empty{color:var(--text-2);margin-top:20px;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Obras</h1>
+  <div class="count" id="count">cargando…</div>
+  <div class="search" style="max-width:460px"><input id="q" type="search" placeholder="Filtrar obras o compositores…" autocomplete="off"></div>
+  <div id="list"></div>
+</div>
+<script>
+const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+let WORKS=[];
+function render(f){f=(f||'').toLowerCase().trim();
+  const l=f?WORKS.filter(w=>((w.title||'')+' '+(w.composer||'')).toLowerCase().includes(f)):WORKS;
+  document.getElementById('count').textContent=l.length+' obra'+(l.length===1?'':'s')+(f?(' de '+WORKS.length):'');
+  const list=document.getElementById('list');
+  if(!WORKS.length){list.innerHTML='<div class="empty">Aún no hay obras clásicas en tu biblioteca. Las obras y sus interpretaciones aparecen aquí cuando los metadatos de tus ficheros (o un enriquecido de MusicBrainz) las identifican.</div>';return;}
+  list.innerHTML=l.map(w=>`<a class="wrow" href="work.html?id=${w.id}"><span class="t">${esc(w.title)}</span><span class="c">${esc(w.composer||'')}</span><span class="p">${w.perf||0} interpr.</span></a>`).join('');
+}
+fetch('/api/works').then(r=>r.json()).then(j=>{WORKS=j.items||[];render();}).catch(e=>document.getElementById('count').textContent='error: '+e.message);
+document.getElementById('q').addEventListener('input',e=>render(e.target.value));
+</script>
+<script src="icons.js" defer></script>
+<script src="nav.js" defer></script>
+<script src="player.js" defer></script>
+</body>
+</html>

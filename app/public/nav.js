@@ -21,6 +21,7 @@
     { href: 'discover.html', label: 'Descubrir', ico: 'discover' },
     { href: 'genres.html', label: 'Géneros', ico: 'genres' },
     { href: 'folders.html', label: 'Carpetas', ico: 'folder' },
+    { href: 'works.html', label: 'Obras', ico: 'lyrics' },
     { href: 'playlists.html', label: 'Listas', ico: 'lists' },
     { href: 'radio.html', label: 'Radio', ico: 'radio' },
     { href: 'history.html', label: 'Historial', ico: 'history' },
