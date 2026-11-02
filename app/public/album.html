@@ -22,6 +22,8 @@ const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','
 
 const id=+new URLSearchParams(location.search).get('id');
 const TORD=['excel','si','ok','meh','no'];
+let rawAbout='';   // markdown crudo de la reseña (para el editor; el mostrado va renderizado)
+const mdRender=s=>window.mdToHtml?window.mdToHtml(s):esc(s);
 function renderAlbum(a){
   if(!a||!a.id){app.innerHTML='No encontrado';return;}
   const tier=`<span class="tiered" style="display:inline-flex;gap:4px;flex-wrap:wrap;align-items:center">${TORD.map(k=>`<span class="tchip" data-tier="${k}" title="${TN[k]}" style="cursor:pointer;font-size:11px;font-weight:600;padding:2px 9px;border-radius:999px;background:${a.tier_key===k?TC[k][0]:'var(--surface-2)'};color:${a.tier_key===k?TC[k][1]:'var(--text-2)'}">${TN[k]}</span>`).join('')}${a.tier_key?`<span class="tchip" data-tier="" title="Quitar tier" style="cursor:pointer;color:var(--text-2);padding:2px 6px">${window.icon('close',13)}</span>`:''}</span>`;
@@ -33,7 +35,8 @@ function renderAlbum(a){
   const artistLink=a.artist_id?`<a href="artist.html?id=${a.artist_id}" style="color:var(--accent)">${esc(a.artist)}</a>`:esc(a.artist);
   const provRef=s=>!s||!s.source_ref?'':(/^https?:/.test(s.source_ref)?` · <a href="${esc(s.source_ref)}" target="_blank" rel="noopener" style="color:var(--text-2)">${esc(s.source_ref.replace(/^https?:\/\/(www\.)?/,''))}</a>`:' · '+esc(s.source_ref));
   const aprov=a.about&&a.about_source?('desde '+esc(a.about_source.source)+provRef(a.about_source)):'';
-  const about=`<div class="about" id="aboutbox"><div class="prov" style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span>${aprov}</span><span class="aboutedit" style="cursor:pointer;color:var(--accent);font-size:12px;white-space:nowrap">${a.about?'editar reseña':'añadir reseña'}</span></div><div class="abouttext">${a.about?esc(a.about):'<span style="color:var(--text-2)">Sin reseña. Escribe la tuya — tus datos mandan.</span>'}</div></div>`;
+  rawAbout=a.about||'';
+  const about=`<div class="about" id="aboutbox"><div class="prov" style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span>${aprov}</span><span class="aboutedit" style="cursor:pointer;color:var(--accent);font-size:12px;white-space:nowrap">${a.about?'editar reseña':'añadir reseña'}</span></div><div class="abouttext">${a.about?mdRender(a.about):'<span style="color:var(--text-2)">Sin reseña. Escribe la tuya — tus datos mandan.</span>'}</div></div>`;
   const editions=(a.editions||[]).map(e=>`${esc(e.format||'?')}${e.date?' · '+esc(e.date):''}`).join(' &nbsp;·&nbsp; ');
   const tracks=(a.tracks||[]).length?`<div class="sec">Pistas</div>`+a.tracks.map((t,i)=>`<div class="track"><button class="play" data-idx="${i}" aria-label="Reproducir" title="Reproducir" style="border:none;background:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0 4px;display:inline-flex;align-items:center">${window.icon('play',14)}</button><span class="pos">${t.pos}</span><span style="flex:1;min-width:0">${esc(t.title)}${(t.work||t.composers)?`<div style="font-size:12px;color:var(--text-2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.work_id?`<a href="work.html?id=${t.work_id}" style="color:var(--text-2)">${esc(t.work||'obra')}</a>`:esc(t.work||'')}${t.composers?` · ${esc(t.composers.replace(/,/g,', '))}`:''}</div>`:''}</span><span class="addtrk" data-tid="${t.trackId}" title="Añadir a una lista" style="cursor:pointer;color:var(--text-2);font-size:14px;padding:0 6px;display:inline-flex;align-items:center">${window.icon('plus',15)}</span><span class="dur">${mmss(t.length_ms)}</span></div>`).join(''):'';
   const INST={'bass':'bajo','electric bass':'bajo eléctrico','double bass':'contrabajo','guitar':'guitarra','acoustic guitar':'guitarra acústica','electric guitar':'guitarra eléctrica','drums':'batería','percussion':'percusión','piano':'piano','keyboards':'teclados','synthesizer':'sintetizador','organ':'órgano','cello':'violonchelo','violin':'violín','viola':'viola','trumpet':'trompeta','trombone':'trombón','saxophone':'saxofón','flute':'flauta','clarinet':'clarinete','harmonica':'armónica','accordion':'acordeón','vibraphone':'vibráfono'};
@@ -93,7 +96,7 @@ document.addEventListener('click',e=>{
 });
 function openAboutEditor(){
   const box=document.getElementById('aboutbox'); if(!box||box.querySelector('textarea'))return;
-  const curEl=box.querySelector('.abouttext'); const cur=curEl?curEl.textContent:''; const existing=/Sin reseña/.test(cur)?'':cur;
+  const existing=rawAbout;   // el markdown original, no el texto ya renderizado
   const tx=document.createElement('div'); tx.style.marginTop='8px';
   tx.innerHTML=`<textarea id="aboutta" style="width:100%;min-height:90px;font:inherit;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);box-sizing:border-box"></textarea><div style="margin-top:6px;display:flex;gap:8px"><button id="aboutsave" class="btn-accent" style="padding:6px 14px">Guardar</button><button id="aboutcancel" style="padding:6px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer">Cancelar</button></div>`;
   box.appendChild(tx);
@@ -137,6 +140,7 @@ function pickPlaylist(anchor,onPick){
 let toastT=null;
 function toast(msg){let t=document.getElementById('toast');if(!t){t=document.createElement('div');t.id='toast';t.setAttribute('style','position:fixed;left:50%;bottom:80px;transform:translateX(-50%);z-index:80;background:var(--text);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.25);opacity:0;transition:opacity .15s');document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(toastT);toastT=setTimeout(()=>t.style.opacity='0',1800);}
 </script>
+<script src="md.js" defer></script>
 <script src="icons.js" defer></script>
 <script src="nav.js" defer></script>
 <script src="player.js" defer></script>

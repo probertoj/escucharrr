@@ -110,6 +110,18 @@ input:focus,select:focus,button:focus-visible{outline:none;border-color:var(--ac
 .meta{display:flex;gap:10px 22px;flex-wrap:wrap;align-items:center;font-size:14px;margin:14px 0}
 .meta .k{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em;margin-right:5px}
 .about{background:var(--surface-2);border-radius:13px;padding:16px 20px;font-family:var(--serif);font-size:16.5px;line-height:1.6;margin:16px 0}
+/* markdown renderizado de las notas de Obsidian (reseña/bio) */
+.about h1,.about h2,.about h3,.about h4{font-family:var(--serif);line-height:1.22;margin:14px 0 6px;letter-spacing:-.01em}
+.about h1{font-size:1.4em}.about h2{font-size:1.25em}.about h3{font-size:1.1em}.about h4{font-size:1em}
+.about p{margin:8px 0}
+.about ul,.about ol{margin:8px 0;padding-left:22px}
+.about li{margin:3px 0}
+.about blockquote{margin:10px 0;padding:3px 14px;border-left:3px solid var(--accent);color:var(--text-2)}
+.about code{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:.88em;background:var(--bg);padding:1px 5px;border-radius:5px}
+.about a{color:var(--accent);text-decoration:underline}
+.about hr{border:none;border-top:1px solid var(--border);margin:14px 0}
+.abouttext>:first-child,.biotext>:first-child{margin-top:0}
+.abouttext>:last-child,.biotext>:last-child{margin-bottom:0}
 .prov{font-family:var(--sans);font-size:12px;color:var(--text-2);margin-bottom:7px}
 .sec{font-family:var(--serif);font-size:21px;font-weight:600;letter-spacing:-.01em;margin:30px 0 10px}
 .track{display:flex;align-items:center;gap:12px;padding:10px 10px;margin:0 -10px;border-radius:9px;border-bottom:1px solid var(--border);transition:background .1s}

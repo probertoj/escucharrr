@@ -36,6 +36,8 @@ function albumCard(a){return `<a class="card" href="album.html?id=${a.id}">
 
 const id=+new URLSearchParams(location.search).get('id');
 const TORD=['excel','si','ok','meh','no'];
+let rawBio='';   // markdown crudo de la bio (para el editor; el mostrado va renderizado)
+const mdRender=s=>window.mdToHtml?window.mdToHtml(s):esc(s);
 function renderArtist(a){
   if(!a||!a.id){app.innerHTML='No encontrado';return;}
   document.title='escucharrr — '+a.name;
@@ -45,7 +47,8 @@ function renderArtist(a){
   const provRef=s=>!s||!s.source_ref?'':(/^https?:/.test(s.source_ref)?` · <a href="${esc(s.source_ref)}" target="_blank" rel="noopener" style="color:var(--text-2)">${esc(s.source_ref.replace(/^https?:\/\/(www\.)?/,''))}</a>`:' · '+esc(s.source_ref));
   const tier=`<span class="tiered" style="display:inline-flex;gap:4px;flex-wrap:wrap;align-items:center">${TORD.map(k=>`<span class="tchip" data-tier="${k}" title="${TN[k]}" style="cursor:pointer;font-size:11px;font-weight:600;padding:2px 9px;border-radius:999px;background:${a.tier_key===k?TC[k][0]:'var(--surface-2)'};color:${a.tier_key===k?TC[k][1]:'var(--text-2)'}">${TN[k]}</span>`).join('')}${a.tier_key?`<span class="tchip" data-tier="" title="Quitar tier" style="cursor:pointer;color:var(--text-2);padding:2px 6px">${window.icon('close',13)}</span>`:''}</span>`;
   const bprov=a.bio&&a.bio_source?('desde '+esc(a.bio_source.source)+provRef(a.bio_source)):'';
-  const bio=`<div class="about" id="biobox"><div class="prov" style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span>${bprov}</span><span class="bioedit" style="cursor:pointer;color:var(--accent);font-size:12px;white-space:nowrap">${a.bio?'editar bio':'añadir bio'}</span></div><div class="biotext">${a.bio?esc(a.bio):'<span style="color:var(--text-2)">Sin biografía. Escribe la tuya — tus datos mandan.</span>'}</div></div>`;
+  rawBio=a.bio||'';
+  const bio=`<div class="about" id="biobox"><div class="prov" style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span>${bprov}</span><span class="bioedit" style="cursor:pointer;color:var(--accent);font-size:12px;white-space:nowrap">${a.bio?'editar bio':'añadir bio'}</span></div><div class="biotext">${a.bio?mdRender(a.bio):'<span style="color:var(--text-2)">Sin biografía. Escribe la tuya — tus datos mandan.</span>'}</div></div>`;
   const albums=(a.albums||[]).length?`<div class="sec">Álbumes <span style="color:var(--muted);font-size:14px;font-weight:400">${a.albums.length}</span></div><div class="grid">${a.albums.map(albumCard).join('')}</div>`:'<div class="count">Sin álbumes en tu biblioteca todavía.</div>';
   const appears=(a.appears||[]).length?`<div class="sec">Aparece en</div><ul class="appears">`+a.appears.map(x=>`<li><span class="yr">${x.year||'—'}</span><span style="flex:1"><a href="album.html?id=${x.id}" style="color:var(--accent)">${esc(x.title)}</a> <span style="color:var(--text-2)">· ${esc(x.artist||'')}</span>${x.roles.length?`<div class="roles">${x.roles.map(esc).join(' · ')}</div>`:''}</span></li>`).join('')+`</ul>`:'';
   const composed=(a.composed||[]).length?`<div class="sec">Obras <span style="color:var(--muted);font-size:14px;font-weight:400;font-family:var(--sans)">${a.composed.length}</span></div><div class="chips">${a.composed.map(w=>`<a class="chip" href="work.html?id=${w.id}">${esc(w.title)}</a>`).join('')}</div>`:'';
@@ -78,7 +81,7 @@ document.addEventListener('click',e=>{
 });
 function openBioEditor(){
   const box=document.getElementById('biobox'); if(!box||box.querySelector('textarea'))return;
-  const curEl=box.querySelector('.biotext'); const cur=curEl?curEl.textContent:''; const existing=/Sin biograf/.test(cur)?'':cur;
+  const existing=rawBio;   // el markdown original, no el texto ya renderizado
   const tx=document.createElement('div'); tx.style.marginTop='8px';
   tx.innerHTML=`<textarea id="biota" style="width:100%;min-height:90px;font:inherit;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);box-sizing:border-box"></textarea><div style="margin-top:6px;display:flex;gap:8px"><button id="biosave" class="btn-accent" style="padding:6px 14px">Guardar</button><button id="biocancel" style="padding:6px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer">Cancelar</button></div>`;
   box.appendChild(tx);
@@ -87,6 +90,7 @@ function openBioEditor(){
   document.getElementById('biosave').onclick=()=>{ const v=ta.value; editField('bio',v).then(r=>{ if(r.ok){toast(v.trim()?'Bio guardada':'Bio quitada');load();}else toast(r.error||'error'); }); };
 }
 </script>
+<script src="md.js" defer></script>
 <script src="icons.js" defer></script>
 <script src="nav.js" defer></script>
 <script src="player.js" defer></script>
