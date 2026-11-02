@@ -87,15 +87,51 @@ function renderChips(){
   facetDefs.forEach(([k])=>{const s=sel[k];for(const v in s)c.push([k,v,(s[v]==='exc'?'≠ ':'')+vlabel(k,v),s[v]]);});
   if(minR!=null)c.push(['rat',String(minR),minR+'★ o más','inc']);
   box.innerHTML=c.length?c.map(x=>`<span class="chip ${x[3]==='exc'?'excchip':''}" data-ck="${x[0]}" data-cv="${esc0(x[1])}">${esc0(x[2])} ${window.icon('close',12)}</span>`).join('')+`<span class="chip" data-clear="1" style="background:var(--surface-2);color:var(--text-2)">Limpiar</span>`:'';}
-function render(){
-  let l=ALBUMS.filter(passes);const s=document.getElementById('sort').value;
-  l.sort((a,b)=>s==='year'?(b.year||0)-(a.year||0):s==='artist'?a.artist.localeCompare(b.artist):s==='tier'?(TR[b.tier_key]||0)-(TR[a.tier_key]||0):s==='rating'?(b.album_stars||0)-(a.album_stars||0):a.title.localeCompare(b.title));
-  document.getElementById('count').textContent=l.length===ALBUMS.length?`${ALBUMS.length} álbumes`:`${l.length} de ${ALBUMS.length} álbumes`;
-  document.getElementById('grid').innerHTML=l.map(a=>`<a class="card" href="album.html?id=${a.id}">
+// ── rejilla virtualizada ──────────────────────────────────────────────
+// Con 25k+ álbumes no se puede pintar todo el grid: dibujamos solo las filas
+// visibles (+ buffer) dentro de una ventana absoluta, sobre un contenedor
+// dimensionado a la altura total para que el scroll y la barra sean reales.
+let VIS=[];   // lista filtrada + ordenada actual
+const VG={cols:0,colW:0,cardH:0,rowH:0,gx:18,gy:26,min:158,buf:3,raf:0,refined:false};
+function cardHTML(a){return `<a class="card" href="album.html?id=${a.id}">
     <div class="cov">${cover(a.id)}
       ${a.tier_key?`<span class="badge" style="background:${TC[a.tier_key][0]};color:${TC[a.tier_key][1]}">${TN[a.tier_key]}</span>`:''}
       ${a.is_favorite?'<span class="fav">♥</span>':''}</div>
-    <div class="t">${esc0(a.title)}</div><div class="s">${esc0(a.artist)} · ${a.year||'—'}</div></a>`).join('');
+    <div class="t">${esc0(a.title)}</div><div class="s">${esc0(a.artist)} · ${a.year||'—'}</div></a>`;}
+function vMeasure(){
+  const grid=document.getElementById('grid');
+  const w=grid.clientWidth||grid.getBoundingClientRect().width||1;
+  VG.cols=Math.max(1,Math.floor((w+VG.gx)/(VG.min+VG.gx)));
+  VG.colW=(w-(VG.cols-1)*VG.gx)/VG.cols;
+  if(!VG.refined)VG.cardH=VG.colW+64;   // estimación; se afina midiendo una tarjeta real tras pintar
+  VG.rowH=VG.cardH+VG.gy;}
+function vPaint(){
+  const grid=document.getElementById('grid'),win=document.getElementById('gridwin'); if(!win)return;
+  const n=VIS.length,rows=Math.ceil(n/VG.cols);
+  grid.style.height=(rows*VG.rowH)+'px';
+  const docTop=grid.getBoundingClientRect().top+window.scrollY, rel=window.scrollY-docTop;
+  let firstRow=Math.max(0,Math.floor(rel/VG.rowH)-VG.buf);
+  const visRows=Math.ceil(window.innerHeight/VG.rowH)+VG.buf*2;
+  const lastRow=Math.min(rows,firstRow+visRows);
+  const start=firstRow*VG.cols, end=Math.min(n,lastRow*VG.cols);
+  win.style.gridTemplateColumns='repeat('+VG.cols+',minmax(0,1fr))';
+  win.style.top=(firstRow*VG.rowH)+'px';   // posicionar por 'top' (no transform): evita una capa de compositor gigante que el navegador deja de pintar en scrolls muy largos
+  win.innerHTML=VIS.slice(start,end).map(cardHTML).join('');
+  if(!VG.refined&&win.firstElementChild){   // afinar altura de fila con una tarjeta ya renderizada
+    const h=win.firstElementChild.getBoundingClientRect().height;
+    if(h>0){VG.cardH=h;VG.rowH=h+VG.gy;VG.refined=true;vPaint();}}}
+function vSchedule(){if(VG.raf)return;VG.raf=requestAnimationFrame(()=>{VG.raf=0;vPaint();});}
+window.addEventListener('scroll',vSchedule,{passive:true});
+window.addEventListener('resize',()=>{VG.refined=false;vMeasure();vPaint();});
+function render(){
+  let l=ALBUMS.filter(passes);const s=document.getElementById('sort').value;
+  l.sort((a,b)=>s==='year'?(b.year||0)-(a.year||0):s==='artist'?a.artist.localeCompare(b.artist):s==='tier'?(TR[b.tier_key]||0)-(TR[a.tier_key]||0):s==='rating'?(b.album_stars||0)-(a.album_stars||0):a.title.localeCompare(b.title));
+  VIS=l;
+  document.getElementById('count').textContent=l.length===ALBUMS.length?`${ALBUMS.length} álbumes`:`${l.length} de ${ALBUMS.length} álbumes`;
+  const grid=document.getElementById('grid');
+  if(!document.getElementById('gridwin'))grid.innerHTML='<div class="gridwin" id="gridwin"></div>';
+  window.scrollTo(0,0);   // al cambiar filtro/orden/Focus volvemos arriba
+  vMeasure();vPaint();
   renderFacets();renderChips();}
 function cycle(key,v){const s=sel[key];const cur=s[v];if(!cur)s[v]='inc';else if(cur==='inc')s[v]='exc';else delete s[v];}
 

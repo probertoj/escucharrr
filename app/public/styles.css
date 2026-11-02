@@ -85,10 +85,13 @@ input:focus,select:focus,button:focus-visible{outline:none;border-color:var(--ac
 
 /* rejilla y tarjetas */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(158px,1fr));gap:26px 18px}
+/* rejilla virtualizada: #grid hace de sizer (altura total) y .gridwin de ventana visible desplazada */
+#grid{position:relative;display:block}
+.gridwin{position:absolute;top:0;left:0;right:0;display:grid;gap:26px 18px}
 .card{transition:transform .14s}
 .card .cov{position:relative;border-radius:var(--radius);overflow:hidden;aspect-ratio:1;box-shadow:var(--shadow);transition:box-shadow .16s,transform .16s}
 .card:hover .cov{box-shadow:var(--shadow-lg);transform:translateY(-3px)}
-.card .t{font-size:14px;font-weight:600;margin-top:10px;line-height:1.28;letter-spacing:-.005em}
+.card .t{font-size:14px;font-weight:600;margin-top:10px;line-height:1.28;letter-spacing:-.005em;min-height:2.56em;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .card .s{font-size:12.5px;color:var(--text-2);margin-top:1px}
 .badge{position:absolute;top:7px;left:7px;font-size:10.5px;font-weight:600;padding:2px 8px;border-radius:999px;letter-spacing:.02em;box-shadow:0 1px 3px rgba(0,0,0,.12)}
 .fav{position:absolute;bottom:7px;left:7px;color:#d4537e;filter:drop-shadow(0 1px 2px rgba(0,0,0,.25))}
