@@ -164,11 +164,18 @@ render de markdown de notas (reseña/bio); **write-back a Obsidian** (guardar la
 Pendiente:
 - **P1 → HECHO (Nov 2)**: reseña con **selector de fuente** (tuya/Obsidian/editorial), **plegado** de reseñas/bios largas, y **preferencia de portada** por álbum (Auto/Archivo/Descargada/Ninguna). El bloque P1 queda completo.
 - **Pantalla de pistas (trackbrowser) → HECHO (Nov 2)**: vista "Pistas" con búsqueda/orden/paginación en el servidor (dos pasadas; 143ms/página), scroll infinito, reproducción, y **Focus de pista** (formato/profundidad/frecuencia/canales; facetas cacheadas + filtros server-side). Pendiente menor: faceta de género/década en pista (necesita join al álbum) y keyset para offsets muy profundos (hoy ~600ms a offset 50k).
-- **Siguiente mayor**: pantalla de compositor/obra (composerbrowser/workbrowser) para clásica; pantalla de carpetas (folderbrowser).
-- **P2** Inspector: duplicados, corrupto, sin audio, ubicaciones; "más/último reproducido"; agrupar/fusionar versiones (edit); ficheros saltados en Ajustes (tenemos el log de ENOENT del NAS); write-back de bio de artista.
+### Empujón "todo lo que queda" (bloques 1→6, Nov 2 2026) — HECHO
+- **B1 navegación**: **navegador de carpetas** (folders.html, /api/folders con extracción de segmentos en SQL + caché; 4628 carpetas); **navegador de obras** mínimo (works.html). Compositor NO como pantalla propia (son artistas; además 5 obras en la biblioteca).
+- **B2 ficha de álbum**: **cabeceras de disco** + "reproducir disco" en multidisco; "reproducir desde aquí" ya estaba. Info de edición (sello/país/barcode) y clásica OMITIDOS: datos vacíos (los poblaría MusicBrainz).
+- **B3 edición**: **ocultar/mostrar álbumes** (flag hidden + faceta "Oculto"; no borra del disco). Identify wizard, merge/fusionar, prefs por-campo: DIFERIDOS (API de MusicBrainz / complejos).
+- **B4 ajustes**: **ficheros saltados** del escaneo persistidos (tabla skipped_file) y mostrados en Ajustes. Mapeo de géneros: diferido (bajo valor). UI de varias carpetas: ya existía.
+- **B5 infra**: **obsidian-sync incremental** (`--only <nota>`, ~0,3s vs varios segundos; el watcher lo usa). Keyset: no (poco valor real). Reescaneo NAS: botón existente + ahora muestra lo saltado.
+- **B6 multi-room**: **descubrimiento mDNS** (Chromecast/AirPlay) + DLNA en paralelo, siempre visibles en el selector de zona con su tipo. Reproducir en Chromecast/AirPlay: propietario (cast/airplay), NO dependency-free → se muestran como "detectado". DLNA reproduce.
 
-Infra (Nov 2 2026): el watcher ya NO re-sincroniza el vault por nuestras propias escrituras (supresión por fichero, ~10s); los cambios externos sí. Pendiente mayor: el obsidian-sync es un pase COMPLETO del vault en una transacción (bloquea la BD); hacerlo incremental (solo la nota cambiada) es el siguiente nivel.
-- **P3** Correcciones manuales de pistas/discos, fotos/booklet, clásica (obras/movimientos), import date, localización, preferencias de metadatos por-campo.
+### Genuinamente diferido (necesita esfuerzo grande o datos/claves que no tenemos)
+- **Identify wizard + enriquecido de MusicBrainz** (obras clásicas, créditos, país/sello/barcode, fotos) → habilitaría compositor/obra, info de edición, has_cover/liner_notes, países/sellos.
+- **Casting a Chromecast/AirPlay** (protocolos propietarios) y **RAAT** (firmado, NDA).
+- **Preferencias de metadatos por-campo**; **correcciones manuales** de pistas/discos; **import date**; **localización**; keyset para offsets profundos; mapeo de géneros.
 
 _Documento vivo: el RE del cuerpo compilado de las `.broo` y del modelo de datos del Core
 sigue abierto; esto recoge la capa de UI (99 pantallas) a un nivel mucho más fino que antes._
