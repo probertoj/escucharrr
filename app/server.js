@@ -429,10 +429,19 @@ function album(id) {
   const a = Q.album.get(id); if (!a) return null;
   a.genres = (Q.genresOf.get(id).gs || '').split('|').filter(Boolean);
   a.format = (Q.formatOf.get(id) || {}).f || null;
-  // "Acerca de": la nota de Obsidian (user_edit) MANDA; si no hay, cae a la reseña editorial externa.
+  // Reseñas: TODAS las fuentes disponibles (para el selector estilo Roon). La editable (tuya/Obsidian)
+  // va primera y es la que "manda"; la editorial externa (Wikipedia) se ofrece como alternativa.
+  const prov = Q.prov.all(id);
+  a.reviews = [];
   const ab = Q.about.get(id);
-  if (ab) { a.about = ab.v; a.about_source = Q.prov.all(id).find(p => p.field === 'about') || null; }
-  else { const ext = Q.aboutExt.get(id); a.about = (ext && ext.v) || null; a.about_source = a.about ? (Q.prov.all(id).find(p => p.field === 'about_editorial') || null) : null; }
+  if (ab && ab.v) { const p = prov.find(x => x.field === 'about'); const src = (p && p.source) || 'user';
+    a.reviews.push({ source: src, label: src === 'obsidian' ? 'Nota de Obsidian' : 'Tu reseña', editable: true, text: ab.v, ref: (p && p.source_ref) || null }); }
+  const ext = Q.aboutExt.get(id);
+  if (ext && ext.v) { const p = prov.find(x => x.field === 'about_editorial');
+    a.reviews.push({ source: 'editorial', label: 'Editorial', editable: false, text: ext.v, ref: (p && p.source_ref) || null }); }
+  // compat: about/about_source = la fuente preferida (la primera)
+  if (a.reviews.length) { a.about = a.reviews[0].text; a.about_source = { source: a.reviews[0].source, source_ref: a.reviews[0].ref }; }
+  else { a.about = null; a.about_source = null; }
   a.editions = Q.editions.all(id);
   a.versions = versionsOf(id, a.title);   // otras ediciones del mismo álbum en tu biblioteca
   a.tracks = Q.tracks.all(id);
