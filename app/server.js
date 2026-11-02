@@ -92,7 +92,9 @@ function buildQ(db) { return {
       (SELECT label FROM tier WHERE key=a.tier_key) tier_label, a.album_stars, a.is_favorite
      FROM v_album a ORDER BY a.title`),
   // ── índices en conjunto para la lista (una pasada cada uno, no N+1) ──
-  audioIds:  db.prepare(`SELECT DISTINCT rel.release_group_id id FROM local_file lf JOIN track tr ON (tr.id=lf.track_id OR tr.recording_id=lf.recording_id) JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id`),
+  // audio + especificación por álbum (profundidad de bits y canales máximos) en una pasada
+  audioSpec: db.prepare(`SELECT rel.release_group_id id, MAX(lf.bit_depth) bd, MAX(lf.channels) ch FROM local_file lf JOIN track tr ON (tr.id=lf.track_id OR tr.recording_id=lf.recording_id) JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id GROUP BY rel.release_group_id`),
+  addedAll:  db.prepare(`SELECT id, created_at FROM release_group`),
   playedIds: db.prepare(`SELECT DISTINCT rel.release_group_id id FROM play p JOIN track tr ON (p.track_id=tr.id OR p.recording_id=tr.recording_id) JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id`),
   laterIds:  db.prepare(`SELECT subject_id id FROM flag WHERE subject_type='release_group' AND flag='listen_later'`),
   genresAll: db.prepare(`SELECT rgg.release_group_id id, group_concat(g.name,'|') gs FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id GROUP BY rgg.release_group_id`),
@@ -408,7 +410,11 @@ function album(id) {
 function libraryList() {
   const rows = Q.library.all();
   // una pasada por índice (set-based) en vez de 3+ consultas por álbum: O(n) total, no O(n) por fila
-  const audio = new Set(Q.audioIds.all().map(r => r.id));
+  const spec = Q.audioSpec.all();
+  const audio = new Set(spec.map(r => r.id));
+  const bitdepth = new Map(spec.map(r => [r.id, r.bd]));
+  const channels = new Map(spec.map(r => [r.id, r.ch]));
+  const added = new Map(Q.addedAll.all().map(r => [r.id, r.created_at]));
   const played = new Set(Q.playedIds.all().map(r => r.id));
   const later = new Set(Q.laterIds.all().map(r => r.id));
   const genres = new Map(Q.genresAll.all().map(r => [r.id, (r.gs || '').split('|').filter(Boolean)]));
@@ -421,6 +427,9 @@ function libraryList() {
     a.listen_later = later.has(a.id) ? 1 : 0;
     a.has_audio = audio.has(a.id) ? 1 : 0;
     a.played = played.has(a.id) ? 1 : 0;
+    a.bit_depth = bitdepth.get(a.id) || null;   // como el Focus de Roon por profundidad/canales
+    a.channels = channels.get(a.id) || null;
+    a.added = added.get(a.id) || null;           // fecha de alta en la biblioteca (sort/facet "añadido")
   }
   return rows;
 }

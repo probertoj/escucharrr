@@ -22,8 +22,10 @@
       <option value="title">Por título</option>
       <option value="year">Por año</option>
       <option value="artist">Por artista</option>
+      <option value="added">Añadido recientemente</option>
       <option value="tier">Por tier</option>
       <option value="rating">Por valoración</option>
+      <option value="random">Aleatorio</option>
     </select>
     <input id="filter" type="search" placeholder="Filtrar">
   </div>
@@ -45,9 +47,14 @@ const esc0=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;',
 let ALBUMS=[];
 // Facetas estilo "Focus" de Roon. Booleanas (favorito/más tarde/audio/reproducido) como valores sí/no.
 const BOOLK={favorite:'is_favorite',later:'listen_later',audio:'has_audio',played:'played'};
-const facetDefs=[['tier','Tier'],['genre','Género'],['format','Formato'],['decade','Década'],['type','Tipo'],['tag','Etiqueta'],['favorite','Favoritos'],['later','Escuchar más tarde'],['audio','Audio local'],['played','Reproducido']];
+const facetDefs=[['tier','Tier'],['genre','Género'],['format','Formato'],['bitdepth','Profundidad'],['channels','Canales'],['decade','Década'],['added','Añadido'],['type','Tipo'],['tag','Etiqueta'],['favorite','Favoritos'],['later','Escuchar más tarde'],['audio','Audio local'],['played','Reproducido']];
 const sel={}; facetDefs.forEach(([k])=>sel[k]={});   // sel[clave][valor] = 'inc' | 'exc'
 let minR=null, txt='';
+// cubo de "añadido" (como el Focus de Roon por fecha de alta): un álbum cae en el tramo más reciente que cumple
+const ADDED_BUCKETS=[[30,'Últimos 30 días'],[90,'Últimos 3 meses'],[180,'Últimos 6 meses'],[365,'Último año']];
+const ADDED_ORDER=['Últimos 30 días','Últimos 3 meses','Últimos 6 meses','Último año','Hace más de un año'];
+function addedBucket(iso){ if(!iso)return null; const d=Date.parse(iso.replace(' ','T')+(/[zZ]|[+-]\d\d:?\d\d$/.test(iso)?'':'Z')); if(isNaN(d))return null; const days=(Date.now()-d)/864e5; for(const[lim,lbl]of ADDED_BUCKETS)if(days<=lim)return lbl; return 'Hace más de un año'; }
+function chLabel(n){ return n===1?'Mono':n===2?'Estéreo':n>2?(n+' canales'):null; }
 function avals(a,key){
   if(key==='tier')return a.tier_key?[a.tier_key]:[];
   if(key==='genre')return a.genres||[];
@@ -55,6 +62,9 @@ function avals(a,key){
   if(key==='decade'){const y=parseInt(a.year,10);return (y>=1000&&y<=9999)?[String(Math.floor(y/10)*10)+'s']:[];}
   if(key==='type')return a.primary_type?[a.primary_type.toLowerCase()]:[];
   if(key==='format')return a.format?[a.format]:[];
+  if(key==='bitdepth')return a.bit_depth?[a.bit_depth+' bits']:[];
+  if(key==='channels'){const l=chLabel(a.channels);return l?[l]:[];}
+  if(key==='added'){const b=addedBucket(a.added);return b?[b]:[];}
   if(BOOLK[key])return [a[BOOLK[key]]?'sí':'no'];
   return [];}
 function vlabel(key,v){ if(key==='tier')return TN[v]; if(BOOLK[key])return v==='sí'?'Sí':'No'; return v; }
@@ -76,7 +86,7 @@ const ffilters={};   // texto de filtro por faceta (clave -> texto), se conserva
 function renderFacets(){
   const box=document.getElementById('facets'); if(!box)return;
   let h=facetDefs.map(([k,label])=>{const m=valsOf(k);const keys=Object.keys(m);if(!keys.length)return '';
-    const vs=keys.sort((x,y)=>k==='tier'?TR[y]-TR[x]:(k==='decade'?y.localeCompare(x):m[y]-m[x]));
+    const vs=keys.sort((x,y)=>k==='tier'?TR[y]-TR[x]:k==='decade'?y.localeCompare(x):k==='added'?(ADDED_ORDER.indexOf(x)-ADDED_ORDER.indexOf(y)):k==='bitdepth'?(parseInt(y)-parseInt(x)):m[y]-m[x]);
     const search=keys.length>8?`<input class="ffilter" data-k="${k}" placeholder="filtrar…" autocomplete="off">`:'';
     return `<div class="fcol"><h4><span>${label}</span><span class="fcount">${keys.length}</span></h4>${search}<div class="fvals">`+vs.map(v=>{const st=sel[k][v]||'';
       return `<div class="fv ${st==='inc'?'on':st==='exc'?'exc':''}" data-k="${k}" data-v="${esc0(v)}" data-lbl="${esc0(String(vlabel(k,v)).toLowerCase())}" title="Clic: incluir → excluir → quitar">${st==='exc'?'<span class="fvsign">−</span>':''}<span>${esc0(vlabel(k,v))}</span><span class="n">${m[v]}</span></div>`;}).join('')+`</div></div>`;}).join('');
@@ -131,7 +141,7 @@ window.addEventListener('scroll',vSchedule,{passive:true});
 window.addEventListener('resize',()=>{VG.refined=false;vMeasure();vPaint();});
 function render(){
   let l=ALBUMS.filter(passes);const s=document.getElementById('sort').value;
-  l.sort((a,b)=>s==='year'?(b.year||0)-(a.year||0):s==='artist'?a.artist.localeCompare(b.artist):s==='tier'?(TR[b.tier_key]||0)-(TR[a.tier_key]||0):s==='rating'?(b.album_stars||0)-(a.album_stars||0):a.title.localeCompare(b.title));
+  l.sort((a,b)=>s==='year'?(b.year||0)-(a.year||0):s==='artist'?a.artist.localeCompare(b.artist):s==='tier'?(TR[b.tier_key]||0)-(TR[a.tier_key]||0):s==='rating'?(b.album_stars||0)-(a.album_stars||0):s==='added'?String(b.added||'').localeCompare(String(a.added||'')):s==='random'?(a._rnd-b._rnd):a.title.localeCompare(b.title));
   VIS=l;
   document.getElementById('count').textContent=l.length===ALBUMS.length?`${ALBUMS.length} álbumes`:`${l.length} de ${ALBUMS.length} álbumes`;
   const grid=document.getElementById('grid');
@@ -152,7 +162,7 @@ focusbtn.onclick=()=>{const fp=document.getElementById('focus');fp.hidden=!fp.hi
 document.getElementById('sort').onchange=render;
 document.getElementById('filter').oninput=(e)=>{txt=e.target.value.toLowerCase().trim();render();};
 
-function load(){fetch('/api/library').then(r=>r.json()).then(d=>{ALBUMS=d;render();}).catch(e=>document.getElementById('count').textContent='error: '+e.message);}
+function load(){fetch('/api/library').then(r=>r.json()).then(d=>{d.forEach(a=>a._rnd=Math.random());ALBUMS=d;render();}).catch(e=>document.getElementById('count').textContent='error: '+e.message);}
 load();
 document.addEventListener('escucharrr:changed',load);   // biblioteca en vivo
 
