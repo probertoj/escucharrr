@@ -93,7 +93,9 @@ function buildQ(db) { return {
      FROM v_album a ORDER BY a.title`),
   // ── índices en conjunto para la lista (una pasada cada uno, no N+1) ──
   // audio + especificación por álbum (profundidad de bits y canales máximos) en una pasada
-  audioSpec: db.prepare(`SELECT rel.release_group_id id, MAX(lf.bit_depth) bd, MAX(lf.channels) ch FROM local_file lf JOIN track tr ON (tr.id=lf.track_id OR tr.recording_id=lf.recording_id) JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id GROUP BY rel.release_group_id`),
+  audioSpec: db.prepare(`SELECT rel.release_group_id id, MAX(lf.bit_depth) bd, MAX(lf.channels) ch, MAX(lf.sample_rate) sr FROM local_file lf JOIN track tr ON (tr.id=lf.track_id OR tr.recording_id=lf.recording_id) JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id GROUP BY rel.release_group_id`),
+  // estadísticas de escucha por álbum (nº de reproducciones + último play) para las facetas de Roon
+  playStats: db.prepare(`SELECT rel.release_group_id id, COUNT(*) pc, MAX(p.played_at) lp FROM play p JOIN track tr ON (p.track_id=tr.id OR p.recording_id=tr.recording_id) JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id GROUP BY rel.release_group_id`),
   addedAll:  db.prepare(`SELECT id, created_at FROM release_group`),
   mbidIds:   db.prepare(`SELECT id FROM release_group WHERE mbid IS NOT NULL`),   // "identificado" (Inspector de Roon)
   playedIds: db.prepare(`SELECT DISTINCT rel.release_group_id id FROM play p JOIN track tr ON (p.track_id=tr.id OR p.recording_id=tr.recording_id) JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id`),
@@ -448,6 +450,8 @@ function libraryList() {
   const audio = new Set(spec.map(r => r.id));
   const bitdepth = new Map(spec.map(r => [r.id, r.bd]));
   const channels = new Map(spec.map(r => [r.id, r.ch]));
+  const samplerate = new Map(spec.map(r => [r.id, r.sr]));
+  const pstats = new Map(Q.playStats.all().map(r => [r.id, r]));
   const added = new Map(Q.addedAll.all().map(r => [r.id, r.created_at]));
   const identified = new Set(Q.mbidIds.all().map(r => r.id));
   const played = new Set(Q.playedIds.all().map(r => r.id));
@@ -464,6 +468,10 @@ function libraryList() {
     a.played = played.has(a.id) ? 1 : 0;
     a.bit_depth = bitdepth.get(a.id) || null;   // como el Focus de Roon por profundidad/canales
     a.channels = channels.get(a.id) || null;
+    a.sample_rate = samplerate.get(a.id) || null;   // frecuencia de muestreo (faceta Roon)
+    const ps = pstats.get(a.id);
+    a.play_count = ps ? ps.pc : 0;               // nº de reproducciones (más/veces reproducido)
+    a.last_played = ps ? ps.lp : null;           // último play (faceta "last played" de Roon)
     a.added = added.get(a.id) || null;           // fecha de alta en la biblioteca (sort/facet "añadido")
     a.identified = identified.has(a.id) ? 1 : 0;  // tiene MBID (Inspector: identificado)
   }

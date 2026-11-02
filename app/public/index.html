@@ -25,6 +25,7 @@
       <option value="added">Añadido recientemente</option>
       <option value="tier">Por tier</option>
       <option value="rating">Por valoración</option>
+      <option value="plays">Más reproducido</option>
       <option value="random">Aleatorio</option>
     </select>
     <input id="filter" type="search" placeholder="Filtrar">
@@ -47,7 +48,7 @@ const esc0=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;',
 let ALBUMS=[];
 // Facetas estilo "Focus" de Roon. Booleanas (favorito/más tarde/audio/reproducido) como valores sí/no.
 const BOOLK={favorite:'is_favorite',later:'listen_later',audio:'has_audio',played:'played',identified:'identified'};
-const facetDefs=[['tier','Tier'],['genre','Género'],['format','Formato'],['bitdepth','Profundidad'],['channels','Canales'],['decade','Década'],['added','Añadido'],['type','Tipo'],['tag','Etiqueta'],['favorite','Favoritos'],['later','Escuchar más tarde'],['audio','Audio local'],['played','Reproducido'],['identified','Identificado'],['hasgenre','Con género']];
+const facetDefs=[['tier','Tier'],['genre','Género'],['format','Formato'],['bitdepth','Profundidad'],['samplerate','Frecuencia'],['channels','Canales'],['decade','Década'],['added','Añadido'],['lastplayed','Último play'],['plays','Reproducciones'],['type','Tipo'],['tag','Etiqueta'],['favorite','Favoritos'],['later','Escuchar más tarde'],['audio','Audio local'],['played','Reproducido'],['identified','Identificado'],['hasgenre','Con género']];
 const sel={}; facetDefs.forEach(([k])=>sel[k]={});   // sel[clave][valor] = 'inc' | 'exc'
 let minR=null, txt='', yearMin=null, yearMax=null;
 // cubo de "añadido" (como el Focus de Roon por fecha de alta): un álbum cae en el tramo más reciente que cumple
@@ -55,6 +56,12 @@ const ADDED_BUCKETS=[[30,'Últimos 30 días'],[90,'Últimos 3 meses'],[180,'Últ
 const ADDED_ORDER=['Últimos 30 días','Últimos 3 meses','Últimos 6 meses','Último año','Hace más de un año'];
 function addedBucket(iso){ if(!iso)return null; const d=Date.parse(iso.replace(' ','T')+(/[zZ]|[+-]\d\d:?\d\d$/.test(iso)?'':'Z')); if(isNaN(d))return null; const days=(Date.now()-d)/864e5; for(const[lim,lbl]of ADDED_BUCKETS)if(days<=lim)return lbl; return 'Hace más de un año'; }
 function chLabel(n){ return n===1?'Mono':n===2?'Estéreo':n>2?(n+' canales'):null; }
+function srLabel(hz){ if(!hz)return null; const k=hz/1000; return (Number.isInteger(k)?k:k.toFixed(1).replace('.',','))+' kHz'; }
+function daysAgo(iso){ if(!iso)return null; const d=Date.parse(iso.replace(' ','T')+(/[zZ]|[+-]\d\d:?\d\d$/.test(iso)?'':'Z')); return isNaN(d)?null:(Date.now()-d)/864e5; }
+const LASTPLAYED_ORDER=['Hoy','Esta semana','Este mes','Últimos 3 meses','Últimos 6 meses','Este año','Hace más de un año'];
+function lastPlayedBucket(iso){ const d=daysAgo(iso); if(d==null)return null; return d<=1?'Hoy':d<=7?'Esta semana':d<=30?'Este mes':d<=90?'Últimos 3 meses':d<=180?'Últimos 6 meses':d<=365?'Este año':'Hace más de un año'; }
+const PLAYS_ORDER=['Una vez','Pocas (2–5)','Varias (6–10)','Muchas (11+)'];
+function playBucket(n){ return !n?null:n===1?'Una vez':n<=5?'Pocas (2–5)':n<=10?'Varias (6–10)':'Muchas (11+)'; }
 function avals(a,key){
   if(key==='tier')return a.tier_key?[a.tier_key]:[];
   if(key==='genre')return a.genres||[];
@@ -63,8 +70,11 @@ function avals(a,key){
   if(key==='type')return a.primary_type?[a.primary_type.toLowerCase()]:[];
   if(key==='format')return a.format?[a.format]:[];
   if(key==='bitdepth')return a.bit_depth?[a.bit_depth+' bits']:[];
+  if(key==='samplerate'){const l=srLabel(a.sample_rate);return l?[l]:[];}
   if(key==='channels'){const l=chLabel(a.channels);return l?[l]:[];}
   if(key==='added'){const b=addedBucket(a.added);return b?[b]:[];}
+  if(key==='lastplayed'){const b=lastPlayedBucket(a.last_played);return b?[b]:[];}
+  if(key==='plays'){const b=playBucket(a.play_count);return b?[b]:[];}
   if(key==='hasgenre')return [(a.genres&&a.genres.length)?'sí':'no'];
   if(BOOLK[key])return [a[BOOLK[key]]?'sí':'no'];
   return [];}
@@ -88,7 +98,7 @@ const ffilters={};   // texto de filtro por faceta (clave -> texto), se conserva
 function renderFacets(){
   const box=document.getElementById('facets'); if(!box)return;
   let h=facetDefs.map(([k,label])=>{const m=valsOf(k);const keys=Object.keys(m);if(!keys.length)return '';
-    const vs=keys.sort((x,y)=>k==='tier'?TR[y]-TR[x]:k==='decade'?y.localeCompare(x):k==='added'?(ADDED_ORDER.indexOf(x)-ADDED_ORDER.indexOf(y)):k==='bitdepth'?(parseInt(y)-parseInt(x)):m[y]-m[x]);
+    const vs=keys.sort((x,y)=>k==='tier'?TR[y]-TR[x]:k==='decade'?y.localeCompare(x):k==='added'?(ADDED_ORDER.indexOf(x)-ADDED_ORDER.indexOf(y)):k==='lastplayed'?(LASTPLAYED_ORDER.indexOf(x)-LASTPLAYED_ORDER.indexOf(y)):k==='plays'?(PLAYS_ORDER.indexOf(x)-PLAYS_ORDER.indexOf(y)):k==='bitdepth'?(parseInt(y)-parseInt(x)):k==='samplerate'?(parseFloat(String(y).replace(',','.'))-parseFloat(String(x).replace(',','.'))):m[y]-m[x]);
     const search=keys.length>8?`<input class="ffilter" data-k="${k}" placeholder="filtrar…" autocomplete="off">`:'';
     return `<div class="fcol"><h4><span>${label}</span><span class="fcount">${keys.length}</span></h4>${search}<div class="fvals">`+vs.map(v=>{const st=sel[k][v]||'';
       return `<div class="fv ${st==='inc'?'on':st==='exc'?'exc':''}" data-k="${k}" data-v="${esc0(v)}" data-lbl="${esc0(String(vlabel(k,v)).toLowerCase())}" title="Clic: incluir → excluir → quitar">${st==='exc'?'<span class="fvsign">−</span>':''}<span>${esc0(vlabel(k,v))}</span><span class="n">${m[v]}</span></div>`;}).join('')+`</div></div>`;}).join('');
@@ -154,7 +164,7 @@ window.addEventListener('scroll',vSchedule,{passive:true});
 window.addEventListener('resize',()=>{VG.refined=false;vMeasure();vPaint();});
 function render(){
   let l=ALBUMS.filter(passes);const s=document.getElementById('sort').value;
-  l.sort((a,b)=>s==='year'?(b.year||0)-(a.year||0):s==='artist'?a.artist.localeCompare(b.artist):s==='tier'?(TR[b.tier_key]||0)-(TR[a.tier_key]||0):s==='rating'?(b.album_stars||0)-(a.album_stars||0):s==='added'?String(b.added||'').localeCompare(String(a.added||'')):s==='random'?(a._rnd-b._rnd):a.title.localeCompare(b.title));
+  l.sort((a,b)=>s==='year'?(b.year||0)-(a.year||0):s==='artist'?a.artist.localeCompare(b.artist):s==='tier'?(TR[b.tier_key]||0)-(TR[a.tier_key]||0):s==='rating'?(b.album_stars||0)-(a.album_stars||0):s==='added'?String(b.added||'').localeCompare(String(a.added||'')):s==='plays'?((b.play_count||0)-(a.play_count||0)):s==='random'?(a._rnd-b._rnd):a.title.localeCompare(b.title));
   VIS=l;
   document.getElementById('count').textContent=l.length===ALBUMS.length?`${ALBUMS.length} álbumes`:`${l.length} de ${ALBUMS.length} álbumes`;
   const grid=document.getElementById('grid');
