@@ -24,6 +24,7 @@ const id=+new URLSearchParams(location.search).get('id');
 const TORD=['excel','si','ok','meh','no'];
 let rawAbout='';   // markdown crudo de la reseña EDITABLE (tuya/Obsidian) para el editor
 let reviews=[], reviewIdx=0;   // todas las fuentes de reseña + la seleccionada (selector estilo Roon)
+let albumTracks=[];   // pistas del álbum (para "reproducir disco")
 const mdRender=s=>window.mdToHtml?window.mdToHtml(s):esc(s);
 const provRefOf=ref=>!ref?'':(/^https?:/.test(ref)?' · <a href="'+esc(ref)+'" target="_blank" rel="noopener" style="color:var(--text-2)">'+esc(ref.replace(/^https?:\/\/(www\.)?/,''))+'</a>':' · '+esc(ref));
 function showReview(i){const r=reviews[i];if(!r)return;reviewIdx=i;
@@ -53,7 +54,12 @@ function renderAlbum(a){
   const prov0=sel0?('desde '+esc(sel0.source)+provRefOf(sel0.ref)):'';
   const about=`<div class="about" id="aboutbox"><div class="prov" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><span style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${srcSel}<span id="aboutprov" style="color:var(--text-2)">${prov0}</span></span><span class="aboutedit" style="cursor:pointer;color:var(--accent);font-size:12px;white-space:nowrap">${rawAbout?'editar reseña':'añadir reseña'}</span></div><div class="abouttext">${sel0?mdRender(sel0.text):'<span style="color:var(--text-2)">Sin reseña. Escribe la tuya — tus datos mandan.</span>'}</div><div class="revtoggle" hidden></div></div>`;
   const editions=(a.editions||[]).map(e=>`${esc(e.format||'?')}${e.date?' · '+esc(e.date):''}`).join(' &nbsp;·&nbsp; ');
-  const tracks=(a.tracks||[]).length?`<div class="sec">Pistas</div>`+a.tracks.map((t,i)=>`<div class="track"><button class="play" data-idx="${i}" aria-label="Reproducir" title="Reproducir" style="border:none;background:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0 4px;display:inline-flex;align-items:center">${window.icon('play',14)}</button><span class="pos">${t.pos}</span><span style="flex:1;min-width:0">${esc(t.title)}${(t.work||t.composers)?`<div style="font-size:12px;color:var(--text-2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.work_id?`<a href="work.html?id=${t.work_id}" style="color:var(--text-2)">${esc(t.work||'obra')}</a>`:esc(t.work||'')}${t.composers?` · ${esc(t.composers.replace(/,/g,', '))}`:''}</div>`:''}</span><span class="addtrk" data-tid="${t.trackId}" title="Añadir a una lista" style="cursor:pointer;color:var(--text-2);font-size:14px;padding:0 6px;display:inline-flex;align-items:center">${window.icon('plus',15)}</span><span class="dur">${mmss(t.length_ms)}</span></div>`).join(''):'';
+  albumTracks=a.tracks||[];
+  const multiDisc=(a.tracks||[]).some(t=>t.disc>1);
+  const trackRow=(t,i)=>`<div class="track"><button class="play" data-idx="${i}" aria-label="Reproducir" title="Reproducir" style="border:none;background:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0 4px;display:inline-flex;align-items:center">${window.icon('play',14)}</button><span class="pos">${t.pos}</span><span style="flex:1;min-width:0">${esc(t.title)}${(t.work||t.composers)?`<div style="font-size:12px;color:var(--text-2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.work_id?`<a href="work.html?id=${t.work_id}" style="color:var(--text-2)">${esc(t.work||'obra')}</a>`:esc(t.work||'')}${t.composers?` · ${esc(t.composers.replace(/,/g,', '))}`:''}</div>`:''}</span><span class="addtrk" data-tid="${t.trackId}" title="Añadir a una lista" style="cursor:pointer;color:var(--text-2);font-size:14px;padding:0 6px;display:inline-flex;align-items:center">${window.icon('plus',15)}</span><span class="dur">${mmss(t.length_ms)}</span></div>`;
+  let tracks='';
+  if((a.tracks||[]).length){ tracks='<div class="sec">Pistas</div>'; let cur=null;
+    a.tracks.forEach((t,i)=>{ if(multiDisc && t.disc!==cur){ cur=t.disc; tracks+=`<div class="dischdr"><span class="dh">${window.icon('music',14)} Disco ${t.disc}</span><button class="playdisc" data-disc="${t.disc}" title="Reproducir este disco">${window.icon('play',12)} Reproducir disco</button></div>`; } tracks+=trackRow(t,i); }); }
   const INST={'bass':'bajo','electric bass':'bajo eléctrico','double bass':'contrabajo','guitar':'guitarra','acoustic guitar':'guitarra acústica','electric guitar':'guitarra eléctrica','drums':'batería','percussion':'percusión','piano':'piano','keyboards':'teclados','synthesizer':'sintetizador','organ':'órgano','cello':'violonchelo','violin':'violín','viola':'viola','trumpet':'trompeta','trombone':'trombón','saxophone':'saxofón','flute':'flauta','clarinet':'clarinete','harmonica':'armónica','accordion':'acordeón','vibraphone':'vibráfono'};
   const tInst=i=>i?(INST[i.toLowerCase()]||i.toLowerCase()):i;
   const clabel=c=>c.role==='instrumento'&&c.instrument?tInst(c.instrument):(c.role==='voz'&&c.instrument?'voz ('+tInst(c.instrument)+')':c.role);
@@ -131,6 +137,7 @@ function openAboutEditor(){
 
 // Reproducir: encola el álbum y arranca (el player registra la escucha)
 document.addEventListener('click',e=>{
+  const pd=e.target.closest('#app .playdisc'); if(pd){const d=+pd.dataset.disc;const idx=albumTracks.findIndex(t=>t.disc===d);if(idx>=0)player.playAlbum(id,idx);return;}
   const b=e.target.closest('.play'); if(b){player.playAlbum(id, +b.dataset.idx); return;}
   if(e.target.closest('#playalbum')){player.playAlbum(id, 0);return;}
   const aa=e.target.closest('#addalbum'); if(aa){pickPlaylist(aa,plid=>addTo(plid,{album_id:id},'Álbum añadido'));return;}

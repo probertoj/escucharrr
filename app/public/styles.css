@@ -141,6 +141,11 @@ input:focus,select:focus,button:focus-visible{outline:none;border-color:var(--ac
 .revsrc:hover{color:var(--text)}
 .revsrc.on{background:var(--accent-bg);color:var(--accent);font-weight:600}
 .sec{font-family:var(--serif);font-size:21px;font-weight:600;letter-spacing:-.01em;margin:30px 0 10px}
+/* cabecera de disco (álbumes multidisco) */
+.dischdr{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:18px 0 4px;padding-bottom:5px;border-bottom:1px solid var(--border)}
+.dischdr .dh{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+.dischdr .playdisc{background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;display:inline-flex;align-items:center;gap:5px;padding:3px 6px;border-radius:7px}
+.dischdr .playdisc:hover{background:var(--surface-2)}
 .track{display:flex;align-items:center;gap:12px;padding:10px 10px;margin:0 -10px;border-radius:9px;border-bottom:1px solid var(--border);transition:background .1s}
 .track:hover{background:var(--surface-2)}
 .track .pos{width:22px;color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
