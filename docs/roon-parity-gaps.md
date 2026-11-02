@@ -93,7 +93,7 @@ Nosotros: álbumes + "aparece en" + bio + géneros + obras. Gaps: **tabs de bibl
 
 ## 4. Edición y corrección (`edit.broo` / `correction.broo`)
 Roon permite editar MUCHO (`edit_album_*`):
-- **identify / reidentify** (wizard de identificación: `identify_album`, `identify_results`, `identify_suggestions`) — ❌ (nosotros: match por tags/MBID).
+- **identify / reidentify** (wizard de identificación: `identify_album`, `identify_results`, `identify_suggestions`) — ✅ **HECHO (Nov 2 2026)**: `data-layer/identify-album.js` empareja por nº de pistas + perfil de duraciones contra MusicBrainz; `GET /api/identify` + `POST /api/identify/apply` (fija MBID + procedencia + encadena `enrich --rg`); botón "Identificar" + modal en la ficha. Probado en vivo.
 - **merge / fix_grouping / group_versions** (unir ediciones/versiones) — ❌ P2.
 - **edit_cover** + fuente de imagen: **use_file / use_meta / use_best / clear** — ◑ (ya extraemos arte de archivo; falta la *preferencia*). **P1**.
 - **hide / unhide / delete** álbum — ❌ P2.
@@ -133,8 +133,11 @@ y
 ## 6. Inspector (facetas de salud de la biblioteca)
 `inspector_*`: available, banned, corrupt, duplicates, exportable, has_genres,
 **identified**, media_count, storage_locations, track_count, performance_count.
-Es un Focus especial para auditar la colección. Nosotros: ❌. Útil y barato con nuestros
-datos (identificado=has MBID, duplicados por path, sin género, etc.). **P2**.
+Es un Focus especial para auditar la colección. ✅ **HECHO (Nov 2 2026)**: pantalla
+`inspector.html` + `GET /api/inspector` con buckets sin identificar / sin género / sin audio
+local / posibles duplicados (mismo artista+título) / multidisco / identificados, con drill-down
+paginado; los "sin identificar" enlazan a la ficha (wizard). Descartada "sin portada"
+(cover_path solo se rellena al descargar; el arte embebido se sirve bajo demanda → señal falsa).
 
 ---
 
@@ -223,6 +226,51 @@ clásico de disc-id/álbum-fingerprint, mucho más robusto.
 4. Estado `Identified | TemporaryFailure(reintentar) | PermanentFailure(marcar "no identificado")`.
 Esto convierte los ~25k álbumes sin MBID de "horas de búsqueda ruidosa" en un match fiable por
 duraciones, y encaja con `enrich.js --have-mbid` existente. Pendiente de implementar (P2).
+
+### RE de la capa de REPRODUCCIÓN (Roon now-playing/DSP) + Plexamp (Nov 2 2026)
+Mina del bundle de Roon (`ui.brooxgz`, 20,3 MB descomprimido) enfocada en now-playing/DSP/cola/
+display, y del bundle de Plexamp (`app.asar` Electron, 14,4 MB) por léxico de features.
+
+**Roon — now-playing/DSP (identificadores reales):** `component_fullscreen_nowplaying` con
+PÁGINAS deslizables (`atom_nowplaying_{image,lyrics,lrclyrics,credits,review,bio,composition,disc}`);
+**waveform** scrubber (`atom_waveform_bar`, `atom_waveform_slider_fg`, `WaveForming`);
+**DSP** (`component_dsp`, `signal_path`×70, EQ **parametric** con bandas de color `*_peq_circle`,
+`convolution`, `crossfeed`, `room_correction`, `procedural_eq`, `sample_rate_conversion`/`upsampl`,
+`headroom`/`clipping`); **volume leveling**/`Loudness`/`LoudnessRange`/`album_loudness_range`/
+`replaygain`; **crossfade**; **sleep timer** (`auto_sleep_*`); zonas (`group_zone`/`transfer_zone`);
+radio con thumbs-down (`Gradiobar`, `bad_for_radio`).
+
+**Plexamp — léxico (nº de runs):** download/offline 1206/103, star/rating 849/211, **mix/sonic/
+sonically/similar 411/410/116/211** (análisis sónico → Instant Mix/Library Radio/similares — su
+joya), radio 368, **key/tempo/bpm 274/81/6** (mezcla armónica), mood 180, **analysis 137**,
+**equalizer/preamp 116/102**, loudness/replaygain/normaliz/boost/silence 92/37/20/39/81,
+**nerd (stats) 83**, **visualizer 67**, **palette (de la portada) 50**, **sweet fade/crossfade/
+gapless 25/9/1**, **sleep timer 26**, bit-perfect/asio/exclusive 70/31/2.
+
+**Realidad de nuestros datos (verificado):** `credit` 10.312 (ok). PERO `gain_db`/`album_gain_db`/
+`peak_dbfs`/`peaks` solo en **14 / 255.272** ficheros (las columnas existen; el análisis NO se
+ha corrido sobre el NAS). `lyrics.found` = 0 (se baja bajo demanda vía LRCLIB). → nivelado de
+volumen y waveform están GATEADOS por una pasada de `analyze.js` (horas sobre SMB), no son gratis.
+
+**Las 5 siguientes (propuesta priorizada):**
+1. **Pantalla "Now Playing" a pantalla completa con páginas** (carátula grande + **letra
+   sincronizada LRC** + créditos + reseña + bio), modelo `component_fullscreen_nowplaying`/
+   `atom_nowplaying_*` de Roon y el now-playing de Plexamp. Solo UI + endpoints existentes
+   (`/api/lyrics`, `/api/album`). Barato, alto valor. **P1**.
+2. **Nivelado de volumen (ReplayGain/R128)**: correr/ampliar `analyze.js` para poblar gain/peak y
+   aplicar ganancia por pista/álbum en el reproductor (web + nativo) con toggle. Roon `volume
+   leveling`, Plexamp `loudness leveling`. Alto valor; coste = pasada de análisis (incremental). **P1/P2**.
+3. **Barra de onda (waveform) para buscar**: poblar `peaks` en la misma pasada y pintar el scrubber
+   (Roon `atom_waveform_bar`; ya existe `/api/peaks`). **P2**.
+4. **EQ paramétrico + Signal Path (WebAudio)**: editor de bandas (BiquadFilter) sobre `dsp_preset`
+   ya guardado + panel de ruta de señal (formato/profundidad/frecuencia/ganancia/bit-perfect).
+   Roon `component_dsp`/`parametric`/`signal_path`. **P2**.
+5. **Pack reproducción tipo Plexamp (web, dependency-free)**: **crossfade/Sweet Fades** + **sleep
+   timer** + **visualizador audio-reactivo** (AnalyserNode→canvas) + **paleta dinámica de la
+   portada**. **P2/P3**.
+
+Diferido (joya pero caro): **similitud sónica / Instant Mix** de Plexamp — necesita pipeline de
+análisis de audio (loudness+espectral+tempo/clave) sobre 255k ficheros; hoy solo 337 con Chromaprint.
 
 _Documento vivo: el RE del cuerpo compilado de las `.broo` y del modelo de datos del Core
 sigue abierto; esto recoge la capa de UI (99 pantallas) a un nivel mucho más fino que antes._
