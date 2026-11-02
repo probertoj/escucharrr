@@ -96,6 +96,7 @@ function buildQ(db) { return {
   audioSpec: db.prepare(`SELECT rel.release_group_id id, MAX(lf.bit_depth) bd, MAX(lf.channels) ch, MAX(lf.sample_rate) sr FROM local_file lf JOIN track tr ON (tr.id=lf.track_id OR tr.recording_id=lf.recording_id) JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id GROUP BY rel.release_group_id`),
   // estadísticas de escucha por álbum (nº de reproducciones + último play) para las facetas de Roon
   playStats: db.prepare(`SELECT rel.release_group_id id, COUNT(*) pc, MAX(p.played_at) lp FROM play p JOIN track tr ON (p.track_id=tr.id OR p.recording_id=tr.recording_id) JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id GROUP BY rel.release_group_id`),
+  mediaCount: db.prepare(`SELECT rel.release_group_id id, COUNT(m.id) mc FROM "release" rel JOIN medium m ON m.release_id=rel.id GROUP BY rel.release_group_id`),   // nº de discos (Inspector: multidisco)
   addedAll:  db.prepare(`SELECT id, created_at FROM release_group`),
   mbidIds:   db.prepare(`SELECT id FROM release_group WHERE mbid IS NOT NULL`),   // "identificado" (Inspector de Roon)
   playedIds: db.prepare(`SELECT DISTINCT rel.release_group_id id FROM play p JOIN track tr ON (p.track_id=tr.id OR p.recording_id=tr.recording_id) JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id`),
@@ -452,6 +453,7 @@ function libraryList() {
   const channels = new Map(spec.map(r => [r.id, r.ch]));
   const samplerate = new Map(spec.map(r => [r.id, r.sr]));
   const pstats = new Map(Q.playStats.all().map(r => [r.id, r]));
+  const mediacount = new Map(Q.mediaCount.all().map(r => [r.id, r.mc]));
   const added = new Map(Q.addedAll.all().map(r => [r.id, r.created_at]));
   const identified = new Set(Q.mbidIds.all().map(r => r.id));
   const played = new Set(Q.playedIds.all().map(r => r.id));
@@ -474,7 +476,19 @@ function libraryList() {
     a.last_played = ps ? ps.lp : null;           // último play (faceta "last played" de Roon)
     a.added = added.get(a.id) || null;           // fecha de alta en la biblioteca (sort/facet "añadido")
     a.identified = identified.has(a.id) ? 1 : 0;  // tiene MBID (Inspector: identificado)
+    a.media_count = mediacount.get(a.id) || 1;    // nº de discos (Inspector: multidisco)
+    a.has_versions = 0;                           // se marca abajo (Inspector: con otras versiones)
   }
+  // "con otras versiones": agrupa por artista + título base (misma lógica que versionsOf) y marca
+  // los que tienen hermanos. Set-based en una pasada sobre las filas ya cargadas.
+  const vgroups = new Map();
+  for (const a of rows) {
+    if (VER_DISC_RE.test(a.title || '')) continue;
+    const b = baseTitle(a.title); if (b.length < 2) continue;
+    const k = String(a.artist || '').toLowerCase() + '||' + b;
+    let g = vgroups.get(k); if (!g) { g = []; vgroups.set(k, g); } g.push(a);
+  }
+  for (const g of vgroups.values()) if (g.length > 1) for (const a of g) a.has_versions = 1;
   return rows;
 }
 function work(id) {
