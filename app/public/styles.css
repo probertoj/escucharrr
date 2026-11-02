@@ -73,6 +73,9 @@ input:focus,select:focus,button:focus-visible{outline:none;border-color:var(--ac
 .fcol h4 .fcount{font-weight:500;letter-spacing:0;text-transform:none}
 .ffilter{margin:0 6px 6px;padding:4px 8px;font-size:12px;border-radius:7px;width:calc(100% - 12px)}
 .fvals{overflow-y:auto;overflow-x:hidden;flex:1;min-height:0}
+/* rango de año (desde/hasta) en el Focus, estilo "Released" de Roon */
+.yearbox .yrow{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px;color:var(--text-2);padding:4px 6px;cursor:default}
+.yearbox .yinput{width:86px;padding:5px 8px;font-size:13px;border-radius:7px;font-variant-numeric:tabular-nums;text-align:right}
 .fv{display:flex;justify-content:space-between;gap:10px;font-size:13px;padding:5px 8px;border-radius:7px;cursor:pointer;transition:background .1s}
 .fv:hover{background:var(--surface-2)}
 .fv.on{background:var(--accent-bg);color:var(--accent);font-weight:500}

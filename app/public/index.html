@@ -49,7 +49,7 @@ let ALBUMS=[];
 const BOOLK={favorite:'is_favorite',later:'listen_later',audio:'has_audio',played:'played',identified:'identified'};
 const facetDefs=[['tier','Tier'],['genre','Género'],['format','Formato'],['bitdepth','Profundidad'],['channels','Canales'],['decade','Década'],['added','Añadido'],['type','Tipo'],['tag','Etiqueta'],['favorite','Favoritos'],['later','Escuchar más tarde'],['audio','Audio local'],['played','Reproducido'],['identified','Identificado'],['hasgenre','Con género']];
 const sel={}; facetDefs.forEach(([k])=>sel[k]={});   // sel[clave][valor] = 'inc' | 'exc'
-let minR=null, txt='';
+let minR=null, txt='', yearMin=null, yearMax=null;
 // cubo de "añadido" (como el Focus de Roon por fecha de alta): un álbum cae en el tramo más reciente que cumple
 const ADDED_BUCKETS=[[30,'Últimos 30 días'],[90,'Últimos 3 meses'],[180,'Últimos 6 meses'],[365,'Último año']];
 const ADDED_ORDER=['Últimos 30 días','Últimos 3 meses','Últimos 6 meses','Último año','Hace más de un año'];
@@ -80,6 +80,7 @@ function matchFacet(a,key){
 function passes(a){
   for(const[k]of facetDefs)if(!matchFacet(a,k))return false;
   if(minR!=null&&!(a.album_stars>=minR))return false;
+  if(yearMin!=null||yearMax!=null){const y=parseInt(a.year,10);if(!(y>=1000&&y<=9999))return false;if(yearMin!=null&&y<yearMin)return false;if(yearMax!=null&&y>yearMax)return false;}
   if(txt&&!((a.title+' '+a.artist).toLowerCase().includes(txt)))return false;
   return true;}
 
@@ -94,15 +95,26 @@ function renderFacets(){
   const rm=[[5,'5★'],[4,'4★ o más'],[3,'3★ o más'],[2,'2★ o más'],[1,'1★ o más']];
   h+=`<div class="fcol"><h4><span>Valoración</span></h4><div class="fvals">`+rm.map(([v,l])=>{const n=ALBUMS.filter(a=>a.album_stars>=v).length;const on=minR===v;
     return `<div class="fv ${on?'on':''}" data-rat="${v}"><span>${l}</span><span class="n">${n}</span></div>`;}).join('')+`</div></div>`;
+  // Año: rango exacto desde/hasta (como el "Released" de Roon, no solo década). Placeholders = min/máx reales.
+  let yLo='', yHi=''; for(const a of ALBUMS){const y=parseInt(a.year,10);if(y>=1000&&y<=9999){if(yLo===''||y<yLo)yLo=y;if(yHi===''||y>yHi)yHi=y;}}
+  h+=`<div class="fcol"><h4><span>Año</span></h4><div class="fvals yearbox">
+    <label class="yrow"><span>Desde</span><input type="number" class="yinput" id="ymin" value="${yearMin!=null?yearMin:''}" placeholder="${yLo}" min="0" max="9999" inputmode="numeric"></label>
+    <label class="yrow"><span>Hasta</span><input type="number" class="yinput" id="ymax" value="${yearMax!=null?yearMax:''}" placeholder="${yHi}" min="0" max="9999" inputmode="numeric"></label>
+  </div></div>`;
   box.innerHTML=h;
   applyFfilters();}
+function readYearInputs(){const g=id=>{const v=parseInt((document.getElementById(id)||{}).value,10);return (v>=0&&v<=9999)?v:null;};yearMin=g('ymin');yearMax=g('ymax');if(yearMin!=null&&yearMax!=null&&yearMin>yearMax){const t=yearMin;yearMin=yearMax;yearMax=t;}}
 function applyFfilters(){document.querySelectorAll('#facets .ffilter').forEach(f=>{const q=ffilters[f.dataset.k]||'';f.value=q;filterCol(f.closest('.fcol'),q);});}
 function filterCol(col,q){q=q.toLowerCase();col.querySelectorAll('.fv').forEach(fv=>{fv.style.display=(!q||(fv.dataset.lbl||'').includes(q))?'':'none';});}
 document.getElementById('facets').addEventListener('input',e=>{const f=e.target.closest('.ffilter');if(!f)return;ffilters[f.dataset.k]=f.value;filterCol(f.closest('.fcol'),f.value);});
+// rango de año: se aplica al confirmar (blur/Enter), no en cada tecla
+document.getElementById('facets').addEventListener('change',e=>{if(e.target.classList&&e.target.classList.contains('yinput')){readYearInputs();render();}});
+document.getElementById('facets').addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.classList&&e.target.classList.contains('yinput')){e.preventDefault();readYearInputs();render();}});
 function renderChips(){
   const box=document.getElementById('chips'); const c=[];
   facetDefs.forEach(([k])=>{const s=sel[k];for(const v in s)c.push([k,v,(s[v]==='exc'?'≠ ':'')+vlabel(k,v),s[v]]);});
   if(minR!=null)c.push(['rat',String(minR),minR+'★ o más','inc']);
+  if(yearMin!=null||yearMax!=null)c.push(['year','',(yearMin!=null?yearMin:'…')+'–'+(yearMax!=null?yearMax:'…'),'inc']);
   box.innerHTML=c.length?c.map(x=>`<span class="chip ${x[3]==='exc'?'excchip':''}" data-ck="${x[0]}" data-cv="${esc0(x[1])}">${esc0(x[2])} ${window.icon('close',12)}</span>`).join('')+`<span class="chip" data-clear="1" style="background:var(--surface-2);color:var(--text-2)">Limpiar</span>`:'';}
 // ── rejilla virtualizada ──────────────────────────────────────────────
 // Con 25k+ álbumes no se puede pintar todo el grid: dibujamos solo las filas
@@ -156,7 +168,7 @@ document.addEventListener('click',e=>{
   const fv=e.target.closest('.fv');
   if(fv){if(fv.dataset.rat!==undefined){const v=+fv.dataset.rat;minR=minR===v?null:v;}else cycle(fv.dataset.k,fv.dataset.v);render();return;}
   const ch=e.target.closest('#chips .chip');
-  if(ch){if(ch.dataset.clear){facetDefs.forEach(([k])=>sel[k]={});minR=null;}else if(ch.dataset.ck==='rat')minR=null;else if(sel[ch.dataset.ck])delete sel[ch.dataset.ck][ch.dataset.cv];render();return;}
+  if(ch){if(ch.dataset.clear){facetDefs.forEach(([k])=>sel[k]={});minR=null;yearMin=null;yearMax=null;}else if(ch.dataset.ck==='rat')minR=null;else if(ch.dataset.ck==='year'){yearMin=null;yearMax=null;}else if(sel[ch.dataset.ck])delete sel[ch.dataset.ck][ch.dataset.cv];render();return;}
 });
 const focusbtn=document.getElementById('focusbtn');
 focusbtn.onclick=()=>{const fp=document.getElementById('focus');fp.hidden=!fp.hidden;focusbtn.textContent=(fp.hidden?'▸':'▾')+' Focus';};
@@ -168,12 +180,12 @@ load();
 document.addEventListener('escucharrr:changed',load);   // biblioteca en vivo
 
 // ── marcadores: guardar/aplicar un Focus (estilo Roon) ──
-function currentFocus(){const o={};for(const k in sel)if(Object.keys(sel[k]).length)o[k]={...sel[k]};return{sel:o,minR,sort:document.getElementById('sort').value};}
+function currentFocus(){const o={};for(const k in sel)if(Object.keys(sel[k]).length)o[k]={...sel[k]};return{sel:o,minR,yearMin,yearMax,sort:document.getElementById('sort').value};}
 function applyFocus(st){
-  facetDefs.forEach(([k])=>sel[k]={});
+  facetDefs.forEach(([k])=>sel[k]={});minR=null;yearMin=null;yearMax=null;
   if(st){const src=st.sel||st.active;   // compat: marcadores viejos usaban {active:{clave:[valores]}}
     if(src)for(const k in src){if(sel[k]){const v=src[k];if(Array.isArray(v))v.forEach(x=>sel[k][x]='inc');else Object.assign(sel[k],v);}}
-    minR=st.minR!=null?st.minR:null; if(st.sort)document.getElementById('sort').value=st.sort;}
+    minR=st.minR!=null?st.minR:null;yearMin=st.yearMin!=null?st.yearMin:null;yearMax=st.yearMax!=null?st.yearMax:null; if(st.sort)document.getElementById('sort').value=st.sort;}
   txt='';document.getElementById('filter').value='';render();
   const fp=document.getElementById('focus'); if(fp.hidden)focusbtn.click();}
 function loadBookmarks(){fetch('/api/bookmarks').then(r=>r.json()).then(j=>{const bms=j.items||[];const bar=document.getElementById('bmbar');bar._bms=bms;bar.innerHTML=bms.length?'<span style="color:var(--text-2);font-size:12px;margin-right:4px">Marcadores:</span>'+bms.map(b=>`<span class="chip bm" data-id="${b.id}" style="cursor:pointer">${window.icon('star',13)} ${esc0(b.name)} <span class="bmx" data-del="${b.id}" title="Borrar" style="color:var(--text-2);display:inline-flex">${window.icon('close',12)}</span></span>`).join(''):'';}).catch(()=>{});}
