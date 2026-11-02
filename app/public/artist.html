@@ -48,7 +48,7 @@ function renderArtist(a){
   const tier=`<span class="tiered" style="display:inline-flex;gap:4px;flex-wrap:wrap;align-items:center">${TORD.map(k=>`<span class="tchip" data-tier="${k}" title="${TN[k]}" style="cursor:pointer;font-size:11px;font-weight:600;padding:2px 9px;border-radius:999px;background:${a.tier_key===k?TC[k][0]:'var(--surface-2)'};color:${a.tier_key===k?TC[k][1]:'var(--text-2)'}">${TN[k]}</span>`).join('')}${a.tier_key?`<span class="tchip" data-tier="" title="Quitar tier" style="cursor:pointer;color:var(--text-2);padding:2px 6px">${window.icon('close',13)}</span>`:''}</span>`;
   const bprov=a.bio&&a.bio_source?('desde '+esc(a.bio_source.source)+provRef(a.bio_source)):'';
   rawBio=a.bio||'';
-  const bio=`<div class="about" id="biobox"><div class="prov" style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span>${bprov}</span><span class="bioedit" style="cursor:pointer;color:var(--accent);font-size:12px;white-space:nowrap">${a.bio?'editar bio':'añadir bio'}</span></div><div class="biotext">${a.bio?mdRender(a.bio):'<span style="color:var(--text-2)">Sin biografía. Escribe la tuya — tus datos mandan.</span>'}</div></div>`;
+  const bio=`<div class="about" id="biobox"><div class="prov" style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span>${bprov}</span><span class="bioedit" style="cursor:pointer;color:var(--accent);font-size:12px;white-space:nowrap">${a.bio?'editar bio':'añadir bio'}</span></div><div class="biotext">${a.bio?mdRender(a.bio):'<span style="color:var(--text-2)">Sin biografía. Escribe la tuya — tus datos mandan.</span>'}</div><div class="revtoggle" hidden></div></div>`;
   // Pestañas estilo Roon: discografía (artista principal) / apariciones (interpreta en otros) /
   // producción (produce, mezcla, arregla…) / obras (compositor). Solo se muestran las que tienen contenido.
   const appearsList=list=>`<ul class="appears">`+list.map(x=>`<li><span class="yr">${x.year||'—'}</span><span style="flex:1"><a href="album.html?id=${x.id}" style="color:var(--accent)">${esc(x.title)}</a> <span style="color:var(--text-2)">· ${esc(x.artist||'')}</span>${x.roles&&x.roles.length?`<div class="roles">${x.roles.map(esc).join(' · ')}</div>`:''}</span></li>`).join('')+`</ul>`;
@@ -78,7 +78,11 @@ function renderArtist(a){
     </div>
     ${bio}
     ${tabsHtml}`;
+  applyBioCollapse();
 }
+// plega las bios largas (estilo Roon toggle_review)
+function applyBioCollapse(){const box=document.getElementById('biobox');if(!box)return;const bt=box.querySelector('.biotext'),tog=box.querySelector('.revtoggle');if(!bt||!tog)return;box.classList.remove('collapsed');tog.hidden=true;if(bt.scrollHeight>280){box.classList.add('collapsed');tog.hidden=false;tog.textContent='Ver más';}}
+document.addEventListener('click',e=>{const rt=e.target.closest('#app .revtoggle');if(!rt)return;const box=document.getElementById('biobox');const col=box.classList.toggle('collapsed');rt.textContent=col?'Ver más':'Ver menos';});
 // cambiar de pestaña (discografía/apariciones/producción/obras)
 document.addEventListener('click',e=>{const t=e.target.closest('#app .atab');if(!t)return;const k=t.dataset.tab;
   document.querySelectorAll('#app .atab').forEach(b=>b.classList.toggle('on',b.dataset.tab===k));
