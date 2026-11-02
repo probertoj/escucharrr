@@ -25,15 +25,22 @@ Roon ofrece MUCHAS más facetas que nosotros. Inventario real extraído:
 | rating | ✅ valoración | — | — |
 | format | ✅ formato | — | — |
 | decade / **released (rango de año min/máx)** | ✅ década + **rango de año (desde/hasta)** | — (Roon: `menu_focus_year` con botones de década + steppers min/máx; mi primera mina solo vio `decade_option` y lo di por cubierto — corregido) | — |
-| **bit_depth** (profundidad de bits) | ❌ | tenemos `local_file.bit_depth` | **P1** |
-| **channels / channel_layout** | ❌ | tenemos `local_file.channels` | **P1** |
-| **added** (últimos 3/6 meses, "in the last…") | ❌ | tenemos `release_group.created_at` | **P1** |
-| **most_played** (25/50/100/250/500/1000) | ◑ faceta "reproducido" sí/no | falta "más reproducidos N" | P2 |
-| **last_played** (día/semana/mes/año) | ❌ | tenemos `play.played_at` | P2 |
-| **album_type** (álbum/EP/single/live/compilación…) | ◑ tipo | mapear tipos finos | P2 |
-| **multiple_formats / contiguous_tracks** | ❌ | — | P3 |
-| **has_back_cover / has_liner_notes** | ❌ | no tenemos ese dato aún | P3 |
-| **Inspector** (facetas de salud, ver §6) | ❌ | identificado/duplicado/… | P2 |
+| bit_depth (profundidad de bits) | ✅ Profundidad | — | — |
+| **sample_rate (frecuencia)** | ✅ Frecuencia | — | — |
+| channels / channel_layout | ✅ Canales | — | — |
+| added (últimos 3/6 meses…) | ✅ Añadido | — | — |
+| most_played (25/50/100…) | ✅ faceta Reproducciones (buckets 1/2–5/6–10/11+) + **sort Más reproducido** | Roon usa "top N"; nuestros buckets por recuento son equivalentes útiles | — |
+| last_played (día/semana/mes/año) | ✅ Último play | — | — |
+| album_type | ◑ tipo | mapear tipos finos (EP/single/live/comp) | P3 |
+| **has_cover / has_liner_notes / has_pdf / has_additional_images** | ❌ | solo has_cover es viable (arte embebido); el resto no lo trackeamos | P3 |
+| **countries (países) / labels (sellos)** | ❌ | `release.country`/tabla `label`; datos pobres hoy | P3 |
+| multiple_formats / contiguous_tracks | ❌ | nicho; el escáner fusiona a un formato por álbum | P3 |
+| **Inspector** (facetas de salud, ver §6) | ◑ Identificado + Con género | faltan duplicados/corrupto/sin audio/ubicaciones | P2 |
+
+Revisión EXHAUSTIVA del Focus (Nov 2 2026): inventario completo de `albumbrowser_focus_*`
+cotejado. Facetas principales de álbum ya cubiertas; solo quedan las de datos pobres/caros
+(has_*, países, sellos) o nicho, más ampliar el Inspector. El Focus de pista/obra/compositor
+(trackbrowser/workbrowser/composerbrowser) aún no tiene pantalla propia en escucharrr.
 
 ### Ordenar (`albumbrowser_sort_*`)
 Roon: album_title, artist, **date**, **date_added**, **most_played**, **random**.
