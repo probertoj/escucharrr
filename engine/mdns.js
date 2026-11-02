@@ -66,7 +66,7 @@ function discover({ timeoutMs = 2500 } = {}) {
       for (const [inst, d] of byInstance) {
         const ip = d.target && aByHost.get(d.target) || null;
         const label = inst.replace(/\._(googlecast|airplay|raop)\._tcp\.local$/i, '').replace(/\\032/g, ' ');
-        out.push({ id: 'mdns:' + inst, name: label || inst, kind: d.kind, ip, port: d.port || null, castable: false });
+        out.push({ id: 'mdns:' + inst, name: label || inst, kind: d.kind, ip, port: d.port || null, castable: d.kind === 'chromecast' });
       }
       resolve(out);
     };

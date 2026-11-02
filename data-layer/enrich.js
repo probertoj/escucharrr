@@ -36,6 +36,11 @@ const S = {
   rgsNoMbid: db.prepare(`SELECT rg.id, rg.title, rg.mbid,
       (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) AS artist
      FROM release_group rg WHERE rg.mbid IS NULL ORDER BY rg.id LIMIT ?`),
+  rgsWithMbid: db.prepare(`SELECT rg.id, rg.title, rg.mbid,
+      (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) AS artist
+     FROM release_group rg WHERE rg.mbid IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM "release" r WHERE r.release_group_id=rg.id AND r.country IS NOT NULL)
+     ORDER BY rg.id LIMIT ?`),
   rgById: db.prepare(`SELECT rg.id, rg.title, rg.mbid,
       (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) AS artist
      FROM release_group rg WHERE rg.id=?`),
@@ -51,6 +56,17 @@ const S = {
       JOIN "release" rel ON rel.id=m.release_id WHERE rel.release_group_id=? AND m.position=? AND tr.position=?`),
   delCredits: db.prepare("DELETE FROM credit WHERE entity_type=? AND entity_id=? AND (source='musicbrainz' OR source IS NULL)"),
   insCredit: db.prepare("INSERT INTO credit(entity_type,entity_id,artist_id,role,instrument,detail,source,position) VALUES(?,?,?,?,?,?,'musicbrainz',?)"),
+  // edición concreta (nuestra release 1:1 con el release_group)
+  ourRelease: db.prepare('SELECT id, mbid FROM "release" WHERE release_group_id=? ORDER BY id LIMIT 1'),
+  updRelease: db.prepare('UPDATE "release" SET mbid=COALESCE(mbid,?), date=COALESCE(?,date), country=COALESCE(?,country), barcode=COALESCE(?,barcode), format=COALESCE(?,format), status=COALESCE(?,status), label_id=COALESCE(?,label_id) WHERE id=?'),
+  labelByMbid: db.prepare('SELECT id FROM label WHERE mbid=?'),
+  labelByName: db.prepare('SELECT id FROM label WHERE name=? AND mbid IS NULL'),
+  insLabel: db.prepare('INSERT INTO label(name,mbid) VALUES(?,?)'),
+  // obras (composición) y su compositor
+  workByMbid: db.prepare('SELECT id FROM work WHERE mbid=?'),
+  insWork: db.prepare('INSERT INTO work(mbid,title,type) VALUES(?,?,?)'),
+  setRecWork: db.prepare('UPDATE recording SET work_id=? WHERE id=?'),
+  delWorkCredits: db.prepare("DELETE FROM credit WHERE entity_type='work' AND entity_id=? AND source='musicbrainz'"),
   prov: db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at) VALUES(?,?,?,?,?,datetime('now'))
      ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source=excluded.source, source_ref=excluded.source_ref, fetched_at=datetime('now')`),
 };
@@ -61,6 +77,37 @@ function ensureArtist(name, mbid) {
   return Number(S.insArtist.run(name, name, mbid || null).lastInsertRowid);
 }
 function ensureGenre(name) { const r = S.genreByName.get(name); return r ? r.id : Number(S.insGenre.run(name).lastInsertRowid); }
+function ensureLabel(name, mbid) {
+  if (!name) return null;
+  if (mbid) { const r = S.labelByMbid.get(mbid); if (r) return r.id; }
+  const byName = S.labelByName.get(name); if (byName && !mbid) return byName.id;
+  return Number(S.insLabel.run(name, mbid || null).lastInsertRowid);
+}
+// Resuelve/crea la obra y, la primera vez que la vemos, trae su compositor (cache por mbid).
+const workCache = new Map();
+async function ensureWork(mbid, title, type) {
+  if (!mbid && !title) return null;
+  if (mbid && workCache.has(mbid)) return workCache.get(mbid);
+  let id;
+  if (mbid) { const r = S.workByMbid.get(mbid); id = r ? r.id : Number(S.insWork.run(mbid, title || '(obra)', type || null).lastInsertRowid); }
+  else { id = Number(S.insWork.run(null, title, type || null).lastInsertRowid); }
+  if (mbid) {
+    workCache.set(mbid, id);
+    // compositor/letrista de la obra (una petición extra por obra nueva)
+    try {
+      const wf = await mb(`work/${mbid}?inc=artist-rels&fmt=json`);
+      S.delWorkCredits.run(id);
+      let pos = 0;
+      for (const r of (wf.relations || [])) {
+        if (r['target-type'] !== 'artist' || !r.artist) continue;
+        if (!/composer|writer|lyricist|arranger|orchestrator|librettist/.test(r.type)) continue;
+        S.insCredit.run('work', id, ensureArtist(r.artist.name, r.artist.id), mapRole(r.type), null, null, pos++);
+      }
+      if (pos) S.prov.run('work', id, 'composer', 'musicbrainz', mbid);
+    } catch (e) { /* la obra queda sin compositor; se reintentará en otra pasada */ }
+  }
+  return id;
+}
 
 // MB relation.type -> rol legible
 const ROLE = { instrument: 'instrumento', vocal: 'voz', performer: 'interpretación', producer: 'producción', mix: 'mezcla', mastering: 'masterización', engineer: 'ingeniería', recording: 'grabación', composer: 'composición', writer: 'escritura', lyricist: 'letra', arranger: 'arreglos' };
@@ -80,16 +127,28 @@ async function enrichRg(rg) {
     S.prov.run('release_group', rg.id, 'mbid', 'musicbrainz', cand.id);
   }
 
-  // 2) géneros + una edición
+  // 2) géneros + elegir una edición representativa
   const rgf = await mb(`release-group/${cand.id}?inc=genres+releases&fmt=json`);
   for (const g of (rgf.genres || [])) { S.linkGenre.run(rg.id, ensureGenre(g.name)); }
   if ((rgf.genres || []).length) S.prov.run('release_group', rg.id, 'genre', 'musicbrainz', cand.id);
   const rel = (rgf.releases || []).find(r => r.status === 'Official') || (rgf.releases || [])[0];
   if (!rel) return { mbid: cand.id, genres: (rgf.genres || []).map(g => g.name), credits: 0 };
 
-  // 3) créditos a nivel de grabación
-  const rf = await mb(`release/${rel.id}?inc=recordings+recording-level-rels+artist-rels+work-rels&fmt=json`);
-  let nCredits = 0;
+  // 3) edición concreta: país / fecha / barcode / sello / formato + créditos y obras
+  const rf = await mb(`release/${rel.id}?inc=recordings+recording-level-rels+artist-rels+work-rels+labels+media&fmt=json`);
+  let labelId = null, labelName = null;
+  const li = (rf['label-info'] || []).find(x => x.label) || null;
+  if (li && li.label) { labelName = li.label.name; labelId = ensureLabel(li.label.name, li.label.id); }
+  const fmt = (rf.media || [])[0] && rf.media[0].format || null;
+  const ourRel = S.ourRelease.get(rg.id);
+  if (ourRel) {
+    S.updRelease.run(rel.id, rf.date || rel.date || null, rf.country || rel.country || null, rf.barcode || null, fmt, rf.status || rel.status || null, labelId, ourRel.id);
+    if (rf.country) S.prov.run('release', ourRel.id, 'country', 'musicbrainz', rel.id);
+    if (labelId) S.prov.run('release', ourRel.id, 'label', 'musicbrainz', rel.id);
+    if (rf.barcode) S.prov.run('release', ourRel.id, 'barcode', 'musicbrainz', rel.id);
+  }
+
+  let nCredits = 0, nWorks = 0;
   for (const m of (rf.media || [])) {
     for (const tk of (m.tracks || [])) {
       const ourRec = S.recByPos.get(rg.id, m.position, tk.position);
@@ -99,25 +158,33 @@ async function enrichRg(rg) {
       const rels = (tk.recording && tk.recording.relations) || [];
       let pos = 0;
       for (const r of rels) {
+        if (r['target-type'] === 'work' && r.work) {
+          const wId = await ensureWork(r.work.id, r.work.title, r.work.type);
+          if (wId) { S.setRecWork.run(wId, recId); nWorks++; }
+          continue;
+        }
         if (r['target-type'] !== 'artist' || !r.artist) continue;
         const aid = ensureArtist(r.artist.name, r.artist.id);
         const instrument = (r.attributes || []).join(', ') || null;
-        S.insCredit.run('recording', recId, aid, mapRole(r.type), instrument, r.direction === 'backward' ? null : null, pos++);
+        S.insCredit.run('recording', recId, aid, mapRole(r.type), instrument, null, pos++);
         nCredits++;
       }
     }
   }
-  return { mbid: cand.id, type: cand['primary-type'], date: cand['first-release-date'], genres: (rgf.genres || []).map(g => g.name), credits: nCredits };
+  return { mbid: cand.id, type: cand['primary-type'], date: rf.date || cand['first-release-date'], country: rf.country || null, label: labelName, format: fmt, genres: (rgf.genres || []).map(g => g.name), credits: nCredits, works: nWorks };
 }
 
 (async () => {
-  const rgs = RG_ID ? [S.rgById.get(RG_ID)].filter(Boolean) : S.rgsNoMbid.all(LIMIT);
+  const HAVE_MBID = process.argv.includes('--have-mbid');
+  const rgs = RG_ID ? [S.rgById.get(RG_ID)].filter(Boolean)
+            : HAVE_MBID ? S.rgsWithMbid.all(LIMIT)
+            : S.rgsNoMbid.all(LIMIT);
   if (!rgs.length) { console.log(RG_ID ? `No existe el release_group ${RG_ID}.` : 'Nada que enriquecer (todos los álbumes ya tienen mbid).'); db.close(); return; }
   console.log(`Enriqueciendo ${rgs.length} álbum(es) desde MusicBrainz…`);
   for (const rg of rgs) {
     try {
       const r = await enrichRg(rg);
-      if (r.mbid) console.log(`  ✓ ${rg.artist} — ${rg.title}  [${r.type || '?'} ${r.date || ''}]  mbid=${r.mbid}  géneros=${(r.genres || []).join(', ') || '—'}  créditos=${r.credits}`);
+      if (r.mbid) console.log(`  ✓ ${rg.artist} — ${rg.title}  [${r.type || '?'} ${r.date || ''} ${r.country || ''} ${r.format || ''}]  sello=${r.label || '—'}  géneros=${(r.genres || []).join(', ') || '—'}  créditos=${r.credits}  obras=${r.works || 0}`);
     } catch (e) { console.log(`  ✗ ${rg.artist} — ${rg.title}: ${e.message}`); }
   }
 

@@ -18,6 +18,7 @@ const NATIVE = (() => { try { return require('../engine/native-player'); } catch
 // la música de /api/stream. Ver engine/upnp.js y docs/dispositivos-de-red-y-roon.md.
 const UPNP = (() => { try { return require('../engine/upnp'); } catch (e) { return null; } })();
 const MDNS = (() => { try { return require('../engine/mdns'); } catch (e) { return null; } })();   // descubre Chromecast/AirPlay (solo visibles)
+const CAST = (() => { try { return require('../engine/cast'); } catch (e) { return null; } })();   // reproduce en Chromecast (protocolo CASTV2)
 let _np = null;
 function np() {
   if (!NATIVE) return null;
@@ -107,6 +108,8 @@ function buildQ(db) { return {
   hiddenIds: db.prepare(`SELECT subject_id id FROM flag WHERE subject_type='release_group' AND flag='hidden'`),
   genresAll: db.prepare(`SELECT rgg.release_group_id id, group_concat(g.name,'|') gs FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id GROUP BY rgg.release_group_id`),
   formatAll: db.prepare(`SELECT release_group_id id, format f FROM "release" WHERE format IS NOT NULL GROUP BY release_group_id`),
+  countryAll: db.prepare(`SELECT release_group_id id, country c FROM "release" WHERE country IS NOT NULL GROUP BY release_group_id`),
+  labelAll: db.prepare(`SELECT rel.release_group_id id, l.name c FROM "release" rel JOIN label l ON l.id=rel.label_id GROUP BY rel.release_group_id`),
   tagsAll:   db.prepare(`SELECT ti.subject_id id, group_concat(t.name,'|') gs FROM tag_item ti JOIN tag t ON t.id=ti.tag_id WHERE ti.subject_type='release_group' GROUP BY ti.subject_id`),
   album: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.tier_rank,
       (SELECT label FROM tier WHERE key=a.tier_key) tier_label, a.album_stars, a.is_favorite,
@@ -154,7 +157,7 @@ function buildQ(db) { return {
   radioAdd: db.prepare(`INSERT INTO radio_station(name, url, homepage, favicon) VALUES(?, ?, ?, ?)`),
   radioDelete: db.prepare(`DELETE FROM radio_station WHERE id=?`),
   prov: db.prepare(`SELECT field,source,source_ref FROM provenance WHERE subject_type='release_group' AND subject_id=?`),
-  editions: db.prepare(`SELECT format,date,country FROM "release" WHERE release_group_id=? ORDER BY date`),
+  editions: db.prepare(`SELECT rel.format, rel.date, rel.country, rel.barcode, l.name label FROM "release" rel LEFT JOIN label l ON l.id=rel.label_id WHERE rel.release_group_id=? ORDER BY rel.date`),
   // versiones/ediciones del álbum = release_groups hermanos (mismo artista + título base), estilo Roon
   albumMainArtist: db.prepare(`SELECT acn.name FROM artist_credit_name acn JOIN release_group rg ON rg.artist_credit_id=acn.artist_credit_id WHERE rg.id=? AND acn.position=1 LIMIT 1`),
   rgsByArtistName: db.prepare(`SELECT rg.id, rg.title, substr(rg.first_release,1,4) year FROM release_group rg JOIN artist_credit_name acn ON acn.artist_credit_id=rg.artist_credit_id AND acn.position=1 WHERE acn.name=?`),
@@ -478,10 +481,14 @@ function libraryList() {
   const hidden = new Set(Q.hiddenIds.all().map(r => r.id));
   const genres = new Map(Q.genresAll.all().map(r => [r.id, (r.gs || '').split('|').filter(Boolean)]));
   const format = new Map(Q.formatAll.all().map(r => [r.id, r.f]));
+  const country = new Map(Q.countryAll.all().map(r => [r.id, r.c]));   // país de edición (MusicBrainz) → faceta Focus
+  const label = new Map(Q.labelAll.all().map(r => [r.id, r.c]));       // sello discográfico → faceta Focus
   const tags = new Map(Q.tagsAll.all().map(r => [r.id, (r.gs || '').split('|').filter(Boolean)]));
   for (const a of rows) {
     a.genres = genres.get(a.id) || [];
     a.format = format.get(a.id) || null;
+    a.country = country.get(a.id) || null;
+    a.label = label.get(a.id) || null;
     a.tags = tags.get(a.id) || [];
     a.listen_later = later.has(a.id) ? 1 : 0;
     a.hidden = hidden.has(a.id) ? 1 : 0;
@@ -729,6 +736,9 @@ async function handleNative(req, res, u) {
 // ── salida de red UPnP/DLNA: el servidor controla el renderer (mismo patrón que la zona nativa) ──
 let _upnpDevs = { at: 0, items: [] };
 let _upnp = { renderer: null, dev: null, trackId: null, nextTrackId: null, nextUrl: '', durationSec: 0, playing: false, paused: false };
+let _cast = { sender: null, dev: null, trackId: null, durationSec: 0, playing: false, paused: false };   // sesión Chromecast activa
+function castLight() { const s = _cast; return { kind: 'cast', playing: !!s.sender && s.playing && !s.paused, paused: !!s.paused, device: s.dev ? s.dev.name : null, deviceId: s.dev ? s.dev.id : null, trackId: s.trackId, durationSec: s.durationSec, positionSec: 0, advanced: false }; }
+function castTeardown() { if (_cast.sender) { try { _cast.sender.close(); } catch (e) {} } _cast = { sender: null, dev: null, trackId: null, durationSec: 0, playing: false, paused: false }; }
 async function upnpDevices(force) {
   if (!UPNP) return [];
   if (!force && Date.now() - _upnpDevs.at < 8000 && _upnpDevs.items.length) return _upnpDevs.items;
@@ -781,9 +791,30 @@ async function handleUpnp(req, res, u) {
       const dlna = items.map(d => ({ id: d.id, name: d.name, manufacturer: d.manufacturer, model: d.model, ip: d.ip, kind: 'dlna', castable: true }));
       return sendJSON(res, { ok: true, items: dlna.concat(cast) });
     }
-    if (req.method === 'GET' && sub === 'state') return sendJSON(res, { ok: true, state: await upnpState() });
+    if (req.method === 'GET' && sub === 'state') {
+      if (_cast.sender) { let st = {}; try { st = await _cast.sender.getState(); } catch (e) {} _cast.playing = !!st.playing; _cast.paused = !!st.paused; return sendJSON(res, { ok: true, state: { kind: 'cast', playing: _cast.playing, paused: _cast.paused, device: _cast.dev.name, deviceId: _cast.dev.id, trackId: _cast.trackId, durationSec: st.durationSec || _cast.durationSec, positionSec: st.positionSec || 0, state: st.state, advanced: false } }); }
+      return sendJSON(res, { ok: true, state: await upnpState() });
+    }
     const body = req.method === 'POST' ? await readBody(req) : {};
     if (sub === 'play') {
+      // destino Chromecast (id mdns: + kind chromecast): protocolo CASTV2, misma URL http que DLNA
+      if (CAST && body.deviceId && body.deviceId.startsWith('mdns:')) {
+        const meta = upnpMetaOf(body.track_id);
+        if (!meta) return sendJSON(res, { ok: false, error: 'pista sin fichero local' });
+        const cast = MDNS ? await MDNS.discover({ timeoutMs: 2500 }).catch(() => []) : [];
+        const dev = cast.find(d => d.id === body.deviceId);
+        if (!dev || dev.kind !== 'chromecast') return sendJSON(res, { ok: false, error: 'por ahora solo se reproduce en Chromecast (AirPlay aún no)' });
+        if (!dev.ip) return sendJSON(res, { ok: false, error: 'el Chromecast no anunció su IP todavía; reintenta' });
+        castTeardown(); if (_upnp.renderer) { try { await _upnp.renderer.stop(); } catch (e) {} _upnp.renderer = null; }
+        const ip = UPNP.lanIp(dev.ip), base = 'http://' + ip + ':' + PORT, seek = body.seekSec || 0;
+        const sender = new CAST.CastSender(dev);
+        await sender.connect();
+        await sender.load({ url: base + '/api/stream?track=' + body.track_id, mime: meta.mime, title: meta.title, artist: meta.artist, album: meta.album, durationSec: meta.durationSec, coverUrl: meta.albumId ? base + '/api/cover?rg=' + meta.albumId : '', seekSec: seek });
+        _cast = { sender, dev, trackId: body.track_id, durationSec: meta.durationSec, playing: true, paused: false };
+        logPlay({ track_id: body.track_id, source: 'cast', zone: dev.name });
+        return sendJSON(res, { ok: true, state: castLight() });
+      }
+      castTeardown();   // cambiar a DLNA cierra cualquier sesión de cast
       const items = await upnpDevices(false);
       const dev = (body.deviceId && items.find(d => d.id === body.deviceId)) || _upnp.dev || items[0];
       if (!dev) return sendJSON(res, { ok: false, error: 'no hay ningún dispositivo de red' });
@@ -798,7 +829,17 @@ async function handleUpnp(req, res, u) {
       logPlay({ track_id: body.track_id, source: 'upnp', zone: dev.name });
       return sendJSON(res, { ok: true, state: upnpLight() });
     }
-    if (sub === 'setnext') { const ok = await upnpPrimeNext(body.track_id || null); return sendJSON(res, { ok }); }
+    if (sub === 'setnext') { if (_cast.sender) return sendJSON(res, { ok: false });   // Chromecast no cebamos siguiente (no hay gapless propio aquí)
+      const ok = await upnpPrimeNext(body.track_id || null); return sendJSON(res, { ok }); }
+    // ── sesión Chromecast activa: las mutaciones van al CastSender ──
+    if (_cast.sender) {
+      const C = _cast.sender;
+      if (sub === 'pause') { try { await C.pause(); } catch (e) {} _cast.paused = true; _cast.playing = false; return sendJSON(res, { ok: true, state: castLight() }); }
+      if (sub === 'resume') { try { await C.play(); } catch (e) {} _cast.paused = false; _cast.playing = true; return sendJSON(res, { ok: true, state: castLight() }); }
+      if (sub === 'stop') { try { await C.stop(); } catch (e) {} castTeardown(); return sendJSON(res, { ok: true, state: castLight() }); }
+      if (sub === 'seek') { try { await C.seek(Number(body.sec) || 0); } catch (e) {} return sendJSON(res, { ok: true, state: castLight() }); }
+      if (sub === 'volume') { const pct = body.pct != null ? Number(body.pct) : (body.v != null ? Math.round(Number(body.v) * 100) : null); if (pct != null) { try { await C.setVolume(pct); } catch (e) {} } return sendJSON(res, { ok: true, state: castLight() }); }
+    }
     const R = _upnp.renderer;
     if (sub === 'pause') { if (R) { try { await R.pause(); } catch (e) {} _upnp.paused = true; _upnp.playing = false; } return sendJSON(res, { ok: true, state: upnpLight() }); }
     if (sub === 'resume') { if (R) { try { await R.play(); } catch (e) {} _upnp.paused = false; _upnp.playing = true; } return sendJSON(res, { ok: true, state: upnpLight() }); }

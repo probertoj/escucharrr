@@ -166,15 +166,19 @@ Pendiente:
 - **Pantalla de pistas (trackbrowser) → HECHO (Nov 2)**: vista "Pistas" con búsqueda/orden/paginación en el servidor (dos pasadas; 143ms/página), scroll infinito, reproducción, y **Focus de pista** (formato/profundidad/frecuencia/canales; facetas cacheadas + filtros server-side). Pendiente menor: faceta de género/década en pista (necesita join al álbum) y keyset para offsets muy profundos (hoy ~600ms a offset 50k).
 ### Empujón "todo lo que queda" (bloques 1→6, Nov 2 2026) — HECHO
 - **B1 navegación**: **navegador de carpetas** (folders.html, /api/folders con extracción de segmentos en SQL + caché; 4628 carpetas); **navegador de obras** mínimo (works.html). Compositor NO como pantalla propia (son artistas; además 5 obras en la biblioteca).
-- **B2 ficha de álbum**: **cabeceras de disco** + "reproducir disco" en multidisco; "reproducir desde aquí" ya estaba. Info de edición (sello/país/barcode) y clásica OMITIDOS: datos vacíos (los poblaría MusicBrainz).
+- **B2 ficha de álbum**: **cabeceras de disco** + "reproducir disco" en multidisco; "reproducir desde aquí" ya estaba. Info de edición (sello/país/barcode) y obra/compositor: ahora POBLADAS por el enriquecido de MusicBrainz (ver "Empujón mi orden").
 - **B3 edición**: **ocultar/mostrar álbumes** (flag hidden + faceta "Oculto"; no borra del disco). Identify wizard, merge/fusionar, prefs por-campo: DIFERIDOS (API de MusicBrainz / complejos).
 - **B4 ajustes**: **ficheros saltados** del escaneo persistidos (tabla skipped_file) y mostrados en Ajustes. Mapeo de géneros: diferido (bajo valor). UI de varias carpetas: ya existía.
 - **B5 infra**: **obsidian-sync incremental** (`--only <nota>`, ~0,3s vs varios segundos; el watcher lo usa). Keyset: no (poco valor real). Reescaneo NAS: botón existente + ahora muestra lo saltado.
-- **B6 multi-room**: **descubrimiento mDNS** (Chromecast/AirPlay) + DLNA en paralelo, siempre visibles en el selector de zona con su tipo. Reproducir en Chromecast/AirPlay: propietario (cast/airplay), NO dependency-free → se muestran como "detectado". DLNA reproduce.
+- **B6 multi-room**: **descubrimiento mDNS** (Chromecast/AirPlay) + DLNA en paralelo, siempre visibles en el selector de zona con su tipo. Reproducir: DLNA y ahora **Chromecast** (ver "Empujón mi orden"); AirPlay sigue como "detectado".
+
+### Empujón "mi orden" (Nov 2 2026) — HECHO
+- **Enriquecido de MusicBrainz** (`enrich.js` ampliado): por MBID (`--have-mbid`, los 248 álbumes identificados) rellena la **edición** (fecha/país/barcode/**sello** → tabla `label`), **géneros**, **créditos de grabación** y **obras + compositor** (`work` + `recording.work_id` + `credit` de la obra, con una petición extra por obra nueva, cacheada). Respeta 1,1 s/petición y User-Agent. La ficha de álbum muestra ahora **Sello / País / Barcode** y, por pista, **obra + compositor** (ya existía la query, ahora con datos). Esto habilita compositor/obra e info de edición de las secciones B1/B2 antes omitidas.
+- **Chromecast / Google Cast** (`engine/cast.js`): protocolo **CASTV2** dependency-free — TLS a :8009, framing con prefijo de longitud + **CastMessage de Protobuf codificado a mano** (campos 1–6), namespaces connection/heartbeat/receiver/media, lanza el Default Media Receiver (CC1AD845) y le pasa la MISMA URL de `/api/stream` que DLNA. Mismo contrato que `UpnpRenderer` (connect/load/play/pause/stop/seek/volume/getState); enganchado en `/api/upnp/*` con estado `_cast`. Chromecast pasa a **castable** en el selector de zona. Round-trip de encode/decode verificado; no probado en vivo (no hay Chromecast en esta LAN, sí un DLNA Eversolo).
 
 ### Genuinamente diferido (necesita esfuerzo grande o datos/claves que no tenemos)
-- **Identify wizard + enriquecido de MusicBrainz** (obras clásicas, créditos, país/sello/barcode, fotos) → habilitaría compositor/obra, info de edición, has_cover/liner_notes, países/sellos.
-- **Casting a Chromecast/AirPlay** (protocolos propietarios) y **RAAT** (firmado, NDA).
+- **Enriquecido de MusicBrainz por búsqueda difusa** (los ~25k álbumes SIN MBID): artista+título es ruidoso y son horas a 1,1 s/req; hecho el camino fiable (por MBID). Identify wizard interactivo: pendiente.
+- **AirPlay** (protocolo propietario, distinto de cast) y **RAAT** (firmado, NDA). Chromecast ya reproduce.
 - **Preferencias de metadatos por-campo**; **correcciones manuales** de pistas/discos; **import date**; **localización**; keyset para offsets profundos; mapeo de géneros.
 
 _Documento vivo: el RE del cuerpo compilado de las `.broo` y del modelo de datos del Core

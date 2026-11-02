@@ -54,7 +54,10 @@ function renderAlbum(a){
   const srcSel=reviews.length>1?`<span class="revsrcs">${reviews.map((r,i)=>`<span class="revsrc${i===0?' on':''}" data-i="${i}">${esc(r.label)}</span>`).join('')}</span>`:'';
   const prov0=sel0?('desde '+esc(sel0.source)+provRefOf(sel0.ref)):'';
   const about=`<div class="about" id="aboutbox"><div class="prov" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><span style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${srcSel}<span id="aboutprov" style="color:var(--text-2)">${prov0}</span></span><span class="aboutedit" style="cursor:pointer;color:var(--accent);font-size:12px;white-space:nowrap">${rawAbout?'editar reseña':'añadir reseña'}</span></div><div class="abouttext">${sel0?mdRender(sel0.text):'<span style="color:var(--text-2)">Sin reseña. Escribe la tuya — tus datos mandan.</span>'}</div><div class="revtoggle" hidden></div></div>`;
-  const editions=(a.editions||[]).map(e=>`${esc(e.format||'?')}${e.date?' · '+esc(e.date):''}`).join(' &nbsp;·&nbsp; ');
+  const editions=(a.editions||[]).map(e=>`${esc(e.format||'?')}${e.date?' · '+esc(e.date):''}${e.country?' · '+esc(e.country):''}`).join(' &nbsp;·&nbsp; ');
+  const edLabel=(a.editions||[]).map(e=>e.label).find(Boolean)||null;       // sello discográfico (MusicBrainz)
+  const edCountry=(a.editions||[]).map(e=>e.country).find(Boolean)||null;   // país de edición
+  const edBarcode=(a.editions||[]).map(e=>e.barcode).find(Boolean)||null;   // código de barras (EAN/UPC)
   albumTracks=a.tracks||[];
   const multiDisc=(a.tracks||[]).some(t=>t.disc>1);
   const trackRow=(t,i)=>`<div class="track"><button class="play" data-idx="${i}" aria-label="Reproducir" title="Reproducir" style="border:none;background:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0 4px;display:inline-flex;align-items:center">${window.icon('play',14)}</button><span class="pos">${t.pos}</span><span style="flex:1;min-width:0">${esc(t.title)}${(t.work||t.composers)?`<div style="font-size:12px;color:var(--text-2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.work_id?`<a href="work.html?id=${t.work_id}" style="color:var(--text-2)">${esc(t.work||'obra')}</a>`:esc(t.work||'')}${t.composers?` · ${esc(t.composers.replace(/,/g,', '))}`:''}</div>`:''}</span><span class="addtrk" data-tid="${t.trackId}" title="Añadir a una lista" style="cursor:pointer;color:var(--text-2);font-size:14px;padding:0 6px;display:inline-flex;align-items:center">${window.icon('plus',15)}</span><span class="dur">${mmss(t.length_ms)}</span></div>`;
@@ -82,6 +85,9 @@ function renderAlbum(a){
           <span>${llEd}</span>
           <span>${hideEd}</span>
           ${a.format?`<span><span class="k">Formato</span> ${esc(a.format)}</span>`:''}
+          ${edLabel?`<span><span class="k">Sello</span> ${esc(edLabel)}</span>`:''}
+          ${edCountry?`<span><span class="k">País</span> ${esc(edCountry)}</span>`:''}
+          ${edBarcode?`<span><span class="k">Barcode</span> ${esc(edBarcode)}</span>`:''}
           ${editions?`<span><span class="k">Ediciones</span> ${editions}</span>`:''}
         </div>
         <div>${genres}</div>
