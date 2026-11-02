@@ -545,6 +545,34 @@ function tracksList(opts) {
   const items = rows.map(t => ({ trackId: t.trackId, recording_id: t.rid, title: t.title, artist: t.artist, albumId: t.albumId, album: t.album, length_ms: t.length_ms, format: t.format, playable: t.playable, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs }));
   return { total, offset, limit, items };
 }
+// ── Navegador de carpetas (folderbrowser): explora la biblioteca por la estructura real de
+// carpetas del disco/NAS, derivada de local_file.path. Extrae el segmento siguiente en SQL
+// (rango por el índice único de path) para no traer 250k rutas al proceso.
+let _folderCache = new Map();   // listados de carpetas por nivel (solo cambian al reescanear)
+function folderList(opts) {
+  const cfg = watchConfig(); const roots = (cfg && cfg.music) || [];
+  const ck = (opts.root || 0) + '|' + (opts.path || '');
+  if (_folderCache.has(ck)) return _folderCache.get(ck);
+  const rootsInfo = roots.map((r, i) => ({ i, name: r.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || r, path: r }));
+  const ri = Math.max(0, Math.min(parseInt(opts.root, 10) || 0, roots.length - 1));
+  const root = roots[ri];
+  if (!root) return { roots: rootsInfo, root: ri, rel: '', entries: [] };
+  const sep = root.includes('/') && !root.includes('\\') ? '/' : '\\';
+  const rel = String(opts.path || '').replace(/^[\\/]+|[\\/]+$/g, '');
+  const prefix = root.replace(/[\\/]+$/, '') + sep + (rel ? rel + sep : '');
+  const upper = prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);   // límite superior del rango
+  const plen = prefix.length;
+  const SEP = sep === '\\' ? 92 : 47;
+  const rows = db.prepare(`SELECT seg, MAX(isdir) isdir, COUNT(*) n, MIN(track_id) trackId FROM (
+       SELECT CASE WHEN instr(sub, char(?))>0 THEN substr(sub,1,instr(sub,char(?))-1) ELSE sub END seg,
+              CASE WHEN instr(sub, char(?))>0 THEN 1 ELSE 0 END isdir, track_id
+       FROM (SELECT substr(path, ?) sub, track_id FROM local_file WHERE path >= ? AND path < ?)
+     ) GROUP BY seg ORDER BY isdir DESC, seg`).all(SEP, SEP, SEP, plen + 1, prefix, upper);
+  const entries = rows.map(r => ({ name: r.seg, dir: !!r.isdir, count: r.n, trackId: r.isdir ? null : r.trackId }));
+  const out = { roots: rootsInfo, root: ri, rel, sep, entries };
+  _folderCache.set(ck, out);
+  return out;
+}
 function work(id) {
   const w = Q.workGet.get(id); if (!w) return null;
   w.credits = Q.workCredits.all(id);       // compositores/letristas/arreglistas
@@ -1026,7 +1054,7 @@ function settingsInfo() {
 
 // ── biblioteca en vivo: watcher de carpetas + eventos SSE a la UI ───────────────
 const sseClients = new Set();
-function sseBroadcast(type) { if (type === 'library') _trackFacetsCache = null; const line = `data: ${JSON.stringify({ type, t: Date.now() })}\n\n`; for (const r of sseClients) { try { r.write(line); } catch (e) {} } }
+function sseBroadcast(type) { if (type === 'library') { _trackFacetsCache = null; _folderCache = new Map(); } const line = `data: ${JSON.stringify({ type, t: Date.now() })}\n\n`; for (const r of sseClients) { try { r.write(line); } catch (e) {} } }
 // Facetas del explorador de pistas (formato/profundidad/frecuencia/canales). Se calculan sobre
 // local_file en una pasada y se cachean (solo cambian al reescanear).
 let _trackFacetsCache = null;
@@ -1585,6 +1613,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/library') return sendJSON(res, libraryList());
     if (u.pathname === '/api/tracks') return sendJSON(res, tracksList({ q: u.searchParams.get('q'), sort: u.searchParams.get('sort'), dir: u.searchParams.get('dir'), offset: u.searchParams.get('offset'), limit: u.searchParams.get('limit'), format: u.searchParams.get('format'), bitdepth: u.searchParams.get('bitdepth'), samplerate: u.searchParams.get('samplerate'), channels: u.searchParams.get('channels') }));
     if (u.pathname === '/api/tracks/facets') return sendJSON(res, trackFacets());
+    if (u.pathname === '/api/folders') return sendJSON(res, folderList({ root: u.searchParams.get('root'), path: u.searchParams.get('path') }));
     if (u.pathname === '/api/album') { const a = album(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/search') return sendJSON(res, search(u.searchParams.get('q'), Math.min(parseInt(u.searchParams.get('n') || '20', 10) || 20, 100)));
     if (u.pathname === '/api/artist') { const a = artist(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }

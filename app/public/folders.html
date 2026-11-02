@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — carpetas</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.crumbs{display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:14px;margin:14px 0 12px}
+.crumbs a{color:var(--accent);cursor:pointer}
+.crumbs .sepc{color:var(--muted)}
+.frow{display:flex;align-items:center;gap:12px;padding:9px 8px;margin:0 -8px;border-radius:9px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .1s}
+.frow:hover{background:var(--surface-2)}
+.frow .ic{flex:none;color:var(--text-2);display:inline-flex}
+.frow .nm{flex:1;min-width:0;font-size:14px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.frow.file .nm{font-weight:500}
+.frow .ct{flex:none;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.empty{color:var(--text-2);margin-top:20px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Carpetas</h1>
+  <div class="count" id="count">cargando…</div>
+  <div class="crumbs" id="crumbs"></div>
+  <div id="list"></div>
+</div>
+<script>
+const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+let ROOTI=0, REL='', SEP='\\', DATA=null;
+function params(){const p=new URLSearchParams(location.search);return {root:+(p.get('root')||0), path:p.get('path')||''};}
+function go(root,path){const p=new URLSearchParams();if(root)p.set('root',root);if(path)p.set('path',path);history.pushState(null,'','folders.html'+(p.toString()?'?'+p:''));load();}
+function crumbs(){
+  const box=document.getElementById('crumbs');const rootName=DATA.roots[ROOTI]?DATA.roots[ROOTI].name:'raíz';
+  const segs=REL?REL.split(/[\\/]/):[];
+  let acc=[];const parts=[`<a data-p="">${esc(rootName)}</a>`];
+  segs.forEach((s,i)=>{acc.push(s);parts.push('<span class="sepc">›</span>');parts.push(`<a data-p="${esc(acc.join(SEP))}">${esc(s)}</a>`);});
+  box.innerHTML=parts.join(' ');
+}
+function render(){
+  crumbs();
+  const list=document.getElementById('list');const e=DATA.entries||[];
+  document.getElementById('count').textContent=e.length+' elemento'+(e.length===1?'':'s');
+  if(!e.length){list.innerHTML='<div class="empty">Carpeta vacía.</div>';return;}
+  list.innerHTML=e.map((x,i)=>{
+    const ic=x.dir?window.icon('library',18):window.icon('music',16);
+    return `<div class="frow ${x.dir?'dir':'file'}" data-i="${i}"><span class="ic">${ic}</span><span class="nm">${esc(x.name)}</span><span class="ct">${x.dir?x.count+(x.count===1?' pista':' pistas'):''}</span></div>`;
+  }).join('');
+}
+function load(){
+  const {root,path}=params();ROOTI=root;REL=path;
+  fetch('/api/folders?root='+root+'&path='+encodeURIComponent(path)).then(r=>r.json()).then(j=>{DATA=j;SEP=j.sep||'\\';REL=j.rel||'';render();}).catch(e=>document.getElementById('count').textContent='error: '+e.message);
+}
+document.getElementById('crumbs').addEventListener('click',e=>{const a=e.target.closest('a[data-p]');if(a)go(ROOTI,a.dataset.p);});
+document.getElementById('list').addEventListener('click',e=>{
+  const row=e.target.closest('.frow');if(!row)return;const x=DATA.entries[+row.dataset.i];if(!x)return;
+  if(x.dir){go(ROOTI,(REL?REL+SEP:'')+x.name);}
+  else if(window.player){const files=DATA.entries.filter(y=>!y.dir&&y.trackId).map(y=>({trackId:y.trackId,title:y.name}));const idx=files.findIndex(y=>y.trackId===x.trackId);player.playTracks(files,Math.max(0,idx));}
+});
+window.addEventListener('popstate',load);
+load();
+document.addEventListener('escucharrr:changed',load);
+</script>
+<script src="icons.js" defer></script>
+<script src="nav.js" defer></script>
+<script src="player.js" defer></script>
+</body>
+</html>
