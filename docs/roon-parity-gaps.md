@@ -112,9 +112,17 @@ y
 > "…then identifies the metadata for your albums, and retrieves reviews, biographies,
 > lyrics, credits, covers, photos, and other metadata."
 
-- **Preferencias de contenido por campo** (`dialog_metadata_content_preferences`): el
-  usuario elige, campo a campo, si gana el archivo o la nube. Nuestro "tus datos mandan"
-  es global (user_edit SIEMPRE gana). Gap: **preferencia por-campo (archivo vs enriquecido)**. P2.
+- **Preferencias de contenido** (`dialog_metadata_content_preferences`). **Corrección (RE Nov 2
+  2026, `Roon.Metadata.dll`):** NO es campo-a-campo como suponía esta nota. El modelo real es
+  GRUESO — clase `ContentPreferences` con solo: `EditedContentPreference` (enum `Prefer` ≈
+  `{Roon, files, None}`: por categoría, gana la nube de Roon o tus ficheros), `MqaContentPreference`
+  y `PreferredStreamingService` (`Tidal`/`Qobuz`). La elección de origen "por texto" es la
+  **localización** (`LocalizedText.Source`, `LocalizedName/Title/AlbumArtist`), no una matriz de
+  campos. Procedencia por objeto: `Source*Ids` (`SourceAlbumIds/TrackIds/WorkIds/PerformerIds/
+  PerformanceIds`). → Para escucharrr basta un toggle de categoría (prefiere tus tags vs enriquecido),
+  no un diálogo por-campo. Nuestro "user_edit SIEMPRE gana" ya cubre el caso de ediciones; el gap
+  real es el toggle tags-vs-enriquecido por álbum. Rebajado a **P3** (el modelo granular era un
+  espejismo del naming de la UI).
 - **Localización** (`dialog_metadata_localization_preferences`): idioma de metadatos. P3.
 - Identificado vs no identificado: un álbum "identificado" gana créditos/letras/portada
   de la nube; si "revert to basic info stored in your files" pierdes esa capa. Nosotros:
@@ -180,6 +188,41 @@ Pendiente:
 - **Enriquecido de MusicBrainz por búsqueda difusa** (los ~25k álbumes SIN MBID): artista+título es ruidoso y son horas a 1,1 s/req; hecho el camino fiable (por MBID). Identify wizard interactivo: pendiente.
 - **AirPlay** (protocolo propietario, distinto de cast) y **RAAT** (firmado, NDA). Chromecast ya reproduce.
 - **Preferencias de metadatos por-campo**; **correcciones manuales** de pistas/discos; **import date**; **localización**; keyset para offsets profundos; mapeo de géneros.
+
+### RE profundo (Nov 2 2026, mientras corría el reescaneo del NAS) — modelo de IDENTIFICACIÓN
+Fuente: `Identifier.Messages.dll` (contratos del flujo) + `Roon.Metadata.dll`/`Metadata.Messages.dll`
+(preferencias/procedencia), ingeniería inversa con REA (managed static, shipped-artifact, observado).
+
+**Contrato del wizard de identificación (namespace `Sooloos.Msg.Identifier`):**
+- `IdentifyAlbumRequest { RequestId, Files[]:FileInfo, Collection, ReturnTidal, WithTrace }`
+  → `IdentifyAlbumResult { IdentifyStatus, Tracks[]:TrackResult, Metadata[]:MetadataResult }`.
+  **Identifica el ÁLBUM ENTERO de una vez** (todas las pistas juntas), no fichero a fichero.
+- `IdentifyStatus = { Identified, TemporaryFailure, PermanentFailure, Messaging_Unknown }`
+  (misma filosofía que el escáner: distingue fallo transitorio de permanente → reintentable).
+- `FileInfo { FileId, Tags }`. **`Tags`** (la señal que envía por pista): `Album, Artist, AlbumArtist,
+  Title, TrackNumber, MediaNumber, LengthMs, Length, Toc, TocIndex, CdSectorLength, ProductCode
+  (barcode/UPC), Label, CatalogNumber, ReleaseDate, AlbumUid, IsMusic, TrackId`.
+- `TrackResult { FileId, TrackId, ContentHash }` (mapea cada fichero local a la pista emparejada +
+  hash de contenido). `MetadataResult { ObjectId, ContentHash, ObjectType }`.
+- CD: `IdentifyTocRequest { Toc }` → `IdentifyTocResult { Success, TrackTags[] }` (disc-id por TOC).
+
+**La clave (y por qué nuestra búsqueda difusa es ruidosa):** Roon empareja por **nº de pistas +
+perfil de DURACIONES** (`LengthMs` por pista) + geometría de disco (`Toc`/`CdSectorLength`), con
+`ProductCode`/`Label`/`CatalogNumber` como refuerzos — NO por texto artista+título. Es el enfoque
+clásico de disc-id/álbum-fingerprint, mucho más robusto.
+
+**Plan para el wizard de escucharrr (reemplaza la "búsqueda difusa" diferida):**
+1. Agrupar las pistas del álbum (ya las tenemos por carpeta/medium) y construir el perfil:
+   nº de pistas + duración (ms) de cada una (orden por track/disc). Barcode/catalog/label de tags
+   si existen.
+2. Consultar MusicBrainz por candidatos y **puntuar por coincidencia del perfil de duraciones**
+   (suma de |Δms| por pista, tolerancia ~±4 s) + igualdad de nº de pistas; barcode/catalog como
+   desempate fuerte. Para CD real, usar el disc-id/TOC de MusicBrainz directamente.
+3. Presentar `identify_suggestions` ordenadas (como `IdentifyAlbumResult.Metadata[]`), elegir →
+   fijar `release.mbid`/`release_group.mbid` y disparar el enriquecido por MBID que ya tenemos.
+4. Estado `Identified | TemporaryFailure(reintentar) | PermanentFailure(marcar "no identificado")`.
+Esto convierte los ~25k álbumes sin MBID de "horas de búsqueda ruidosa" en un match fiable por
+duraciones, y encaja con `enrich.js --have-mbid` existente. Pendiente de implementar (P2).
 
 _Documento vivo: el RE del cuerpo compilado de las `.broo` y del modelo de datos del Core
 sigue abierto; esto recoge la capa de UI (99 pantallas) a un nivel mucho más fino que antes._
