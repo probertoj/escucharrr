@@ -95,6 +95,7 @@ function buildQ(db) { return {
   // audio + especificación por álbum (profundidad de bits y canales máximos) en una pasada
   audioSpec: db.prepare(`SELECT rel.release_group_id id, MAX(lf.bit_depth) bd, MAX(lf.channels) ch FROM local_file lf JOIN track tr ON (tr.id=lf.track_id OR tr.recording_id=lf.recording_id) JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id GROUP BY rel.release_group_id`),
   addedAll:  db.prepare(`SELECT id, created_at FROM release_group`),
+  mbidIds:   db.prepare(`SELECT id FROM release_group WHERE mbid IS NOT NULL`),   // "identificado" (Inspector de Roon)
   playedIds: db.prepare(`SELECT DISTINCT rel.release_group_id id FROM play p JOIN track tr ON (p.track_id=tr.id OR p.recording_id=tr.recording_id) JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id`),
   laterIds:  db.prepare(`SELECT subject_id id FROM flag WHERE subject_type='release_group' AND flag='listen_later'`),
   genresAll: db.prepare(`SELECT rgg.release_group_id id, group_concat(g.name,'|') gs FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id GROUP BY rgg.release_group_id`),
@@ -422,6 +423,7 @@ function libraryList() {
   const bitdepth = new Map(spec.map(r => [r.id, r.bd]));
   const channels = new Map(spec.map(r => [r.id, r.ch]));
   const added = new Map(Q.addedAll.all().map(r => [r.id, r.created_at]));
+  const identified = new Set(Q.mbidIds.all().map(r => r.id));
   const played = new Set(Q.playedIds.all().map(r => r.id));
   const later = new Set(Q.laterIds.all().map(r => r.id));
   const genres = new Map(Q.genresAll.all().map(r => [r.id, (r.gs || '').split('|').filter(Boolean)]));
@@ -437,6 +439,7 @@ function libraryList() {
     a.bit_depth = bitdepth.get(a.id) || null;   // como el Focus de Roon por profundidad/canales
     a.channels = channels.get(a.id) || null;
     a.added = added.get(a.id) || null;           // fecha de alta en la biblioteca (sort/facet "añadido")
+    a.identified = identified.has(a.id) ? 1 : 0;  // tiene MBID (Inspector: identificado)
   }
   return rows;
 }

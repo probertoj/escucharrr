@@ -46,8 +46,8 @@ function stars(s){return s?`<span class="stars">★</span> ${(+s).toFixed(1)}`:'
 const esc0=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 let ALBUMS=[];
 // Facetas estilo "Focus" de Roon. Booleanas (favorito/más tarde/audio/reproducido) como valores sí/no.
-const BOOLK={favorite:'is_favorite',later:'listen_later',audio:'has_audio',played:'played'};
-const facetDefs=[['tier','Tier'],['genre','Género'],['format','Formato'],['bitdepth','Profundidad'],['channels','Canales'],['decade','Década'],['added','Añadido'],['type','Tipo'],['tag','Etiqueta'],['favorite','Favoritos'],['later','Escuchar más tarde'],['audio','Audio local'],['played','Reproducido']];
+const BOOLK={favorite:'is_favorite',later:'listen_later',audio:'has_audio',played:'played',identified:'identified'};
+const facetDefs=[['tier','Tier'],['genre','Género'],['format','Formato'],['bitdepth','Profundidad'],['channels','Canales'],['decade','Década'],['added','Añadido'],['type','Tipo'],['tag','Etiqueta'],['favorite','Favoritos'],['later','Escuchar más tarde'],['audio','Audio local'],['played','Reproducido'],['identified','Identificado'],['hasgenre','Con género']];
 const sel={}; facetDefs.forEach(([k])=>sel[k]={});   // sel[clave][valor] = 'inc' | 'exc'
 let minR=null, txt='';
 // cubo de "añadido" (como el Focus de Roon por fecha de alta): un álbum cae en el tramo más reciente que cumple
@@ -65,9 +65,10 @@ function avals(a,key){
   if(key==='bitdepth')return a.bit_depth?[a.bit_depth+' bits']:[];
   if(key==='channels'){const l=chLabel(a.channels);return l?[l]:[];}
   if(key==='added'){const b=addedBucket(a.added);return b?[b]:[];}
+  if(key==='hasgenre')return [(a.genres&&a.genres.length)?'sí':'no'];
   if(BOOLK[key])return [a[BOOLK[key]]?'sí':'no'];
   return [];}
-function vlabel(key,v){ if(key==='tier')return TN[v]; if(BOOLK[key])return v==='sí'?'Sí':'No'; return v; }
+function vlabel(key,v){ if(key==='tier')return TN[v]; if(BOOLK[key]||key==='hasgenre')return v==='sí'?'Sí':'No'; return v; }
 function valsOf(key){const m={};ALBUMS.forEach(a=>avals(a,key).forEach(v=>m[v]=(m[v]||0)+1));return m;}
 function matchFacet(a,key){
   const s=sel[key],inc=[],exc=[]; for(const v in s){(s[v]==='exc'?exc:inc).push(v);}
