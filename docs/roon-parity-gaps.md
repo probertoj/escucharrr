@@ -153,10 +153,10 @@ para multi-room: UPnP/DLNA/AirPlay. Sin cambios aquí.
 ## Cola de trabajo priorizada
 Hecho (Nov 2 2026): portadas desde arte embebido FLAC; Focus acotado + buscador por columna;
 facetas **bit depth / canales / añadido** + sort **date_added / random**; **Inspector: Identificado + Con género**;
-render de markdown de notas (reseña/bio); **write-back a Obsidian** (guardar la reseña en el .md, preservando frontmatter — va MÁS ALLÁ de Roon, que no reescribe tus ficheros); virtualización del grid; **pestañas de artista** (Discografía/Apariciones/Producción/Obras).
+render de markdown de notas (reseña/bio); **write-back a Obsidian** (guardar la reseña en el .md, preservando frontmatter — va MÁS ALLÁ de Roon, que no reescribe tus ficheros); virtualización del grid; **pestañas de artista** (Discografía/Apariciones/Producción/Obras); **"Otras versiones"** de álbum (release_groups hermanos: deluxe/remaster/año/país; 302 grupos / 615 álbumes).
 Pendiente:
 - **P1** Reseña: plegado + **selector de fuente** (editorial/archivo/Obsidian/tuya); preferencia de portada archivo/meta/mejor.
-- **P2** Inspector: duplicados, corrupto, sin audio, ubicaciones; "más/último reproducido"; versiones de álbum; ficheros saltados en Ajustes (tenemos el log de ENOENT del NAS); write-back de bio de artista; afinar el watcher para no re-sincronizar en nuestras propias escrituras.
+- **P2** Inspector: duplicados, corrupto, sin audio, ubicaciones; "más/último reproducido"; agrupar/fusionar versiones (edit); ficheros saltados en Ajustes (tenemos el log de ENOENT del NAS); write-back de bio de artista; afinar el watcher para no re-sincronizar en nuestras propias escrituras.
 - **P3** Correcciones manuales de pistas/discos, fotos/booklet, clásica (obras/movimientos), import date, localización, preferencias de metadatos por-campo.
 
 _Documento vivo: el RE del cuerpo compilado de las `.broo` y del modelo de datos del Core
