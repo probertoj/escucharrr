@@ -102,6 +102,7 @@ function buildQ(db) { return {
   mbidIds:   db.prepare(`SELECT id FROM release_group WHERE mbid IS NOT NULL`),   // "identificado" (Inspector de Roon)
   playedIds: db.prepare(`SELECT DISTINCT rel.release_group_id id FROM play p JOIN track tr ON (p.track_id=tr.id OR p.recording_id=tr.recording_id) JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id`),
   laterIds:  db.prepare(`SELECT subject_id id FROM flag WHERE subject_type='release_group' AND flag='listen_later'`),
+  hiddenIds: db.prepare(`SELECT subject_id id FROM flag WHERE subject_type='release_group' AND flag='hidden'`),
   genresAll: db.prepare(`SELECT rgg.release_group_id id, group_concat(g.name,'|') gs FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id GROUP BY rgg.release_group_id`),
   formatAll: db.prepare(`SELECT release_group_id id, format f FROM "release" WHERE format IS NOT NULL GROUP BY release_group_id`),
   tagsAll:   db.prepare(`SELECT ti.subject_id id, group_concat(t.name,'|') gs FROM tag_item ti JOIN tag t ON t.id=ti.tag_id WHERE ti.subject_type='release_group' GROUP BY ti.subject_id`),
@@ -115,6 +116,7 @@ function buildQ(db) { return {
   aboutExt: db.prepare(`SELECT about v FROM release_group WHERE id=?`),   // reseña editorial externa (Wikipedia)
   coverOf: db.prepare(`SELECT cover_path, cover_mime FROM release_group WHERE id=?`),   // carátula cacheada (Cover Art Archive)
   coverPref: db.prepare(`SELECT value FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='cover_pref'`),   // preferencia de fuente de portada (Roon: use_file/use_meta/use_best/clear)
+  flagGet: db.prepare(`SELECT 1 FROM flag WHERE subject_type=? AND subject_id=? AND flag=? LIMIT 1`),
   // ficheros FLAC del álbum, para extraer el arte embebido (como Roon lee de los propios ficheros)
   filesForAlbum: db.prepare(`SELECT DISTINCT lf.path FROM local_file lf
      JOIN track tr ON (tr.id=lf.track_id OR tr.recording_id=lf.recording_id)
@@ -446,6 +448,7 @@ function album(id) {
   else { a.about = null; a.about_source = null; }
   a.editions = Q.editions.all(id);
   a.cover_pref = (Q.coverPref.get(id) || {}).value || 'auto';   // fuente de portada elegida (auto/file/download/none)
+  a.hidden = Q.flagGet.get('release_group', id, 'hidden') ? 1 : 0;
   a.versions = versionsOf(id, a.title);   // otras ediciones del mismo álbum en tu biblioteca
   a.tracks = Q.tracks.all(id);
   a.credits = Q.credits.all(id).map(c => ({ role: c.role, instrument: c.instrument, artists: (c.artists || '').split(',') }));
@@ -470,6 +473,7 @@ function libraryList() {
   const identified = new Set(Q.mbidIds.all().map(r => r.id));
   const played = new Set(Q.playedIds.all().map(r => r.id));
   const later = new Set(Q.laterIds.all().map(r => r.id));
+  const hidden = new Set(Q.hiddenIds.all().map(r => r.id));
   const genres = new Map(Q.genresAll.all().map(r => [r.id, (r.gs || '').split('|').filter(Boolean)]));
   const format = new Map(Q.formatAll.all().map(r => [r.id, r.f]));
   const tags = new Map(Q.tagsAll.all().map(r => [r.id, (r.gs || '').split('|').filter(Boolean)]));
@@ -478,6 +482,7 @@ function libraryList() {
     a.format = format.get(a.id) || null;
     a.tags = tags.get(a.id) || [];
     a.listen_later = later.has(a.id) ? 1 : 0;
+    a.hidden = hidden.has(a.id) ? 1 : 0;
     a.has_audio = audio.has(a.id) ? 1 : 0;
     a.played = played.has(a.id) ? 1 : 0;
     a.bit_depth = bitdepth.get(a.id) || null;   // como el Focus de Roon por profundidad/canales
@@ -1459,7 +1464,7 @@ function handleEditSync(body) {
     else { Q.edSetStars.run(st, sid, v); Q.edEvent.run(st, sid, 'stars', String(v)); Q.edSetProv.run(st, sid, 'stars'); }
     return { field, value: v };
   }
-  if (field === 'favorite' || field === 'listen_later') {
+  if (field === 'favorite' || field === 'listen_later' || field === 'hidden') {
     const on = !!body.value;
     if (on) Q.edSetFlag.run(st, sid, field); else Q.edDelFlag.run(st, sid, field);
     return { field, value: on };
