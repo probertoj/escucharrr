@@ -146,6 +146,9 @@ function buildQ(db) { return {
   radioDelete: db.prepare(`DELETE FROM radio_station WHERE id=?`),
   prov: db.prepare(`SELECT field,source,source_ref FROM provenance WHERE subject_type='release_group' AND subject_id=?`),
   editions: db.prepare(`SELECT format,date,country FROM "release" WHERE release_group_id=? ORDER BY date`),
+  // versiones/ediciones del álbum = release_groups hermanos (mismo artista + título base), estilo Roon
+  albumMainArtist: db.prepare(`SELECT acn.name FROM artist_credit_name acn JOIN release_group rg ON rg.artist_credit_id=acn.artist_credit_id WHERE rg.id=? AND acn.position=1 LIMIT 1`),
+  rgsByArtistName: db.prepare(`SELECT rg.id, rg.title, substr(rg.first_release,1,4) year FROM release_group rg JOIN artist_credit_name acn ON acn.artist_credit_id=rg.artist_credit_id AND acn.position=1 WHERE acn.name=?`),
   tracks: db.prepare(`SELECT tr.id trackId, tr.recording_id, m.position disc, tr.position pos, tr.title, tr.length_ms,
       (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=tr.artist_credit_id ORDER BY acn.position LIMIT 1) artist,
       EXISTS(SELECT 1 FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id) playable,
@@ -397,6 +400,28 @@ function search(q, n) {
   }));
 }
 
+// ── versiones/ediciones de un álbum (release_groups hermanos: mismo artista + título base) ──
+const VER_DISC_RE = /\b(disc|cd|vol(?:ume)?)\s*\.?\s*\d|\[\s*disc|\(\s*disc/i;   // box sets: cada disco es distinto, no una "versión"
+function baseTitle(t) {
+  let s = String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  s = s.replace(/[\[(][^\])]*(flac|bit|khz|mp3|aac|vinyl|wav|lossless)[^\])]*[\])]/gi, ' ');   // [FLAC 16bit 44.1kHz]
+  s = s.replace(/[\[(](?:19|20)\d\d[\])]/g, ' ');                                               // (2020) [1995]
+  s = s.replace(/[\[(][^\])]*(deluxe|expanded|remaster|anniversary|special|bonus|collector|definitive|extended|\bedition\b|\bversion\b|mfsl|udcd|\buk\b|\bus\b|mono|stereo)[^\])]*[\])]/gi, ' ');
+  s = s.replace(/\s[-:]\s*\d+(?:st|nd|rd|th)\s+anniversary.*$/i, ' ');                          // - 40th anniversary ...
+  s = s.replace(/[^a-z0-9]+/g, ' ').trim();
+  return s;
+}
+function versionsOf(id, title) {
+  if (VER_DISC_RE.test(title || '')) return [];
+  const base = baseTitle(title); if (base.length < 2) return [];
+  const art = Q.albumMainArtist.get(id); if (!art) return [];
+  const out = [];
+  for (const c of Q.rgsByArtistName.all(art.name)) {
+    if (c.id === id || VER_DISC_RE.test(c.title) || baseTitle(c.title) !== base) continue;
+    out.push({ id: c.id, title: c.title, year: c.year || null, format: (Q.formatOf.get(c.id) || {}).f || null });
+  }
+  return out.sort((x, y) => String(y.year || '').localeCompare(String(x.year || '')) || x.title.localeCompare(y.title));
+}
 function album(id) {
   const a = Q.album.get(id); if (!a) return null;
   a.genres = (Q.genresOf.get(id).gs || '').split('|').filter(Boolean);
@@ -406,6 +431,7 @@ function album(id) {
   if (ab) { a.about = ab.v; a.about_source = Q.prov.all(id).find(p => p.field === 'about') || null; }
   else { const ext = Q.aboutExt.get(id); a.about = (ext && ext.v) || null; a.about_source = a.about ? (Q.prov.all(id).find(p => p.field === 'about_editorial') || null) : null; }
   a.editions = Q.editions.all(id);
+  a.versions = versionsOf(id, a.title);   // otras ediciones del mismo álbum en tu biblioteca
   a.tracks = Q.tracks.all(id);
   a.credits = Q.credits.all(id).map(c => ({ role: c.role, instrument: c.instrument, artists: (c.artists || '').split(',') }));
   a.tags = Q.tagsOfAlbum.all(id).map(r => r.name);   // etiquetas de usuario
