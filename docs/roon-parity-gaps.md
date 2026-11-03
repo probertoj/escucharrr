@@ -327,30 +327,38 @@ download/offline/cache/sync 1206/103/685/372 (sync offline — N/A local-first).
 (`/api/tag*`, `tag.html`) y **bookmarks** (`/api/bookmarks`) ya están; home con "Añadido
 recientemente"; Historial, Buscar, Obras (mínimo), zonas native/UPnP/Chromecast.
 
-### Las próximas 5 (propuesta priorizada)
-1. **DJ con voz (Web Speech API, dependency-free)** — joya de Plexamp, nada equivalente en la app.
+### Las próximas 5 (propuesta priorizada) — 2–5 HECHAS (Nov 3 2026), #1 descartada por el usuario
+1. ⛔ **DESCARTADA (el usuario no la quiere)** — **DJ con voz (Web Speech API, dependency-free)** — joya de Plexamp, nada equivalente en la app.
    Entre pistas (durante el hueco del crossfade) `speechSynthesis` del navegador anuncia la siguiente
    con una frase de contexto tomada de bio/reseña/créditos/año que YA almacenamos ("A continuación,
    X de Y, de su disco Z de 1975…"). Toggle + selección de voz/volumen/frecuencia en el panel de
    audio. 100% local, sin dependencias ni nube. Modelo Roon/Plexamp `dj`/`narrat`/`tts`. **P1/P2**.
-2. **Roon Radio: thumbs-down + sembrar desde aquí** — la continuación automática ya existe, pero sin
-   bucle de feedback. Añadir **pulgar abajo** (salta + marca `bad_for_radio` → `/api/radio` lo excluye
-   de esa semilla y del futuro), barra/indicador de radio en el now-playing, y "empezar radio desde
-   aquí" en pista/álbum/artista. Modelo `Gradiothumbdowntrack`/`bad_for_radio`/`start_radio`. **P2**.
-3. **"Instant Mix / Más como esto"** — acción explícita en álbum/artista/pista que crea una cola-mezcla
-   por afinidad (géneros/era/sello/banda de loudness + vecinos Chromaprint donde los haya), reutilizando
-   el mismo motor de similitud que alimenta la Radio, pero como lista nombrada y guardable. Es la versión
-   factible hoy de la "similitud sónica" diferida (sin pipeline espectral completo). Modelo `instant mix`/
-   `sonically`/`similar`. **P2**.
-4. **Transferir reproducción entre zonas** — mover cola+pista+posición entre salidas (nativa/UPnP/
-   Chromecast) sin cortar, y una etiqueta de grupo básica. El sync muestra-a-muestra multi-room (RAAT/
-   reloj) queda fuera, pero "transferir" es factible con el motor actual. Modelo `transfer_zone`/
-   `Transferring`/`standby`. **P2/P3**.
-5. **Overview curado ("Sigue escuchando" · "Redescubre" · "Porque escuchaste…")** — subir el home más
-   allá de "Añadido recientemente": reanudar discos a medias, redescubrir lo no tocado hace mucho,
-   y filas "porque escuchaste X / novedades para ti" a partir de historial + valoraciones + grafo de
-   géneros/artistas. Modelo `Goverview_*`/`NewReleasesForYou`/`for_you`. **P2**.
+2. ✅ **HECHO (Nov 3 2026, commit 7af9322)** — **Roon Radio: thumbs-down + sembrar desde aquí**. La
+   continuación automática ya existía (modelo "Swim"); faltaba el bucle de feedback. `radio()` excluye
+   grabaciones `bad_for_radio`; `POST /api/radio/thumbdown` fija/quita el flag (tabla `flag`,
+   subject_type='recording'). Reproductor: `thumbDown()` marca y salta (quita duplicados de la cola);
+   **pulgar-abajo** + **toggle de Radio** en el transporte del fullscreen; `radioFrom(albumId)` siembra
+   (reproduce + enciende radio); botón "Radio" en la ficha de álbum; icono `thumb-down`. Probado: el
+   thumbdown excluye la grabación del motor y salta de pista.
+3. ✅ **HECHO (Nov 3 2026, commit 4300fa3)** — **Instant Mix / "más como esto"**. `mix(kind,id,n)`
+   reutiliza el núcleo de similitud de la radio (géneros + artista + tier) sobre-pidiendo y aplicando
+   **diversidad** (máx 3/artista, 2/álbum) para ~40 pistas; excluye `bad_for_radio`. Ruta
+   `GET /api/mix?album=|artist=|track=&n=`; `playMix()`; botones "Mezcla" en álbum y artista. Versión
+   factible hoy de la similitud sónica diferida (metadatos, sin pipeline espectral). Probado: mezcla de
+   álbum 21 pistas / 15 artistas / tope 2+2; de artista 16.
+4. ✅ **HECHO (Nov 3 2026, commit 587b6d0)** — **Transferir reproducción entre zonas**. El cambio de
+   salida ya arrastraba cola+posición+estado (`setNativeMode`/`setUpnpMode` llevan `posSec`/`wasPlaying`);
+   encima se añadió el modelo de zonas de Roon: **presets de zona con nombre** (localStorage) con la
+   activa marcada; tocar una **transfiere** la reproducción en curso allí (`applyZone` reutiliza los
+   setters); "Guardar la zona actual" y quitar. El sync muestra-a-muestra multi-room (RAAT) queda fuera.
+   Probado (local): guardar/activar/transferir sin corte/borrar.
+5. ✅ **HECHO (Nov 3 2026, commit 5c9fed6)** — **Overview curado**. `home()` añade **Sigue escuchando**
+   (`homeRecentlyPlayed`), **Redescubre** (`discNotRecent`, sin sonar >90 días) y **Porque escuchaste X**
+   (`albumsByGenreIds` sobre los géneros del artista más escuchado, excluye al propio). `home.html`
+   pinta las filas con tarjetas; cada una se oculta si viene vacía. Probado: resume 12, "Porque escuchaste
+   Le Mans" 12, redescubre 0 (oculta), recientes 10.
 
-Bonus barato: **presets de visualizador** (espectro/osciloscopio/partículas) sobre el `AnalyserNode`
-que ya existe. Diferido pesado: **mezcla armónica (key/BPM/Camelot)** y **similitud sónica espectral**
-completas — requieren análisis de audio sobre 255k ficheros que hoy no tenemos (solo 337 Chromaprint).
+Bonus barato (pendiente): **presets de visualizador** (espectro/osciloscopio/partículas) sobre el
+`AnalyserNode` que ya existe. Diferido pesado: **mezcla armónica (key/BPM/Camelot)** y **similitud
+sónica espectral** completas — requieren análisis de audio sobre 255k ficheros que hoy no tenemos
+(solo 337 Chromaprint). **#1 DJ con voz**: descartada por el usuario.
