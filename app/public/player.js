@@ -43,7 +43,11 @@ window.player = (function () {
   const VIZKEY = 'escucharrr.viz';
   let vizOn = true; try { const v = localStorage.getItem(VIZKEY); if (v === '0') vizOn = false; } catch (e) {}
   const persistViz = () => { try { localStorage.setItem(VIZKEY, vizOn ? '1' : '0'); } catch (e) {} };
-  let analyser = null, vizData = null, vizRAF = 0;                                  // tap de espectro tras la maestra
+  let analyser = null, vizData = null, vizTime = null, vizRAF = 0;                  // tap de espectro/onda tras la maestra
+  const VIZSTYLES = ['bars', 'spectrum', 'scope'];                                  // presets de visualizador
+  let vizStyle = 'bars'; try { const s = localStorage.getItem('escucharrr.vizstyle'); if (VIZSTYLES.indexOf(s) >= 0) vizStyle = s; } catch (e) {}
+  let preampDb = 0; try { const p = parseFloat(localStorage.getItem('escucharrr.preamp')); if (p >= -12 && p <= 6) preampDb = p; } catch (e) {}
+  let preampNode = null;
   let sleepMode = 'off', sleepUntil = 0, sleepTick = null, sleepFaded = false;      // temporizador de apagado
   let npPalette = null, npPaletteId = -1;                                           // color dominante de la portada (cache por álbum)
   // ── DSP avanzado: EQ paramétrico (bandas configurables) + convolución (impulso WAV) ──
@@ -83,9 +87,10 @@ window.player = (function () {
       for (let i = 0; i < eqBands.length - 1; i++) eqBands[i].connect(eqBands[i + 1]);
       dspIn = ctx.createGain(); dspOut = ctx.createGain();                            // puntos del subgrafo DSP avanzado
       eqBands[eqBands.length - 1].connect(dspIn);                                     // EQ gráfico → [EQ paramétrico] → [convolución] → maestra
-      dspOut.connect(masterGain);
+      preampNode = ctx.createGain(); preampNode.gain.value = Math.pow(10, preampDb / 20);   // preamp/headroom antes del volumen
+      dspOut.connect(preampNode); preampNode.connect(masterGain);
       masterGain.connect(ctx.destination);
-      try { analyser = ctx.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.82; vizData = new Uint8Array(analyser.frequencyBinCount); masterGain.connect(analyser); } catch (e) { analyser = null; }   // tap para el visualizador
+      try { analyser = ctx.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.82; vizData = new Uint8Array(analyser.frequencyBinCount); vizTime = new Uint8Array(analyser.fftSize); masterGain.connect(analyser); } catch (e) { analyser = null; }   // tap para el visualizador
       decks.forEach(d => { d.src = ctx.createMediaElementSource(d.el); d.gain = ctx.createGain(); d.gain.gain.value = 0.0001; d.src.connect(d.gain); d.gain.connect(eqBands[0]); d.el.volume = 1; });
       if (convFile) loadImpulse(convFile, true); else rebuildDsp();                   // arma el subgrafo con el estado persistido
       applySink();                                                                   // enruta a la salida/zona elegida
@@ -277,15 +282,23 @@ window.player = (function () {
     if (!W || !H) { vizRAF = requestAnimationFrame(vizLoop); return; }
     if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
     const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
-    analyser.getByteFrequencyData(vizData);
-    const NB = 56, half = vizData.length * 0.72, gap = 2, bw = (W - (NB - 1) * gap) / NB;
-    const acc = (npPalette && npPalette.accent) ? npPalette.accent : null;
-    for (let i = 0; i < NB; i++) {
-      const lo = Math.floor(Math.pow(i / NB, 1.7) * half), hi = Math.max(lo + 1, Math.floor(Math.pow((i + 1) / NB, 1.7) * half));
-      let m = 0; for (let j = lo; j < hi && j < vizData.length; j++) if (vizData[j] > m) m = vizData[j];
-      const bh = Math.max(1, (m / 255) * H), x = i * (bw + gap), y = H - bh;
-      g.fillStyle = acc ? `rgba(${acc[0]},${acc[1]},${acc[2]},${0.35 + 0.5 * (m / 255)})` : `rgba(140,140,150,${0.3 + 0.5 * (m / 255)})`;
-      g.fillRect(x, y, bw, bh);
+    const acc = (npPalette && npPalette.accent) ? npPalette.accent : [140, 140, 150];
+    const col = (al) => `rgba(${acc[0]},${acc[1]},${acc[2]},${al})`;
+    if (vizStyle === 'scope') {                                   // osciloscopio (forma de onda)
+      analyser.getByteTimeDomainData(vizTime); const n = vizTime.length; g.beginPath();
+      for (let i = 0; i < n; i++) { const x = i / (n - 1) * W, y = (vizTime[i] / 255) * H; if (i === 0) g.moveTo(x, y); else g.lineTo(x, y); }
+      g.strokeStyle = col(0.85); g.lineWidth = 1.6; g.stroke();
+    } else if (vizStyle === 'spectrum') {                         // espectro como línea rellena (log)
+      analyser.getByteFrequencyData(vizData); const half = vizData.length * 0.72, N = 120; g.beginPath(); g.moveTo(0, H);
+      for (let i = 0; i < N; i++) { const lo = Math.floor(Math.pow(i / N, 1.7) * half); const m = vizData[Math.min(vizData.length - 1, lo)] || 0; g.lineTo(i / (N - 1) * W, H - Math.max(1, (m / 255) * H)); }
+      g.lineTo(W, H); g.closePath(); g.fillStyle = col(0.3); g.fill(); g.strokeStyle = col(0.85); g.lineWidth = 1.4; g.stroke();
+    } else {                                                      // barras (por defecto)
+      analyser.getByteFrequencyData(vizData); const NB = 56, half = vizData.length * 0.72, gap = 2, bw = (W - (NB - 1) * gap) / NB;
+      for (let i = 0; i < NB; i++) {
+        const lo = Math.floor(Math.pow(i / NB, 1.7) * half), hi = Math.max(lo + 1, Math.floor(Math.pow((i + 1) / NB, 1.7) * half));
+        let m = 0; for (let j = lo; j < hi && j < vizData.length; j++) if (vizData[j] > m) m = vizData[j];
+        const bh = Math.max(1, (m / 255) * H); g.fillStyle = col(0.35 + 0.5 * (m / 255)); g.fillRect(i * (bw + gap), H - bh, bw, bh);
+      }
     }
     vizRAF = requestAnimationFrame(vizLoop);
   }
@@ -316,6 +329,8 @@ window.player = (function () {
     sleepFaded = false; if (eqpanel && eqpanel.style.display === 'block') renderEqPanel();
   }
   function setVizOn(on) { vizOn = on; persistViz(); applyNpPalette(); if (vizOn && npfs && npfs.style.display === 'flex' && npPage === 'cover') startViz(); if (npfs && npfs.style.display === 'flex') renderNpFs(); }
+  function cycleVizStyle() { vizStyle = VIZSTYLES[(VIZSTYLES.indexOf(vizStyle) + 1) % VIZSTYLES.length]; try { localStorage.setItem('escucharrr.vizstyle', vizStyle); } catch (e) {} if (!vizRAF && vizOn) startViz(); }
+  function setPreamp(db) { preampDb = Math.max(-12, Math.min(6, db)); try { localStorage.setItem('escucharrr.preamp', String(preampDb)); } catch (e) {} if (preampNode && ctx) { try { preampNode.gain.setTargetAtTime(Math.pow(10, preampDb / 20), ctx.currentTime, 0.02); } catch (e) { preampNode.gain.value = Math.pow(10, preampDb / 20); } } const l = document.getElementById('preampval'); if (l) l.textContent = (preampDb > 0 ? '+' : '') + preampDb.toFixed(1).replace('.0', '') + ' dB'; }
   // Letra con sincronía: comparte lyCache/parseLRC con el panel de esquina.
   function npEnsureLyrics(cb) { const c = cur(); if (!c || !c.trackId) { cb && cb(null); return; } if (lyCache[c.trackId]) { cb && cb(lyCache[c.trackId]); return; } fetch('/api/lyrics?track=' + c.trackId).then(r => r.json()).then(j => { j.syncedArr = j.synced ? parseLRC(j.synced) : null; lyCache[c.trackId] = j; const cc = cur(); if (cc && cc.trackId === c.trackId) cb && cb(j); }).catch(() => cb && cb(null)); }
   const npMd = s => window.mdToHtml ? window.mdToHtml(s) : esc(s).replace(/\n/g, '<br>');
@@ -379,7 +394,7 @@ window.player = (function () {
     // 'cover' (por defecto): carátula grande + título/artista + "a continuación"
     const up = q.slice(idx + 1, idx + 6);
     return `<div style="width:min(44vh,300px);aspect-ratio:1;border-radius:16px;overflow:hidden;box-shadow:0 12px 44px rgba(0,0,0,.28);margin-top:6px;flex:none"><img src="/api/cover?rg=${c.albumId}" alt="" style="width:100%;height:100%;object-fit:cover;display:block"></div>
-      <div style="width:min(44vh,300px);height:46px;margin-top:8px;flex:none;position:relative">${vizOn ? `<canvas id="npviz" style="width:100%;height:100%;display:block"></canvas>` : ''}
+      <div style="width:min(44vh,300px);height:46px;margin-top:8px;flex:none;position:relative">${vizOn ? `<canvas id="npviz" data-act="vizstyle" title="Toca para cambiar de estilo" style="width:100%;height:100%;display:block;cursor:pointer"></canvas>` : ''}
         <span data-act="viztoggle" title="Visualizador" style="position:absolute;right:0;top:-2px;cursor:pointer;color:var(--${vizOn ? 'accent' : 'text-2'});display:inline-flex">${ic('visualizer', 15)}</span></div>
       <div style="text-align:center;margin-top:10px">
         <div style="font-family:var(--serif);font-size:26px;font-weight:600;line-height:1.2">${esc(c.title)}</div>
@@ -983,6 +998,7 @@ window.player = (function () {
   function renderDspPanel() {
     ensureDspPanel();
     let h = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px"><span style="font-weight:600">DSP avanzado</span><span data-act="dspclose" style="cursor:pointer;color:var(--text-2);display:inline-flex">${ic('close', 16)}</span></div>`;
+    h += `<div style="margin-bottom:10px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px"><span style="font-weight:600;font-size:12.5px">Preamp</span><span id="preampval" style="font-size:12px;color:var(--text-2)">${(preampDb > 0 ? '+' : '') + preampDb.toFixed(1).replace('.0', '')} dB</span></div><input data-act="preamp" type="range" min="-12" max="6" step="0.5" value="${preampDb}" style="width:100%;accent-color:var(--accent)"><div style="font-size:11px;color:var(--text-2);margin-top:3px">Ganancia de entrada antes del volumen (headroom; evita saturar con ReplayGain alto).</div></div>`;
     h += `<div style="display:flex;align-items:center;justify-content:space-between;margin:6px 0"><span style="font-weight:600;font-size:12.5px">EQ paramétrico</span><span data-act="peqtoggle" style="cursor:pointer;font-size:12px;padding:2px 10px;border-radius:999px;background:${peqOn ? 'var(--accent)' : 'var(--surface-2)'};color:${peqOn ? '#fff' : 'var(--text-2)'}">${peqOn ? 'Activado' : 'Desactivado'}</span></div>`;
     h += `<div style="opacity:${peqOn ? 1 : .5}">`;
     h += peqGraphSvg();
@@ -1045,6 +1061,7 @@ window.player = (function () {
     else if (k === 'npopen' || k === 'npclose') toggleNpFs();
     else if (k === 'nppage') { npPage = a.dataset.page; npLyActive = -1; renderNpFs(); }
     else if (k === 'viztoggle') setVizOn(!vizOn);
+    else if (k === 'vizstyle') cycleVizStyle();
     else if (k === 'thumbdown') thumbDown();
     else if (k === 'radio') setRadio(!radioOn);
     else if (k === 'npjump') jumpTo(+a.dataset.i);
@@ -1058,7 +1075,8 @@ window.player = (function () {
     const v = e.target.closest('#nowbar [data-act="vol"], #npfs [data-act="vol"]'); if (v) { setVol(parseFloat(v.value)); return; }
     const zn = e.target.closest('#zonepanel #zname'); if (zn) { zone.name = zn.value; persistZone(); updateZoneBtn(); return; }
     const eb = e.target.closest('#eqpanel .eqband'); if (eb) { setEqBand(+eb.dataset.i, parseInt(eb.value, 10)); return; }
-    const xf = e.target.closest('#eqpanel [data-act="xfade"]'); if (xf) { setXfade(parseFloat(xf.value)); }
+    const xf = e.target.closest('#eqpanel [data-act="xfade"]'); if (xf) { setXfade(parseFloat(xf.value)); return; }
+    const pa = e.target.closest('#dsppanel [data-act="preamp"]'); if (pa) { ensureGraph(); setPreamp(parseFloat(pa.value)); }
   });
 
   // ── scrubbing de la onda: arrastrar para buscar + burbuja de tiempo (hover y arrastre) ──
