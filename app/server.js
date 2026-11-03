@@ -370,6 +370,7 @@ function radio(seedTrackId, excludeRecIds, n) {
      FROM track tr JOIN recording r ON r.id=tr.recording_id JOIN medium m ON m.id=tr.medium_id
      JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id
      WHERE EXISTS(SELECT 1 FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id)${exClause}
+       AND NOT EXISTS(SELECT 1 FROM flag f2 WHERE f2.subject_type='recording' AND f2.subject_id=tr.recording_id AND f2.flag='bad_for_radio')
      GROUP BY tr.recording_id
      ORDER BY shared DESC, COALESCE((SELECT tier_rank FROM v_album WHERE id=rg.id),0) DESC, RANDOM() LIMIT ?`;
   const rows = db.prepare(sql).all(...genreIds, ...ex, n);
@@ -1495,6 +1496,8 @@ async function handleRadio(req, res, u) {
     const body = req.method === 'POST' ? await readBody(req) : {};
     if (sub === 'station') { const name = String(body.name || '').trim().slice(0, 120); const url = String(body.url || '').trim(); if (!name || !/^https?:\/\//i.test(url)) { res.writeHead(400); return res.end(JSON.stringify({ ok: false, error: 'Nombre y URL http(s) obligatorios' })); } const r = Q.radioAdd.run(name, url, String(body.homepage || '').trim() || null, String(body.favicon || '').trim() || null); return sendJSON(res, { ok: true, id: Number(r.lastInsertRowid), stations: Q.radioList.all() }); }
     if (sub === 'station/delete') { const id = parseInt(body.id, 10); Q.radioDelete.run(id); _radioNow.delete(id); return sendJSON(res, { ok: true, stations: Q.radioList.all() }); }
+    // pulgar abajo de la Radio: marca la grabación como bad_for_radio para que el motor la excluya (body.on===false la rehabilita)
+    if (sub === 'thumbdown') { const rid = parseInt(body.recording_id, 10); if (!rid) { res.writeHead(400); return res.end(JSON.stringify({ ok: false, error: 'recording_id obligatorio' })); } if (body.on === false) Q.edDelFlag.run('recording', rid, 'bad_for_radio'); else Q.edSetFlag.run('recording', rid, 'bad_for_radio'); return sendJSON(res, { ok: true, bad: body.on !== false }); }
     res.writeHead(404); res.end('{}');
   } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }

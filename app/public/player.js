@@ -178,6 +178,10 @@ window.player = (function () {
       .catch(() => { radioFetching = false; });
   }
   function setRadio(on) { radioOn = !!on; try { localStorage.setItem('escucharrr.radio', radioOn ? '1' : '0'); } catch (e) {} if (radioOn) maybeRadio(); render(); }
+  // pulgar abajo: marca la grabación como bad_for_radio (el motor la excluye) y salta a la siguiente
+  function thumbDown() { const c = cur(); if (!c || !c.recording_id) return; spost('/api/radio/thumbdown', { recording_id: c.recording_id }); const rid = c.recording_id; q = q.filter((t, i) => i <= idx || t.recording_id !== rid); save(); next(); }
+  // sembrar la radio desde un álbum: reproduce y auto-extiende con pistas afines
+  function radioFrom(albumId) { fetch('/api/album?id=' + albumId).then(r => r.json()).then(a => { const tr = (a.tracks || []).map(t => ({ trackId: t.trackId, recording_id: t.recording_id, title: t.title, artist: a.artist, albumId: a.id, length_ms: t.length_ms, playable: t.playable !== 0, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs })); if (!tr.length) { alert('Este álbum aún no tiene pistas en tu biblioteca.'); return; } q = tr; radioOn = true; try { localStorage.setItem('escucharrr.radio', '1'); } catch (e) {} start(0); }); }
   // ── deshacer cambios de cola (quitar / vaciar lo próximo) ──
   function snapshot() { try { undoStack.push(JSON.stringify({ q, idx })); if (undoStack.length > 25) undoStack.shift(); } catch (e) {} }
   function undo() { const s = undoStack.pop(); if (!s) return false; try { const o = JSON.parse(s); q = o.q; idx = o.idx; save(); render(); return true; } catch (e) { return false; } }
@@ -414,10 +418,12 @@ window.player = (function () {
             : `<div data-act="seek" title="Buscar" style="flex:1;height:10px;display:flex;align-items:center;cursor:pointer"><div style="width:100%;height:5px;background:var(--surface-2);border-radius:999px;overflow:hidden"><div id="npfsprog" style="width:${frac}%;height:100%;background:var(--accent)"></div></div></div>`}
           <span style="font-size:12px;color:var(--muted);width:40px">${mmss(len)}</span>
         </div>
-        <div style="display:flex;align-items:center;justify-content:center;gap:30px;color:var(--text);margin-top:10px">
+        <div style="display:flex;align-items:center;justify-content:center;gap:26px;color:var(--text);margin-top:10px">
+          <span data-act="thumbdown" title="No para la radio (saltar y excluir)" style="cursor:pointer;display:inline-flex;color:var(--text-2)">${ic('thumb-down', 20)}</span>
           <span data-act="prev" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Anterior">${ic('prev', 26)}</span>
           <span data-act="toggle" style="cursor:pointer;display:inline-flex" title="Play/Pausa">${ic(playing ? 'pause' : 'play', 44)}</span>
           <span data-act="next" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Siguiente">${ic('next', 26)}</span>
+          <span data-act="radio" title="Radio: extiende la cola con pistas afines" style="cursor:pointer;display:inline-flex;color:${radioOn ? 'var(--accent)' : 'var(--text-2)'}">${ic('radio', 20)}</span>
         </div>
         <div style="display:flex;align-items:center;justify-content:center;gap:20px;color:var(--text-2);margin-top:9px">
           <span data-act="mute" style="cursor:pointer;display:inline-flex" title="Silenciar">${ic(volIcon(), 18)}</span>
@@ -982,6 +988,8 @@ window.player = (function () {
     else if (k === 'npopen' || k === 'npclose') toggleNpFs();
     else if (k === 'nppage') { npPage = a.dataset.page; npLyActive = -1; renderNpFs(); }
     else if (k === 'viztoggle') setVizOn(!vizOn);
+    else if (k === 'thumbdown') thumbDown();
+    else if (k === 'radio') setRadio(!radioOn);
     else if (k === 'npjump') jumpTo(+a.dataset.i);
     else if (k === 'eq') toggleEqPanel();
     else if (k === 'lyrics') toggleLyPanel();
@@ -1077,5 +1085,5 @@ window.player = (function () {
 
   return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain, getZone, getAudio, getNative, setNativeMode, setRadio, undo,
     getSettings, setXfade, setRgMode, setEqEnabled, setEqBand, setPreset, openOutput: toggleZPanel, openEq: toggleEqPanel, openDsp: toggleDspPanel,
-    playRadio, stopRadio, getRadio };
+    playRadio, stopRadio, getRadio, radioFrom, thumbDown };
 })();
