@@ -21,6 +21,10 @@ window.player = (function () {
   let zone = { name: 'Este equipo', deviceId: '', label: '', native: false, nativeDeviceId: '', nativeExclusive: false, upnp: false, upnpDeviceId: '', upnpName: '' };
   try { const z = JSON.parse(localStorage.getItem(ZKEY)); if (z && typeof z === 'object') zone = Object.assign(zone, z); } catch (e) {}
   const persistZone = () => { try { localStorage.setItem(ZKEY, JSON.stringify(zone)); } catch (e) {} };
+  // zonas guardadas (presets de salida con nombre, para transferir de un toque — modelo transfer_zone de Roon)
+  const ZONESKEY = 'escucharrr.zones';
+  let zones = []; try { const z = JSON.parse(localStorage.getItem(ZONESKEY)); if (Array.isArray(z)) zones = z; } catch (e) {}
+  const persistZones = () => { try { localStorage.setItem(ZONESKEY, JSON.stringify(zones)); } catch (e) {} };
   // ── motor nativo (salida WASAPI del servidor, fuera del navegador) ──
   // Cuando está activo, el transporte va a /api/native/* en vez del audio del navegador,
   // y los decks se silencian para no duplicar el sonido. La posición se sondea del servidor.
@@ -618,6 +622,25 @@ window.player = (function () {
     if (zpanel && zpanel.style.display === 'block') renderZPanel();
   }
 
+  // ── zonas guardadas: describir la salida actual, guardarla, aplicarla (transferir) ──
+  function currentOutput() {
+    if (nativeMode) return { kind: 'native', deviceId: nativeDeviceId || '', deviceName: '', exclusive: !!nativeExclusive };
+    if (upnpMode) return { kind: 'upnp', deviceId: upnpDeviceId || '', deviceName: upnpDevName || '' };
+    return { kind: 'local', deviceId: zone.deviceId || '', deviceName: zone.label || '' };
+  }
+  function zoneMatches(z) { const c = currentOutput(); return z.kind === c.kind && (z.deviceId || '') === (c.deviceId || '') && (z.kind !== 'native' || !!z.exclusive === !!c.exclusive); }
+  function saveCurrentZone(name) { const o = currentOutput(); zones.push({ id: Date.now(), name: name || zone.name || 'Zona', kind: o.kind, deviceId: o.deviceId, deviceName: o.deviceName, exclusive: o.exclusive }); persistZones(); renderZPanel(); }
+  function deleteZone(zid) { zones = zones.filter(z => String(z.id) !== String(zid)); persistZones(); renderZPanel(); }
+  // transfiere la reproducción en curso (cola+posición+estado) a una zona guardada
+  function applyZone(z) {
+    if (!z) return;
+    if (z.kind === 'native') { setNativeMode(true); if ((nativeDeviceId || '') !== (z.deviceId || '')) setNativeDevice(z.deviceId || ''); if (!!nativeExclusive !== !!z.exclusive) setNativeExclusive(!!z.exclusive); }
+    else if (z.kind === 'upnp') { setUpnpMode(true, z.deviceId || '', z.deviceName || ''); }
+    else { if (upnpMode) setUpnpMode(false); else if (nativeMode) setNativeMode(false); setZoneDevice(z.deviceId || '', z.deviceName || ''); }
+    if (z.name) { zone.name = z.name; persistZone(); updateZoneBtn(); }
+    if (zpanel && zpanel.style.display === 'block') renderZPanel();
+  }
+
   function start(i, atSec) {
     if (irStation) stopRadio(true);   // reproducir una pista para la radio
     if (nativeMode) return nativePlay(i);
@@ -728,6 +751,12 @@ window.player = (function () {
   async function renderZPanel() {
     ensureZPanel();
     let h = '<div style="font-weight:600;margin-bottom:8px">Salida y zona</div>';
+    // zonas guardadas: transferir la reproducción en curso de un toque
+    h += '<div style="margin-bottom:10px">';
+    if (zones.length) h += zones.map(z => { const on = zoneMatches(z); const tag = z.kind === 'native' ? 'nativo' + (z.exclusive ? ' · excl.' : '') : z.kind === 'upnp' ? 'red' : 'navegador'; return `<div class="zpreset" data-zone="${z.id}" title="Transferir aquí" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer;${on ? 'background:var(--accent-bg);color:var(--accent)' : ''}"><span style="width:16px;display:inline-flex;justify-content:center">${on ? ic('check', 15) : ic('zone', 15)}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(z.name)} <span style="color:var(--muted);font-size:11px">· ${tag}</span></span><span class="zpresetdel" data-zone="${z.id}" title="Quitar zona" style="color:var(--text-2);display:inline-flex">${ic('close', 14)}</span></div>`; }).join('');
+    else h += '<div style="font-size:11.5px;color:var(--text-2)">Sin zonas guardadas. Configura una salida abajo y guárdala para transferir la música de un toque.</div>';
+    h += `<div data-act="zonesave" style="margin-top:6px;color:var(--accent);cursor:pointer;font-size:12px;display:inline-flex;align-items:center;gap:5px">${ic('plus', 13)}Guardar la zona actual</div>`;
+    h += '</div><div style="border-top:1px solid var(--border);margin:0 -14px 10px"></div>';
     h += '<label style="display:block;font-size:11px;color:var(--text-2);margin-bottom:3px">Nombre de la zona</label>';
     h += `<input id="zname" value="${esc(zone.name)}" style="width:100%;margin-bottom:10px">`;
     // conmutador de motor nativo (salida WASAPI del servidor)
@@ -955,6 +984,9 @@ window.player = (function () {
 
   // interacción de la barra y los popovers (delegada)
   document.addEventListener('click', e => {
+    const zdel = e.target.closest('#zonepanel .zpresetdel'); if (zdel) { e.stopPropagation(); deleteZone(zdel.dataset.zone); return; }
+    const zp = e.target.closest('#zonepanel .zpreset'); if (zp) { const z = zones.find(x => String(x.id) === String(zp.dataset.zone)); if (z) applyZone(z); return; }
+    if (e.target.closest('#zonepanel [data-act="zonesave"]')) { const nm = (prompt('Nombre de la zona:', zone.name || 'Zona') || '').trim(); if (nm) saveCurrentZone(nm); return; }
     const zd = e.target.closest('#zonepanel .zdev'); if (zd) { setZoneDevice(zd.dataset.id, zd.dataset.label); return; }
     if (e.target.closest('#zonepanel [data-act="unlock"]')) { unlockLabels(); return; }
     if (e.target.closest('#zonepanel [data-act="ntoggle"]')) { setNativeMode(!nativeMode); return; }
