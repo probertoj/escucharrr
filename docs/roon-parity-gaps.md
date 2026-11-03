@@ -270,9 +270,15 @@ volumen y waveform están GATEADOS por una pasada de `analyze.js` (horas sobre S
    aplica al soltar) + **burbuja de tiempo** flotante en hover (solo tiempo) y en arrastre;
    `progress()` se inhibe mientras se arrastra. Probado con PointerEvent reales (hover 1:02,
    arrastre 25%→75%, seek real al soltar).
-4. **EQ paramétrico + Signal Path (WebAudio)**: editor de bandas (BiquadFilter) sobre `dsp_preset`
-   ya guardado + panel de ruta de señal (formato/profundidad/frecuencia/ganancia/bit-perfect).
-   Roon `component_dsp`/`parametric`/`signal_path`. **P2**.
+4. ✅ **HECHO (Nov 3 2026)** — **EQ paramétrico + Signal Path (WebAudio)**. Ya existían el grafo
+   WebAudio con EQ paramétrico (BiquadFilters), convolución y presets, y la ruta de señal (página
+   "Señal", feature de la pasada anterior). Esto añade la pieza estrella de Roon
+   (`component_dsp`/`parametric`/`*_peq_circle`): un **editor gráfico** sobre los mismos `peqBands`:
+   curva de respuesta EXACTA (suma en dB de `BiquadFilterNode.getFrequencyResponse`, reusa el
+   `AudioContext` vivo o un `OfflineAudioContext`; eje X log 20 Hz–20 kHz, eje Y ±18 dB), un punto
+   de color por banda — arrastrar = freq+ganancia, rueda = Q, doble clic = añadir — con sincronía en
+   vivo de curva/punto/inputs y ajuste del nodo biquad sin reconstruir el subgrafo. Probado:
+   la curva hunde -6 dB justo en 2 kHz para una banda peaking 2 kHz/-6 dB.
 5. **Pack reproducción tipo Plexamp (web, dependency-free)**: **crossfade/Sweet Fades** + **sleep
    timer** + **visualizador audio-reactivo** (AnalyserNode→canvas) + **paleta dinámica de la
    portada**. **P2/P3**.
