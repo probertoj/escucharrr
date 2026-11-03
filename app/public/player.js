@@ -35,6 +35,13 @@ window.player = (function () {
   let xfade = 0; try { const x = parseFloat(localStorage.getItem(XKEY)); if (x >= 0 && x <= 12) xfade = x; } catch (e) {}
   const persistEq = () => { try { localStorage.setItem(EQKEY, JSON.stringify({ on: eqOn, g: eqGains })); } catch (e) {} };
   const persistX = () => { try { localStorage.setItem(XKEY, String(xfade)); } catch (e) {} };
+  // ── pack tipo Plexamp: sleep timer + visualizador audio-reactivo + paleta de la portada ──
+  const VIZKEY = 'escucharrr.viz';
+  let vizOn = true; try { const v = localStorage.getItem(VIZKEY); if (v === '0') vizOn = false; } catch (e) {}
+  const persistViz = () => { try { localStorage.setItem(VIZKEY, vizOn ? '1' : '0'); } catch (e) {} };
+  let analyser = null, vizData = null, vizRAF = 0;                                  // tap de espectro tras la maestra
+  let sleepMode = 'off', sleepUntil = 0, sleepTick = null, sleepFaded = false;      // temporizador de apagado
+  let npPalette = null, npPaletteId = -1;                                           // color dominante de la portada (cache por álbum)
   // ── DSP avanzado: EQ paramétrico (bandas configurables) + convolución (impulso WAV) ──
   // Tipos de banda; el índice es también el tipo que entiende el motor nativo.
   const PEQKEY = 'escucharrr.peq', CONVKEY = 'escucharrr.conv';
@@ -74,6 +81,7 @@ window.player = (function () {
       eqBands[eqBands.length - 1].connect(dspIn);                                     // EQ gráfico → [EQ paramétrico] → [convolución] → maestra
       dspOut.connect(masterGain);
       masterGain.connect(ctx.destination);
+      try { analyser = ctx.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.82; vizData = new Uint8Array(analyser.frequencyBinCount); masterGain.connect(analyser); } catch (e) { analyser = null; }   // tap para el visualizador
       decks.forEach(d => { d.src = ctx.createMediaElementSource(d.el); d.gain = ctx.createGain(); d.gain.gain.value = 0.0001; d.src.connect(d.gain); d.gain.connect(eqBands[0]); d.el.volume = 1; });
       if (convFile) loadImpulse(convFile, true); else rebuildDsp();                   // arma el subgrafo con el estado persistido
       applySink();                                                                   // enruta a la salida/zona elegida
@@ -193,17 +201,111 @@ window.player = (function () {
   //    atom_nowplaying_{image,lyrics,credits,review,bio}). Carátula · Letra (LRC sincronizada) · Créditos · Reseña · Artista. ──
   let npfs = null, npPage = 'cover', npMeta = null, npMetaId = -1, npBio = null, npBioId = -1, npLyActive = -1, npInfo = null, npInfoTrack = -1;
   function ensureNpFs() { if (npfs) return; npfs = document.createElement('div'); npfs.id = 'npfs'; npfs.setAttribute('style', 'position:fixed;inset:0;z-index:75;background:var(--bg);display:none;flex-direction:column;overflow:hidden'); document.body.appendChild(npfs); }
-  function toggleNpFs() { ensureNpFs(); if (npfs.style.display === 'flex') { npfs.style.display = 'none'; return; } npPage = 'cover'; npLyActive = -1; loadNpMeta(); renderNpFs(); npfs.style.display = 'flex'; }
+  function toggleNpFs() { ensureNpFs(); if (npfs.style.display === 'flex') { npfs.style.display = 'none'; if (vizRAF) { cancelAnimationFrame(vizRAF); vizRAF = 0; } return; } npPage = 'cover'; npLyActive = -1; loadNpMeta(); const c = cur(); if (c) loadPalette(c.albumId); renderNpFs(); npfs.style.display = 'flex'; }
   // Metadatos del álbum/artista para las páginas (créditos/reseña/bio); cacheados por álbum.
   function loadNpMeta() {
     const c = cur(); if (!c || !c.albumId) { npMeta = null; npMetaId = -1; return; }
     if (npMetaId === c.albumId && npMeta) { return; }
-    npMetaId = c.albumId; npMeta = null;
+    npMetaId = c.albumId; npMeta = null; loadPalette(c.albumId);
     fetch('/api/album?id=' + c.albumId).then(r => r.json()).then(a => { const cc = cur(); if (!cc || cc.albumId !== npMetaId) return; npMeta = a; if (a.artist_id) fetchNpBio(a.artist_id); if (npfs && npfs.style.display === 'flex' && (npPage === 'credits' || npPage === 'review')) renderNpFs(); }).catch(() => {});
   }
   function fetchNpBio(aid) { if (!aid) return; if (npBioId === aid && npBio) return; npBioId = aid; npBio = null; fetch('/api/artist?id=' + aid).then(r => r.json()).then(a => { npBio = a; if (npfs && npfs.style.display === 'flex' && npPage === 'bio') renderNpFs(); }).catch(() => {}); }
   // Espec técnico + loudness de la pista para la página "Señal" (ruta de señal / nerd stats).
   function loadNpInfo() { const c = cur(); if (!c || !c.trackId) { npInfo = null; npInfoTrack = -1; return; } if (npInfoTrack === c.trackId && npInfo) return; npInfoTrack = c.trackId; npInfo = null; fetch('/api/trackinfo?track=' + c.trackId).then(r => r.json()).then(j => { const cc = cur(); if (cc && cc.trackId === npInfoTrack) { npInfo = j; if (npfs && npfs.style.display === 'flex' && npPage === 'signal') renderNpFs(); } }).catch(() => {}); }
+
+  // ── paleta dinámica de la portada (color dominante + acento vibrante), acotada al fullscreen ──
+  function loadPalette(albumId) {
+    if (albumId == null) return; if (npPaletteId === albumId && npPalette) { applyNpPalette(); return; }
+    npPaletteId = albumId; npPalette = null;
+    const img = new Image();
+    img.onload = () => {
+      if (npPaletteId !== albumId) return;
+      try {
+        const n = 28, cv = document.createElement('canvas'); cv.width = n; cv.height = n;
+        const g = cv.getContext('2d'); g.drawImage(img, 0, 0, n, n);
+        const d = g.getImageData(0, 0, n, n).data;
+        let rs = 0, gs = 0, bs = 0, cnt = 0, best = null, bestScore = -1;
+        for (let i = 0; i < d.length; i += 4) {
+          const r = d[i], gg = d[i + 1], b = d[i + 2], a = d[i + 3]; if (a < 128) continue;
+          rs += r; gs += gg; bs += b; cnt++;
+          const mx = Math.max(r, gg, b), mn = Math.min(r, gg, b), sat = mx - mn, lum = (mx + mn) / 2;
+          const score = sat * (1 - Math.abs(lum - 140) / 200);                       // vibrante pero ni muy oscuro ni quemado
+          if (score > bestScore) { bestScore = score; best = [r, gg, b]; }
+        }
+        if (!cnt) { npPalette = null; return; }
+        const avg = [rs / cnt | 0, gs / cnt | 0, bs / cnt | 0];
+        npPalette = { bg: avg, accent: clampAccent(best || avg) };
+        applyNpPalette();
+      } catch (e) { npPalette = null; }
+    };
+    img.onerror = () => { if (npPaletteId === albumId) npPalette = null; };
+    img.src = '/api/cover?rg=' + albumId;
+  }
+  // lleva un color a una luminosidad legible sobre fondo oscuro (acento)
+  function clampAccent(rgb) {
+    let [r, g, b] = rgb.map(v => v / 255); const mx = Math.max(r, g, b), mn = Math.min(r, g, b); let h, s, l = (mx + mn) / 2;
+    if (mx === mn) { h = s = 0; } else { const dd = mx - mn; s = l > 0.5 ? dd / (2 - mx - mn) : dd / (mx + mn); h = mx === r ? (g - b) / dd + (g < b ? 6 : 0) : mx === g ? (b - r) / dd + 2 : (r - g) / dd + 4; h /= 6; }
+    s = Math.max(0.45, Math.min(0.85, s)); l = Math.max(0.56, Math.min(0.7, l));     // saturado y claro para contraste
+    const hue2 = (p, q, t) => { if (t < 0) t += 1; if (t > 1) t -= 1; if (t < 1 / 6) return p + (q - p) * 6 * t; if (t < 1 / 2) return q; if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6; return p; };
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+    return [hue2(p, q, h + 1 / 3), hue2(p, q, h), hue2(p, q, h - 1 / 3)].map(v => Math.round(v * 255));
+  }
+  function applyNpPalette() {
+    if (!npfs) return;
+    if (!vizOn || !npPalette) { npfs.style.background = 'var(--bg)'; npfs.style.removeProperty('--accent'); return; }
+    const [r, g, b] = npPalette.bg, a = npPalette.accent;
+    npfs.style.background = `linear-gradient(180deg, rgba(${r},${g},${b},.26) 0%, var(--bg) 62%)`;   // tinte suave del dominante
+    npfs.style.setProperty('--accent', `rgb(${a[0]},${a[1]},${a[2]})`);                              // acento vibrante, SOLO en el fullscreen
+  }
+  // ── visualizador audio-reactivo: espectro bajo la portada (AnalyserNode -> canvas) ──
+  function startViz() { if (vizRAF) return; vizRAF = requestAnimationFrame(vizLoop); }
+  function vizLoop() {
+    vizRAF = 0;
+    if (!vizOn || !analyser || !npfs || npfs.style.display !== 'flex' || npPage !== 'cover') return;
+    const cv = document.getElementById('npviz'); if (!cv) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1), W = cv.clientWidth, H = cv.clientHeight;
+    if (!W || !H) { vizRAF = requestAnimationFrame(vizLoop); return; }
+    if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+    const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+    analyser.getByteFrequencyData(vizData);
+    const NB = 56, half = vizData.length * 0.72, gap = 2, bw = (W - (NB - 1) * gap) / NB;
+    const acc = (npPalette && npPalette.accent) ? npPalette.accent : null;
+    for (let i = 0; i < NB; i++) {
+      const lo = Math.floor(Math.pow(i / NB, 1.7) * half), hi = Math.max(lo + 1, Math.floor(Math.pow((i + 1) / NB, 1.7) * half));
+      let m = 0; for (let j = lo; j < hi && j < vizData.length; j++) if (vizData[j] > m) m = vizData[j];
+      const bh = Math.max(1, (m / 255) * H), x = i * (bw + gap), y = H - bh;
+      g.fillStyle = acc ? `rgba(${acc[0]},${acc[1]},${acc[2]},${0.35 + 0.5 * (m / 255)})` : `rgba(140,140,150,${0.3 + 0.5 * (m / 255)})`;
+      g.fillRect(x, y, bw, bh);
+    }
+    vizRAF = requestAnimationFrame(vizLoop);
+  }
+  // ── sleep timer (temporizador de apagado) con desvanecido suave al final ──
+  const SLEEPOPTS = [['15m', 15], ['30m', 30], ['45m', 45], ['60m', 60], ['fin', 'track']];
+  function sleepLabel() { if (sleepMode === 'off' || !sleepUntil) return ''; const s = Math.max(0, Math.round((sleepUntil - Date.now()) / 1000)); const m = Math.floor(s / 60); return m + ':' + String(s % 60).padStart(2, '0'); }
+  function setSleep(mode) {
+    if (sleepTick) { clearInterval(sleepTick); sleepTick = null; } sleepFaded = false;
+    if (ctx && masterGain) { try { masterGain.gain.cancelScheduledValues(ctx.currentTime); masterGain.gain.setValueAtTime(vol, ctx.currentTime); } catch (e) {} }   // deshace cualquier fade previo
+    if (mode === sleepMode || mode === 'off') { sleepMode = 'off'; sleepUntil = 0; renderEqPanel(); return; }
+    sleepMode = mode;
+    const def = SLEEPOPTS.find(o => o[0] === mode), v = def ? def[1] : 30;
+    if (v === 'track') { const len = lenMs(), p = posMs(); sleepUntil = Date.now() + Math.max(1000, (len - p) || 1000); }   // fin de pista = tiempo restante
+    else sleepUntil = Date.now() + v * 60000;
+    sleepTick = setInterval(sleepCheck, 1000); renderEqPanel();
+  }
+  function sleepCheck() {
+    if (sleepMode === 'off') return; const left = sleepUntil - Date.now();
+    const lab = document.getElementById('sleepval'); if (lab) lab.textContent = sleepLabel();
+    if (left <= 4000 && !sleepFaded && ctx && masterGain) { sleepFaded = true; try { const t = ctx.currentTime; masterGain.gain.cancelScheduledValues(t); masterGain.gain.setValueAtTime(masterGain.gain.value, t); masterGain.gain.linearRampToValueAtTime(0.0001, t + Math.max(0.5, left / 1000)); } catch (e) {} }   // desvanecido suave los últimos ~4 s
+    if (left <= 0) sleepFire();
+  }
+  function sleepFire() {
+    if (sleepTick) { clearInterval(sleepTick); sleepTick = null; }
+    sleepMode = 'off'; sleepUntil = 0;
+    if (playing) toggle();                                                           // pausa
+    if (ctx && masterGain) { try { masterGain.gain.cancelScheduledValues(ctx.currentTime); masterGain.gain.setValueAtTime(vol, ctx.currentTime); } catch (e) {} }   // restaura para la próxima reproducción
+    sleepFaded = false; if (eqpanel && eqpanel.style.display === 'block') renderEqPanel();
+  }
+  function setVizOn(on) { vizOn = on; persistViz(); applyNpPalette(); if (vizOn && npfs && npfs.style.display === 'flex' && npPage === 'cover') startViz(); if (npfs && npfs.style.display === 'flex') renderNpFs(); }
   // Letra con sincronía: comparte lyCache/parseLRC con el panel de esquina.
   function npEnsureLyrics(cb) { const c = cur(); if (!c || !c.trackId) { cb && cb(null); return; } if (lyCache[c.trackId]) { cb && cb(lyCache[c.trackId]); return; } fetch('/api/lyrics?track=' + c.trackId).then(r => r.json()).then(j => { j.syncedArr = j.synced ? parseLRC(j.synced) : null; lyCache[c.trackId] = j; const cc = cur(); if (cc && cc.trackId === c.trackId) cb && cb(j); }).catch(() => cb && cb(null)); }
   const npMd = s => window.mdToHtml ? window.mdToHtml(s) : esc(s).replace(/\n/g, '<br>');
@@ -267,7 +369,9 @@ window.player = (function () {
     // 'cover' (por defecto): carátula grande + título/artista + "a continuación"
     const up = q.slice(idx + 1, idx + 6);
     return `<div style="width:min(44vh,300px);aspect-ratio:1;border-radius:16px;overflow:hidden;box-shadow:0 12px 44px rgba(0,0,0,.28);margin-top:6px;flex:none"><img src="/api/cover?rg=${c.albumId}" alt="" style="width:100%;height:100%;object-fit:cover;display:block"></div>
-      <div style="text-align:center;margin-top:16px">
+      <div style="width:min(44vh,300px);height:46px;margin-top:8px;flex:none;position:relative">${vizOn ? `<canvas id="npviz" style="width:100%;height:100%;display:block"></canvas>` : ''}
+        <span data-act="viztoggle" title="Visualizador" style="position:absolute;right:0;top:-2px;cursor:pointer;color:var(--${vizOn ? 'accent' : 'text-2'});display:inline-flex">${ic('visualizer', 15)}</span></div>
+      <div style="text-align:center;margin-top:10px">
         <div style="font-family:var(--serif);font-size:26px;font-weight:600;line-height:1.2">${esc(c.title)}</div>
         <div style="font-size:16px;color:var(--text-2);margin-top:5px">${esc(c.artist || '')}${c.album ? ` · <a href="album.html?id=${c.albumId}" style="color:var(--text-2)">${esc(c.album)}</a>` : ''}</div>
       </div>
@@ -325,6 +429,8 @@ window.player = (function () {
     if (npPage === 'lyrics') npEnsureLyrics(renderNpLyInto);
     if ((npPage === 'credits' || npPage === 'review') && !npMeta) loadNpMeta();
     if (npPage === 'signal') loadNpInfo();
+    applyNpPalette();
+    if (npPage === 'cover' && vizOn) startViz();
   }
   function ensureBar() { if (bar) return; bar = document.createElement('div'); bar.id = 'nowbar'; bar.setAttribute('style', 'position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);border-top:1px solid var(--border);padding:8px 16px;display:none;align-items:center;gap:14px'); document.body.appendChild(bar); }
   const ic = (n, s) => window.icon ? window.icon(n, s || 18) : '';           // icono de línea monocromo
@@ -743,6 +849,10 @@ window.player = (function () {
     h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">' + Object.keys(EQPRE).map(k => `<span data-pre="${k}" style="cursor:pointer;font-size:12px;padding:3px 9px;border-radius:999px;background:var(--surface-2);text-transform:capitalize">${k}</span>`).join('') + '</div>';
     h += EQF.map((f, i) => `<div style="display:flex;align-items:center;gap:8px;margin:4px 0;opacity:${eqOn ? 1 : .5}"><span style="width:38px;font-size:11px;color:var(--text-2);text-align:right">${EQLAB[i]}</span><input class="eqband" data-i="${i}" type="range" min="-12" max="12" step="1" value="${eqGains[i]}" style="flex:1;accent-color:var(--accent)"><span id="eqval${i}" style="width:48px;font-size:11px;text-align:right">${(eqGains[i] > 0 ? '+' : '') + eqGains[i]} dB</span></div>`).join('');
     h += `<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px"><span style="font-weight:600">Crossfade</span><span id="xfadeval" style="font-size:12px;color:var(--text-2)">${xfade === 0 ? 'desactivado' : xfade.toFixed(1).replace('.0', '') + ' s'}</span></div><input data-act="xfade" type="range" min="0" max="12" step="0.5" value="${xfade}" style="width:100%;accent-color:var(--accent)"><div style="font-size:11px;color:var(--text-2);margin-top:3px">Fundido entre pistas al cambiar automáticamente.</div></div>`;
+    // temporizador de apagado (sleep timer) con desvanecido suave
+    h += `<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px"><span style="font-weight:600;display:inline-flex;align-items:center;gap:6px">${ic('sleep', 14)}Temporizador</span><span id="sleepval" style="font-size:12px;color:var(--accent)">${sleepLabel()}</span></div><div style="display:flex;gap:6px;flex-wrap:wrap">`
+      + SLEEPOPTS.map(([k, v]) => `<span data-sleep="${k}" style="cursor:pointer;font-size:12px;padding:4px 11px;border-radius:999px;background:${sleepMode === k ? 'var(--accent)' : 'var(--surface-2)'};color:${sleepMode === k ? '#fff' : 'var(--text-2)'}">${k === 'fin' ? 'Fin de pista' : k}</span>`).join('')
+      + `${sleepMode !== 'off' ? `<span data-sleep="off" style="cursor:pointer;font-size:12px;padding:4px 11px;border-radius:999px;background:var(--surface-2);color:var(--text-2)">Cancelar</span>` : ''}</div><div style="font-size:11px;color:var(--text-2);margin-top:5px">Pausa la reproducción al agotarse, con un desvanecido suave.</div></div>`;
     h += `<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px"><span data-act="dspopen" style="cursor:pointer;color:var(--accent);font-size:12.5px;display:inline-flex;align-items:center;gap:5px">${ic('eq', 14)}EQ paramétrico y convolución${(peqOn || convOn) ? ' · activo' : ''}</span></div>`;
     eqpanel.innerHTML = h;
   }
@@ -846,6 +956,7 @@ window.player = (function () {
     if (e.target.closest('#zonepanel [data-act="uoff"]')) { setUpnpMode(false); return; }
     const rg = e.target.closest('#eqpanel [data-rg]'); if (rg) { setRgMode(rg.dataset.rg); return; }
     const pre = e.target.closest('#eqpanel [data-pre]'); if (pre) { setPreset(pre.dataset.pre); return; }
+    const sl = e.target.closest('#eqpanel [data-sleep]'); if (sl) { setSleep(sl.dataset.sleep); return; }
     if (e.target.closest('#eqpanel [data-act="eqtoggle"]')) { setEqEnabled(!eqOn); return; }
     if (e.target.closest('#eqpanel [data-act="dspopen"]')) { if (eqpanel) eqpanel.style.display = 'none'; toggleDspPanel(); return; }
     const prm = e.target.closest('#dsppanel .pqrm'); if (prm) { removePeqBand(+prm.dataset.i); return; }
@@ -870,6 +981,7 @@ window.player = (function () {
     else if (k === 'toggle') toggle();
     else if (k === 'npopen' || k === 'npclose') toggleNpFs();
     else if (k === 'nppage') { npPage = a.dataset.page; npLyActive = -1; renderNpFs(); }
+    else if (k === 'viztoggle') setVizOn(!vizOn);
     else if (k === 'npjump') jumpTo(+a.dataset.i);
     else if (k === 'eq') toggleEqPanel();
     else if (k === 'lyrics') toggleLyPanel();
