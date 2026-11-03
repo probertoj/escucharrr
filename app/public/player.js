@@ -176,6 +176,8 @@ window.player = (function () {
 
   // ── waveform (barra de onda tipo Roon): picos 0-255 por pista, servidos por /api/peaks ──
   let curPeaks = null, curPeaksTrack = -1;
+  // scrubbing: arrastrar sobre la onda para buscar + burbuja de tiempo (hover y arrastre)
+  let scrubbing = false, scrubEl = null, scrubFrac = 0, wfBubble = null;
   function fetchPeaks() {
     const c = cur(); if (!c || !c.trackId) { curPeaks = null; curPeaksTrack = -1; return; }
     if (c.trackId === curPeaksTrack) return;
@@ -361,7 +363,7 @@ window.player = (function () {
     if (npfs && npfs.style.display === 'flex') renderNpFs();
     emit();
   }
-  function progress() { const c = cur(); if (!c) return; const len = lenMs(), p = posMs(); const frac = len ? Math.min(100, p / len * 100) : 0; const pr = document.getElementById('npprog'), wf = document.getElementById('npwf'), el = document.getElementById('npel'); if (pr && len) pr.style.width = frac + '%'; if (wf && len) wf.style.clipPath = 'inset(0 ' + (100 - frac) + '% 0 0)'; if (el) el.textContent = mmss(p);
+  function progress() { if (scrubbing) return; const c = cur(); if (!c) return; const len = lenMs(), p = posMs(); const frac = len ? Math.min(100, p / len * 100) : 0; const pr = document.getElementById('npprog'), wf = document.getElementById('npwf'), el = document.getElementById('npel'); if (pr && len) pr.style.width = frac + '%'; if (wf && len) wf.style.clipPath = 'inset(0 ' + (100 - frac) + '% 0 0)'; if (el) el.textContent = mmss(p);
     const pr2 = document.getElementById('npfsprog'), wf2 = document.getElementById('npfswf'), el2 = document.getElementById('npfsel'); if (pr2 && len) pr2.style.width = frac + '%'; if (wf2 && len) wf2.style.clipPath = 'inset(0 ' + (100 - frac) + '% 0 0)'; if (el2) el2.textContent = mmss(p);
     maybeScrobble(); maybeRadio(); syncLy(); syncNpLy(); }
   const emit = () => document.dispatchEvent(new Event('player:change'));
@@ -838,6 +840,34 @@ window.player = (function () {
     const eb = e.target.closest('#eqpanel .eqband'); if (eb) { setEqBand(+eb.dataset.i, parseInt(eb.value, 10)); return; }
     const xf = e.target.closest('#eqpanel [data-act="xfade"]'); if (xf) { setXfade(parseFloat(xf.value)); }
   });
+
+  // ── scrubbing de la onda: arrastrar para buscar + burbuja de tiempo (hover y arrastre) ──
+  function seekBoxFrom(t) { return t && t.closest ? t.closest('#nowbar [data-act="seek"], #npfs [data-act="seek"]') : null; }
+  function fracFrom(box, clientX) { const b = box.getBoundingClientRect(); return b.width ? Math.max(0, Math.min(1, (clientX - b.left) / b.width)) : 0; }
+  function ensureWfBubble() { if (wfBubble) return wfBubble; wfBubble = document.createElement('div'); wfBubble.id = 'wfbubble'; wfBubble.setAttribute('style', 'position:fixed;z-index:60;pointer-events:none;background:var(--surface-2);color:var(--text);font-size:11px;font-variant-numeric:tabular-nums;padding:2px 6px;border-radius:5px;box-shadow:0 2px 8px rgba(0,0,0,.3);display:none;transform:translateX(-50%)'); document.body.appendChild(wfBubble); return wfBubble; }
+  function showWfBubble(clientX, topY, frac) { const len = lenMs(); if (!len) return; const b = ensureWfBubble(); b.textContent = mmss(frac * len); b.style.left = clientX + 'px'; b.style.top = (topY - 24) + 'px'; b.style.display = 'block'; }
+  function hideWfBubble() { if (wfBubble) wfBubble.style.display = 'none'; }
+  // pinta el relleno (onda + barra) en una posición dada SIN buscar aún (preview de arrastre)
+  function wfPreview(frac) { const len = lenMs(); const f = Math.max(0, Math.min(100, frac * 100)); const t = mmss(frac * len);
+    const wf = document.getElementById('npwf'), pr = document.getElementById('npprog'), el = document.getElementById('npel');
+    if (wf) wf.style.clipPath = 'inset(0 ' + (100 - f) + '% 0 0)'; if (pr) pr.style.width = f + '%'; if (el) el.textContent = t;
+    const wf2 = document.getElementById('npfswf'), pr2 = document.getElementById('npfsprog'), el2 = document.getElementById('npfsel');
+    if (wf2) wf2.style.clipPath = 'inset(0 ' + (100 - f) + '% 0 0)'; if (pr2) pr2.style.width = f + '%'; if (el2) el2.textContent = t; }
+  function seekable() { if (irStation) return false; const c = cur(); return !!(c && c.playable !== false && lenMs()); }
+  document.addEventListener('pointerdown', e => {
+    const box = seekBoxFrom(e.target); if (!box || !seekable()) return;
+    scrubbing = true; scrubEl = box; scrubFrac = fracFrom(box, e.clientX);
+    try { box.setPointerCapture(e.pointerId); } catch (x) {}
+    showWfBubble(e.clientX, box.getBoundingClientRect().top, scrubFrac); wfPreview(scrubFrac); e.preventDefault();
+  });
+  document.addEventListener('pointermove', e => {
+    if (scrubbing && scrubEl) { scrubFrac = fracFrom(scrubEl, e.clientX); showWfBubble(e.clientX, scrubEl.getBoundingClientRect().top, scrubFrac); wfPreview(scrubFrac); return; }
+    const box = seekBoxFrom(e.target); if (!box || !seekable()) { hideWfBubble(); return; }
+    showWfBubble(e.clientX, box.getBoundingClientRect().top, fracFrom(box, e.clientX));   // hover: solo la burbuja, no mueve el relleno
+  });
+  function endScrub(e) { if (!scrubbing) return; scrubbing = false; const box = scrubEl; scrubEl = null; hideWfBubble(); const f = box ? fracFrom(box, e.clientX) : scrubFrac; seekFrac(f); }
+  document.addEventListener('pointerup', endScrub);
+  document.addEventListener('pointercancel', () => { if (scrubbing) { scrubbing = false; scrubEl = null; hideWfBubble(); } });
   // cambios en el panel DSP (selects y campos numéricos: 'change' para no re-render mientras se teclea)
   document.addEventListener('change', e => {
     const t = e.target;
