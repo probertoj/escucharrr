@@ -226,6 +226,10 @@ function buildQ(db) { return {
      JOIN release_group_genre rgg ON rgg.release_group_id=rg.id
      JOIN genre g ON g.id=rgg.genre_id
      WHERE acn.artist_id=? GROUP BY g.id ORDER BY n DESC, g.name LIMIT 8`),
+  artistGenreIds: db.prepare(`SELECT rgg.genre_id, count(*) n FROM release_group rg
+     JOIN artist_credit_name acn ON acn.artist_credit_id=rg.artist_credit_id
+     JOIN release_group_genre rgg ON rgg.release_group_id=rg.id
+     WHERE acn.artist_id=? GROUP BY rgg.genre_id ORDER BY n DESC LIMIT 12`),
   // ── género ──
   genreAlbums: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
      FROM v_album a JOIN release_group_genre rgg ON rgg.release_group_id=a.id
@@ -375,6 +379,45 @@ function radio(seedTrackId, excludeRecIds, n) {
      ORDER BY shared DESC, COALESCE((SELECT tier_rank FROM v_album WHERE id=rg.id),0) DESC, RANDOM() LIMIT ?`;
   const rows = db.prepare(sql).all(...genreIds, ...ex, n);
   return rows.map(t => ({ trackId: t.trackId, recording_id: t.recording_id, title: t.title, artist: t.artist, albumId: t.albumId, length_ms: t.length_ms, playable: true, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs }));
+}
+// ── Instant Mix / "más como esto": lista grande y DIVERSA por afinidad (géneros + artista) ──
+// kind: 'album' | 'artist' | 'track'. Mismo núcleo de similitud que la radio, pero devuelve ~40
+// pistas con tope por artista/álbum para que no domine uno. Excluye lo marcado bad_for_radio.
+function mix(kind, id, n) {
+  n = Math.min(Math.max(parseInt(n, 10) || 40, 5), 80);
+  let genreIds = [], artistName = null;
+  if (kind === 'album') { genreIds = Q.albumGenreIds.all(id).map(r => r.genre_id); artistName = (Q.albumMainArtist.get(id) || {}).name || null; }
+  else if (kind === 'track') { const sa = Q.trackAlbum.get(id); if (sa) { genreIds = Q.albumGenreIds.all(sa.id).map(r => r.genre_id); artistName = (Q.albumMainArtist.get(sa.id) || {}).name || null; } }
+  else if (kind === 'artist') { genreIds = Q.artistGenreIds.all(id).map(r => r.genre_id); artistName = (Q.artistName.get(id) || {}).name || null; }
+  if (!genreIds.length && !artistName) return [];
+  const gp = genreIds.length ? genreIds.map(() => '?').join(',') : 'NULL';
+  const over = Math.min(n * 4, 320);
+  const sql = `SELECT tr.id trackId, tr.recording_id, COALESCE(tr.title,r.title) title,
+       (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id,r.artist_credit_id) ORDER BY acn.position LIMIT 1) artist,
+       rg.id albumId, COALESCE(tr.length_ms,r.length_ms) length_ms,
+       (SELECT lf.gain_db FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) gain_db,
+       (SELECT lf.peak_dbfs FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) peak_dbfs,
+       (SELECT lf.album_gain_db FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) album_gain_db,
+       (SELECT lf.album_peak_dbfs FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) album_peak_dbfs,
+       (SELECT count(*) FROM release_group_genre g WHERE g.release_group_id=rg.id AND g.genre_id IN (${gp})) shared
+     FROM track tr JOIN recording r ON r.id=tr.recording_id JOIN medium m ON m.id=tr.medium_id
+     JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id
+     WHERE EXISTS(SELECT 1 FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id)
+       AND NOT EXISTS(SELECT 1 FROM flag f2 WHERE f2.subject_type='recording' AND f2.subject_id=tr.recording_id AND f2.flag='bad_for_radio')
+       AND (EXISTS(SELECT 1 FROM release_group_genre g2 WHERE g2.release_group_id=rg.id AND g2.genre_id IN (${gp}))
+            OR (SELECT acn3.name FROM artist_credit_name acn3 WHERE acn3.artist_credit_id=rg.artist_credit_id AND acn3.position=1)=?)
+     GROUP BY tr.recording_id
+     ORDER BY shared DESC, COALESCE((SELECT tier_rank FROM v_album WHERE id=rg.id),0) DESC, RANDOM() LIMIT ?`;
+  const rows = db.prepare(sql).all(...genreIds, ...genreIds, artistName || '\u0000', over);
+  const perArtist = {}, perAlbum = {}, out = [];
+  for (const t of rows) {                                                       // diversidad: máx 3 por artista, 2 por álbum
+    const a = (t.artist || '').toLowerCase();
+    if ((perArtist[a] || 0) >= 3 || (perAlbum[t.albumId] || 0) >= 2) continue;
+    perArtist[a] = (perArtist[a] || 0) + 1; perAlbum[t.albumId] = (perAlbum[t.albumId] || 0) + 1;
+    out.push({ trackId: t.trackId, recording_id: t.recording_id, title: t.title, artist: t.artist, albumId: t.albumId, length_ms: t.length_ms, playable: true, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs });
+    if (out.length >= n) break;
+  }
+  return out;
 }
 // Letra de una pista: caché local (incl. caché negativa) y, si no, LRCLIB.
 async function getLyrics(trackId) {
@@ -1785,6 +1828,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/tag') { const name = u.searchParams.get('name'); const albums = Q.tagAlbums.all(name); return albums.length ? sendJSON(res, { name, albums }) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/discover') return sendJSON(res, discover({ day: u.searchParams.get('day'), notRecentDays: u.searchParams.get('nrdays') }));
     if (u.pathname === '/api/radio') { const seed = parseInt(u.searchParams.get('seed'), 10); const ex = (u.searchParams.get('exclude') || '').split(',').map(x => parseInt(x, 10)).filter(Boolean); return sendJSON(res, { tracks: seed ? radio(seed, ex, u.searchParams.get('n')) : [] }); }
+    if (u.pathname === '/api/mix') { const al = parseInt(u.searchParams.get('album'), 10), ar = parseInt(u.searchParams.get('artist'), 10), tr = parseInt(u.searchParams.get('track'), 10), nn = u.searchParams.get('n'); const kind = al ? 'album' : ar ? 'artist' : tr ? 'track' : null; const kid = al || ar || tr; return sendJSON(res, { tracks: kind ? mix(kind, kid, nn) : [] }); }
     if (u.pathname === '/api/home') return sendJSON(res, home());
     if (u.pathname === '/api/inspector') { const bk = u.searchParams.get('bucket'); return sendJSON(res, bk ? inspectorBucket(bk, u.searchParams.get('limit'), u.searchParams.get('offset')) : inspectorCounts()); }
     if (u.pathname === '/' || u.pathname === '') return sendFile(res, 'index.html');

@@ -180,6 +180,8 @@ window.player = (function () {
   function setRadio(on) { radioOn = !!on; try { localStorage.setItem('escucharrr.radio', radioOn ? '1' : '0'); } catch (e) {} if (radioOn) maybeRadio(); render(); }
   // pulgar abajo: marca la grabación como bad_for_radio (el motor la excluye) y salta a la siguiente
   function thumbDown() { const c = cur(); if (!c || !c.recording_id) return; spost('/api/radio/thumbdown', { recording_id: c.recording_id }); const rid = c.recording_id; q = q.filter((t, i) => i <= idx || t.recording_id !== rid); save(); next(); }
+  // Instant Mix: reproduce una mezcla por afinidad (álbum/artista/pista) — lista finita y diversa
+  function playMix(kind, id) { fetch('/api/mix?' + encodeURIComponent(kind) + '=' + encodeURIComponent(id) + '&n=40').then(r => r.json()).then(j => { const tr = j.tracks || []; if (!tr.length) { alert('No hay suficientes pistas afines para una mezcla.'); return; } q = tr; save(); start(0); }).catch(() => {}); }
   // sembrar la radio desde un álbum: reproduce y auto-extiende con pistas afines
   function radioFrom(albumId) { fetch('/api/album?id=' + albumId).then(r => r.json()).then(a => { const tr = (a.tracks || []).map(t => ({ trackId: t.trackId, recording_id: t.recording_id, title: t.title, artist: a.artist, albumId: a.id, length_ms: t.length_ms, playable: t.playable !== 0, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs })); if (!tr.length) { alert('Este álbum aún no tiene pistas en tu biblioteca.'); return; } q = tr; radioOn = true; try { localStorage.setItem('escucharrr.radio', '1'); } catch (e) {} start(0); }); }
   // ── deshacer cambios de cola (quitar / vaciar lo próximo) ──
@@ -1085,5 +1087,5 @@ window.player = (function () {
 
   return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain, getZone, getAudio, getNative, setNativeMode, setRadio, undo,
     getSettings, setXfade, setRgMode, setEqEnabled, setEqBand, setPreset, openOutput: toggleZPanel, openEq: toggleEqPanel, openDsp: toggleDspPanel,
-    playRadio, stopRadio, getRadio, radioFrom, thumbDown };
+    playRadio, stopRadio, getRadio, radioFrom, thumbDown, playMix };
 })();

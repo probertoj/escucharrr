@@ -74,6 +74,7 @@ function renderArtist(a){
         ${a.disambiguation?`<div style="color:var(--text-2);font-size:14px">${esc(a.disambiguation)}</div>`:''}
         <div style="margin-top:8px">${genres}</div>
         <div style="margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)">Tier</span> ${tier}</div>
+        <div style="margin-top:12px"><button id="mixartist" title="Mezcla afín a este artista" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('music',15)}Mezcla</button></div>
       </div>
     </div>
     ${bio}
@@ -83,6 +84,8 @@ function renderArtist(a){
 // plega las bios largas (estilo Roon toggle_review)
 function applyBioCollapse(){const box=document.getElementById('biobox');if(!box)return;const bt=box.querySelector('.biotext'),tog=box.querySelector('.revtoggle');if(!bt||!tog)return;box.classList.remove('collapsed');tog.hidden=true;if(bt.scrollHeight>280){box.classList.add('collapsed');tog.hidden=false;tog.textContent='Ver más';}}
 document.addEventListener('click',e=>{const rt=e.target.closest('#app .revtoggle');if(!rt)return;const box=document.getElementById('biobox');const col=box.classList.toggle('collapsed');rt.textContent=col?'Ver más':'Ver menos';});
+// Instant Mix del artista
+document.addEventListener('click',e=>{if(e.target.closest('#mixartist')){player.playMix('artist',id);}});
 // cambiar de pestaña (discografía/apariciones/producción/obras)
 document.addEventListener('click',e=>{const t=e.target.closest('#app .atab');if(!t)return;const k=t.dataset.tab;
   document.querySelectorAll('#app .atab').forEach(b=>b.classList.toggle('on',b.dataset.tab===k));
