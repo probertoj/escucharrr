@@ -345,6 +345,13 @@ function buildQ(db) { return {
              GROUP BY rel.release_group_id) lp
      JOIN v_album a ON a.id = lp.rgid
      WHERE lp.last_played < datetime('now', ?) ORDER BY lp.last_played ASC LIMIT 12`),
+  // "Sigue escuchando": álbumes con reproducción más reciente (para retomar)
+  homeRecentlyPlayed: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.tier_key, lp.last_played
+     FROM (SELECT rel.release_group_id rgid, MAX(p.played_at) last_played
+             FROM play p JOIN track tr ON (p.track_id=tr.id OR p.recording_id=tr.recording_id)
+             JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
+             GROUP BY rel.release_group_id) lp
+     JOIN v_album a ON a.id = lp.rgid ORDER BY lp.last_played DESC LIMIT 12`),
 }; }
 let Q = buildQ(db);
 function logPlay(j) {
@@ -431,8 +438,19 @@ async function getLyrics(trackId) {
   try { Q.lyricsUpsert.run(rec, r.found ? 1 : 0, r.instrumental ? 1 : 0, r.plain, r.synced, 'lrclib'); } catch (e) {}
   return { found: r.found, instrumental: r.instrumental, plain: r.plain, synced: r.synced, source: 'lrclib', cached: false };
 }
+// álbumes afines a un conjunto de géneros (overview "porque escuchaste X"), excluye al propio artista
+function albumsByGenreIds(gids, excludeArtist, n) {
+  if (!gids || !gids.length) return [];
+  const gp = gids.map(() => '?').join(',');
+  const sql = `SELECT a.id,a.title,a.artist,a.year,a.tier_key,
+       count(*) shared FROM v_album a JOIN release_group_genre rgg ON rgg.release_group_id=a.id
+     WHERE rgg.genre_id IN (${gp})${excludeArtist ? ' AND a.artist <> ?' : ''}
+     GROUP BY a.id ORDER BY shared DESC, a.first_release DESC LIMIT ?`;
+  const args = excludeArtist ? [...gids, excludeArtist, n] : [...gids, n];
+  return db.prepare(sql).all(...args);
+}
 function home() {
-  return {
+  const base = {
     counts: { artists: Q.cArtists.get().n, albums: Q.cAlbums.get().n, tracks: Q.cTracks.get().n, genres: Q.cGenres.get().n },
     recent: Q.recent.all(),
     tiers: Q.tiers.all(),
@@ -444,6 +462,16 @@ function home() {
       topReleases: Q.topReleases.all(),
     },
   };
+  // ── overview curado (estilo Goverview_*): retomar, redescubrir, porque escuchaste X ──
+  base.resume = Q.homeRecentlyPlayed.all();                       // Sigue escuchando
+  base.rediscover = Q.discNotRecent.all('-90 days');              // Redescubre (sin sonar >90 días)
+  const ta = base.listening.topArtists[0];
+  if (ta && ta.aid) {
+    const gids = Q.artistGenreIds.all(ta.aid).map(r => r.genre_id);
+    base.becauseArtist = ta.artist;
+    base.because = albumsByGenreIds(gids, ta.artist, 12);
+  }
+  return base;
 }
 
 // Búsqueda FTS5: prefijo por token (instantánea) + ranking bm25 (completa).

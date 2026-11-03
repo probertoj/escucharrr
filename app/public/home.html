@@ -27,8 +27,13 @@ nav.top a{color:var(--text-2)} nav.top a.on{color:var(--text);font-weight:600}
   <h1 id="greet" style="font-size:30px">Hola</h1>
   <div class="metrics" id="metrics"></div>
 
-  <div class="sec">Añadido recientemente</div>
+  <div id="resumeSec" style="display:none"><div class="sec">Sigue escuchando</div><div class="row" id="resume"></div></div>
+  <div id="becauseSec" style="display:none"><div class="sec" style="margin-top:22px" id="becauseTitle">Porque escuchaste</div><div class="row" id="because"></div></div>
+
+  <div class="sec" style="margin-top:22px">Añadido recientemente</div>
   <div class="row" id="recent"></div>
+
+  <div id="rediscoverSec" style="display:none"><div class="sec" style="margin-top:22px">Redescubre</div><div class="row" id="rediscover"></div></div>
 
   <div class="two" style="margin-top:22px">
     <div>
@@ -62,7 +67,13 @@ function load(){fetch('/api/home').then(r=>r.json()).then(d=>{
   const c=d.counts;
   metrics.innerHTML=[['Artistas',c.artists],['Álbumes',c.albums],['Pistas',c.tracks],['Géneros',c.genres]]
     .map(([l,v])=>`<div class="metric"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
-  recent.innerHTML=d.recent.map(a=>`<a class="card" href="album.html?id=${a.id}"><div class="cov" style="position:relative;border-radius:10px;overflow:hidden;aspect-ratio:1">${cover(a.id)}${a.tier_key?`<span class="badge" style="background:${TC[a.tier_key][0]};color:${TC[a.tier_key][1]}">${TN[a.tier_key]}</span>`:''}</div><div class="t">${esc(a.title)}</div><div class="s">${esc(a.artist)} · ${a.year||'—'}</div></a>`).join('');
+  const card=a=>`<a class="card" href="album.html?id=${a.id}"><div class="cov" style="position:relative;border-radius:10px;overflow:hidden;aspect-ratio:1">${cover(a.id)}${a.tier_key?`<span class="badge" style="background:${TC[a.tier_key][0]};color:${TC[a.tier_key][1]}">${TN[a.tier_key]}</span>`:''}</div><div class="t">${esc(a.title)}</div><div class="s">${esc(a.artist)} · ${a.year||'—'}</div></a>`;
+  const fillRow=(id,secId,list)=>{const box=document.getElementById(id),sec=document.getElementById(secId);if(list&&list.length){box.innerHTML=list.map(card).join('');sec.style.display='';}else sec.style.display='none';};
+  recent.innerHTML=d.recent.map(card).join('');
+  fillRow('resume','resumeSec',d.resume);
+  if(d.becauseArtist)document.getElementById('becauseTitle').textContent='Porque escuchaste '+d.becauseArtist;
+  fillRow('because','becauseSec',d.because);
+  fillRow('rediscover','rediscoverSec',d.rediscover);
   const maxT=Math.max(1,...d.tiers.map(t=>t.n));
   tiers.innerHTML=d.tiers.map(t=>`<div class="tierbar"><span class="lab">${t.label}</span><div class="track"><div style="width:${Math.round(t.n/maxT*100)}%;height:100%;background:${(TC[t.key]||['#888'])[0]}"></div></div><span class="n">${t.n}</span></div>`).join('');
   document.getElementById('donut').innerHTML=donut(d.genres);
