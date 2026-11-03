@@ -1997,6 +1997,10 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/mix') { const al = parseInt(u.searchParams.get('album'), 10), ar = parseInt(u.searchParams.get('artist'), 10), tr = parseInt(u.searchParams.get('track'), 10), nn = u.searchParams.get('n'); const kind = al ? 'album' : ar ? 'artist' : tr ? 'track' : null; const kid = al || ar || tr; return sendJSON(res, { tracks: kind ? mix(kind, kid, nn) : [] }); }
     if (u.pathname === '/api/home') return sendJSON(res, home());
     if (u.pathname === '/api/inspector') { const bk = u.searchParams.get('bucket'); return sendJSON(res, bk ? inspectorBucket(bk, u.searchParams.get('limit'), u.searchParams.get('offset')) : inspectorCounts()); }
+    // SPA: una navegación a cualquier .html sirve el shell persistente (app.html); el router pide
+    // el contenido real con ?__frag=1 (→ fichero raw). Así el reproductor nunca se recarga.
+    const isFrag = u.searchParams.get('__frag') === '1';
+    if (!isFrag && (u.pathname === '/' || u.pathname === '' || (/\.html$/.test(u.pathname) && u.pathname !== '/app.html'))) return sendFile(res, 'app.html');
     if (u.pathname === '/' || u.pathname === '') return sendFile(res, 'index.html');
     return sendFile(res, u.pathname.replace(/^\//, ''));
   } catch (e) { res.writeHead(500); res.end(String(e.message)); }

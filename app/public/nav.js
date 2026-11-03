@@ -76,8 +76,10 @@
     });
   }
 
-  // API mínima para la página de ajustes
-  window.escunav = { getTheme: theme, setTheme: function (t) { try { localStorage.setItem(TKEY, t); } catch (e) {} applyTheme(t); var b = document.getElementById('themebtn'); if (b) { var x = THEMES[t] || THEMES.auto; b.innerHTML = ig(x.ico, 18); b.title = x.t; } }, THEMES: THEMES };
+  // re-marca la entrada activa (para la navegación SPA, sin recargar el documento)
+  function syncActive() { var act = activeHref(); var nav = document.getElementById('appnav'); if (!nav) return; nav.querySelectorAll('a.itm').forEach(function (a) { a.classList.toggle('on', a.getAttribute('href') === act); }); }
+  // API mínima para la página de ajustes / el router SPA
+  window.escunav = { getTheme: theme, setTheme: function (t) { try { localStorage.setItem(TKEY, t); } catch (e) {} applyTheme(t); var b = document.getElementById('themebtn'); if (b) { var x = THEMES[t] || THEMES.auto; b.innerHTML = ig(x.ico, 18); b.title = x.t; } }, THEMES: THEMES, syncActive: syncActive };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', build); else build();
 })();

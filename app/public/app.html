@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr</title>
+<link rel="stylesheet" href="styles.css">
+<style id="pagestyle"></style>
+</head>
+<body>
+<main id="view" aria-busy="true"></main>
+<script src="icons.js" defer></script>
+<script src="md.js" defer></script>
+<script src="nav.js" defer></script>
+<script src="player.js" defer></script>
+<script>
+// ── Shell SPA: el reproductor (audio + nowbar + pantalla completa) vive aquí y NUNCA se recarga;
+// las "páginas" se cargan por fetch dentro de #view, con routing en cliente. Así la música no se
+// corta al navegar (modelo de Roon: footer/transport persistente + navegación por vistas).
+(function () {
+  'use strict';
+  var view = document.getElementById('view');
+  var pageStyle = document.getElementById('pagestyle');
+  var pageAbort = new AbortController();
+  var PAGE_SCOPE = false;   // true mientras corre/vive una página: sus listeners se limpian al navegar
+
+  // ── shim: los listeners que registra una PÁGINA se atan a pageAbort (se quitan al navegar);
+  //    los del shell (player/nav, o marcados {_shell:true}) persisten. DOMContentLoaded de página
+  //    se ejecuta ya (el DOM del fragmento está puesto). ──
+  function wrapAEL(target) {
+    var orig = target.addEventListener.bind(target);
+    target.addEventListener = function (type, handler, opts) {
+      if (PAGE_SCOPE && !(opts && opts._shell)) {
+        if (type === 'DOMContentLoaded' || type === 'load') { queueMicrotask(function () { try { handler.call(target, new Event(type)); } catch (e) { console.error(e); } }); return; }
+        var o = (opts === true || opts === false) ? { capture: opts } : Object.assign({}, opts);
+        o.signal = pageAbort.signal;
+        return orig(type, handler, o);
+      }
+      return orig(type, handler, opts);
+    };
+    target.addEventListener._orig = orig;
+  }
+
+  // overlays que crean las páginas en <body> (modales/toasts) y que hay que limpiar al salir
+  function cleanupOverlays() { ['retowiz', 'idwiz', 'toast'].forEach(function (id) { var e = document.getElementById(id); if (e) e.remove(); }); document.querySelectorAll('body > .pagepop').forEach(function (e) { e.remove(); }); }
+
+  function samePath(a, b) { return a.pathname === b.pathname && a.search === b.search; }
+
+  async function loadRoute(href, push) {
+    var u = new URL(href, location.origin);
+    var frag = u.pathname + (u.search ? u.search + '&__frag=1' : '?__frag=1');
+    view.setAttribute('aria-busy', 'true');
+    var html;
+    try { html = await fetch(frag, { headers: { 'X-Frag': '1' } }).then(function (r) { return r.text(); }); }
+    catch (e) { view.innerHTML = '<div class="wrap"><p style="color:var(--text-2)">No se pudo cargar la página.</p></div>'; return; }
+    var doc = new DOMParser().parseFromString(html, 'text/html');
+    // estilos de la página (reemplazan, no acumulan)
+    pageStyle.textContent = Array.prototype.map.call(doc.querySelectorAll('style'), function (s) { return s.textContent; }).join('\n');
+    if (doc.title) document.title = doc.title;
+    // teardown de la página anterior
+    pageAbort.abort(); pageAbort = new AbortController();
+    cleanupOverlays();
+    // contenido = hijos del body menos <script> y <style>
+    var scripts = [];
+    view.innerHTML = '';
+    Array.prototype.forEach.call(doc.body.childNodes, function (n) {
+      if (n.nodeName === 'SCRIPT') { if (!n.getAttribute('src') && n.textContent.trim()) scripts.push(n.textContent); return; }
+      if (n.nodeName === 'STYLE') return;
+      view.appendChild(document.importNode(n, true));
+    });
+    if (push !== false) history.pushState({ spa: 1 }, '', u.pathname + u.search + u.hash);
+    if (window.escunav && escunav.syncActive) escunav.syncActive();
+    window.scrollTo(0, 0);
+    view.removeAttribute('aria-busy');
+    // ejecuta el/los script(s) de la página en su propio ámbito (sin colisiones de const/let globales)
+    PAGE_SCOPE = true;
+    for (var i = 0; i < scripts.length; i++) { try { (new Function(scripts[i]))(); } catch (e) { console.error('[route]', u.pathname, e); } }
+    // PAGE_SCOPE se queda en true: los listeners async de la página (tras await) también se limpian al navegar.
+  }
+
+  function navigate(href) {
+    var u = new URL(href, location.origin);
+    var cur = new URL(location.href);
+    if (samePath(u, cur) && u.hash !== cur.hash) { location.hash = u.hash; return; }   // solo cambia el hash → deja al hashchange de la página
+    if (samePath(u, cur) && u.hash === cur.hash) { loadRoute(href, true); return; }     // misma URL → recarga la vista
+    loadRoute(href, true);
+  }
+
+  // intercepta clics en enlaces internos .html (los demás —/api, externos, _blank, hash— van normales)
+  function onClick(e) {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    var a = e.target.closest ? e.target.closest('a[href]') : null; if (!a) return;
+    if (a.target === '_blank' || a.hasAttribute('download')) return;
+    var href = a.getAttribute('href'); if (!href || /^(https?:|mailto:|tel:)/i.test(href) && new URL(href, location.origin).origin !== location.origin) return;
+    var u; try { u = new URL(href, location.origin); } catch (x) { return; }
+    if (u.origin !== location.origin) return;
+    if (!/\.html$/.test(u.pathname) && u.pathname !== '/') return;   // solo rutas de página
+    e.preventDefault();
+    navigate(u.pathname + u.search + u.hash);
+  }
+
+  function boot() {
+    wrapAEL(document); wrapAEL(window);
+    document.addEventListener('click', onClick, { _shell: true });           // intercepción de enlaces (persistente)
+    window.addEventListener('popstate', function () { loadRoute(location.pathname + location.search + location.hash, false); }, { _shell: true });
+    var start = location.pathname === '/' || location.pathname === '' ? '/index.html' : location.pathname;
+    loadRoute(start + location.search + location.hash, false);
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>
+</body>
+</html>

@@ -743,7 +743,7 @@ window.player = (function () {
     zpanel = document.createElement('div'); zpanel.id = 'zonepanel';
     zpanel.setAttribute('style', 'position:fixed;right:16px;bottom:62px;z-index:60;width:280px;max-width:calc(100vw - 32px);background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:12px 14px;display:none;font-size:13px');
     document.body.appendChild(zpanel);
-    document.addEventListener('click', e => { if (zpanel.style.display === 'block' && !e.target.closest('#zonepanel') && !e.target.closest('[data-act="zone"]')) zpanel.style.display = 'none'; });
+    document.addEventListener('click', e => { if (zpanel.style.display === 'block' && !e.target.closest('#zonepanel') && !e.target.closest('[data-act="zone"]')) zpanel.style.display = 'none'; }, { _shell: true });
   }
   function toggleZPanel() { ensureZPanel(); if (zpanel.style.display === 'block') { zpanel.style.display = 'none'; return; } if (eqpanel) eqpanel.style.display = 'none'; zpanel.style.display = 'block'; renderZPanel(); }
   async function enumOutputs() {
@@ -836,7 +836,7 @@ window.player = (function () {
     lypanel = document.createElement('div'); lypanel.id = 'lyricspanel';
     lypanel.setAttribute('style', 'position:fixed;right:16px;bottom:62px;z-index:60;width:340px;max-width:calc(100vw - 32px);max-height:60vh;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:14px 16px;display:none;font-size:14px;line-height:1.5');
     document.body.appendChild(lypanel);
-    document.addEventListener('click', e => { if (lypanel.style.display === 'block' && !e.target.closest('#lyricspanel') && !e.target.closest('[data-act="lyrics"]')) lypanel.style.display = 'none'; });
+    document.addEventListener('click', e => { if (lypanel.style.display === 'block' && !e.target.closest('#lyricspanel') && !e.target.closest('[data-act="lyrics"]')) lypanel.style.display = 'none'; }, { _shell: true });
   }
   function toggleLyPanel() { ensureLyPanel(); if (lypanel.style.display === 'block') { lypanel.style.display = 'none'; return; } if (eqpanel) eqpanel.style.display = 'none'; if (zpanel) zpanel.style.display = 'none'; lypanel.style.display = 'block'; loadLyrics(); }
   function loadLyrics() {
@@ -879,7 +879,7 @@ window.player = (function () {
     eqpanel = document.createElement('div'); eqpanel.id = 'eqpanel';
     eqpanel.setAttribute('style', 'position:fixed;right:16px;bottom:62px;z-index:60;width:320px;max-width:calc(100vw - 32px);background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:12px 14px;display:none;font-size:13px');
     document.body.appendChild(eqpanel);
-    document.addEventListener('click', e => { if (eqpanel.style.display === 'block' && !e.target.closest('#eqpanel') && !e.target.closest('[data-act="eq"]')) eqpanel.style.display = 'none'; });
+    document.addEventListener('click', e => { if (eqpanel.style.display === 'block' && !e.target.closest('#eqpanel') && !e.target.closest('[data-act="eq"]')) eqpanel.style.display = 'none'; }, { _shell: true });
   }
   function toggleEqPanel() { ensureEqPanel(); if (eqpanel.style.display === 'block') { eqpanel.style.display = 'none'; return; } if (zpanel) zpanel.style.display = 'none'; eqpanel.style.display = 'block'; renderEqPanel(); }
   function setEqEnabled(on) { eqOn = on; applyEq(); persistEq(); renderEqPanel(); const b = document.querySelector('#nowbar [data-act="eq"]'); if (b) b.style.color = (eqOn || xfade > 0) ? 'var(--accent)' : 'var(--text-2)'; if (nativeMode) nativeEqApply(); }
@@ -912,7 +912,7 @@ window.player = (function () {
     dsppanel = document.createElement('div'); dsppanel.id = 'dsppanel';
     dsppanel.setAttribute('style', 'position:fixed;right:16px;bottom:62px;z-index:61;width:364px;max-width:calc(100vw - 32px);max-height:72vh;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:12px 14px;display:none;font-size:13px');
     document.body.appendChild(dsppanel);
-    document.addEventListener('click', e => { if (dsppanel.style.display === 'block' && !e.target.closest('#dsppanel') && !e.target.closest('[data-act="dspopen"]')) dsppanel.style.display = 'none'; });
+    document.addEventListener('click', e => { if (dsppanel.style.display === 'block' && !e.target.closest('#dsppanel') && !e.target.closest('[data-act="dspopen"]')) dsppanel.style.display = 'none'; }, { _shell: true });
   }
   function toggleDspPanel() { ensureDspPanel(); if (dsppanel.style.display === 'block') { dsppanel.style.display = 'none'; return; } if (eqpanel) eqpanel.style.display = 'none'; if (zpanel) zpanel.style.display = 'none'; dsppanel.style.display = 'block'; renderDspPanel(); loadDspLists().then(() => { if (dsppanel.style.display === 'block') renderDspPanel(); }); }
   async function loadDspLists() { try { const [im, pr] = await Promise.all([fetch('/api/dsp/impulses').then(x => x.json()), fetch('/api/dsp/presets').then(x => x.json())]); dspImpulses = (im && im.impulses) || []; dspPresets = (pr && pr.presets) || []; } catch (e) {} }
