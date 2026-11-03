@@ -16,7 +16,13 @@ const { migrate } = require('./migrate');
 function arg(n, d) { const i = process.argv.indexOf('--' + n); return i >= 0 ? (process.argv[i + 1] || true) : d; }
 const DB_PATH = arg('db', 'escucharrr.db');
 const LIMIT = parseInt(arg('limit', '0'), 10) || 0;
+const ONE_RG = arg('rg', null) != null ? parseInt(arg('rg'), 10) : null;   // medir SOLO este release_group
 const FORCE = process.argv.includes('--force');
+// filtro por álbum (los ficheros mapean por track_id o, si no, por recording_id)
+const RG_FILTER = ONE_RG != null
+  ? ` AND (track_id IN (SELECT tr.id FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE rel.release_group_id=${ONE_RG})`
+    + ` OR recording_id IN (SELECT tr.recording_id FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE rel.release_group_id=${ONE_RG}))`
+  : '';
 const DEMO = process.argv.includes('--demo');
 const FFMPEG = arg('ffmpeg') || 'ffmpeg';
 const REF_LUFS = -18;                            // referencia ReplayGain 2.0
@@ -71,7 +77,7 @@ function albumFallback(rows) {
 }
 
 const S = {
-  pending: db.prepare(`SELECT id, path FROM local_file WHERE path IS NOT NULL${FORCE ? '' : ' AND loudness_lufs IS NULL'} ORDER BY id${LIMIT ? ' LIMIT ' + LIMIT : ''}`),
+  pending: db.prepare(`SELECT id, path FROM local_file WHERE path IS NOT NULL${FORCE ? '' : ' AND loudness_lufs IS NULL'}${RG_FILTER} ORDER BY id${LIMIT ? ' LIMIT ' + LIMIT : ''}`),
   update: db.prepare('UPDATE local_file SET loudness_lufs=?, gain_db=?, peak_dbfs=? WHERE id=?'),
   updateAlbum: db.prepare('UPDATE local_file SET album_gain_db=?, album_peak_dbfs=? WHERE id=?'),
   // ficheros mapeados a su álbum (release_group), por pista y, si no, por grabación
@@ -122,6 +128,7 @@ for (const r of [...S.albumByTrack.all(), ...S.albumByRec.all()]) {
 }
 let aOk = 0, aTot = 0;
 for (const [rgid, rows] of groups) {
+  if (ONE_RG != null && rgid !== ONE_RG) continue;   // --rg: solo este álbum
   const existing = rows.filter(r => fs.existsSync(r.path)).sort((a, b) => (a.disc - b.disc) || (a.pos - b.pos) || (a.fid - b.fid));
   if (!existing.length) continue;
   if (!FORCE && !existing.some(r => r.album_gain_db == null)) continue;   // ya medido
