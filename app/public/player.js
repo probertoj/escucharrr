@@ -770,12 +770,55 @@ window.player = (function () {
   async function savePreset() { const name = (prompt('Nombre del preset DSP:') || '').trim(); if (!name) return; const state = { peq: { on: peqOn, bands: peqBands }, conv: { on: convOn, file: convFile }, eq: { on: eqOn, gains: eqGains } }; try { const r = await fetch('/api/dsp/preset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, state }) }).then(x => x.json()); if (r.ok) { dspPresets = r.presets || dspPresets; renderDspPanel(); } } catch (e) {} }
   function loadPreset(name) { const p = dspPresets.find(x => x.name === name); if (!p) return; const s = p.state || {}; if (s.peq) { peqOn = !!s.peq.on; peqBands = (s.peq.bands || []).map(b => ({ type: b.type | 0, freq: +b.freq || 1000, q: +b.q || 1, gain: +b.gain || 0 })); } if (s.eq) { eqOn = !!s.eq.on; if (Array.isArray(s.eq.gains) && s.eq.gains.length === 7) eqGains = s.eq.gains.map(Number); applyEq(); persistEq(); } persistPeq(); if (s.conv) { convOn = !!s.conv.on; ensureGraph(); loadImpulse(s.conv.file || ''); } else rebuildDsp(); markEqBtn(); if (nativeMode) { nativeEqApply(); nativeDspApply(); } renderDspPanel(); }
   async function deletePreset(name) { const p = dspPresets.find(x => x.name === name); if (!p) return; if (!confirm('¿Borrar el preset "' + name + '"?')) return; try { await fetch('/api/dsp/preset/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: p.id }) }); dspPresets = dspPresets.filter(x => x.name !== name); renderDspPanel(); } catch (e) {} }
+  // ── editor VISUAL de EQ paramétrico (curva de respuesta + puntos arrastrables, estilo Roon peq_circle) ──
+  const PEQ_FMIN = 20, PEQ_FMAX = 20000, PEQ_DBMAX = 18, PEQ_GW = 336, PEQ_GH = 120;
+  const PEQCOLORS = ['#e0607e', '#e8a33d', '#5bb98c', '#4aa3df', '#9b7cc4', '#d98b5f', '#59b0b0', '#c06a9e'];
+  const GAINTYPE = t => t === 'peak' || t === 'peaking' || t === 'lowshelf' || t === 'highshelf';
+  const peqX = f => (Math.log10(Math.max(PEQ_FMIN, Math.min(PEQ_FMAX, f)) / PEQ_FMIN) / Math.log10(PEQ_FMAX / PEQ_FMIN)) * PEQ_GW;
+  const peqY = d => PEQ_GH / 2 - (Math.max(-PEQ_DBMAX, Math.min(PEQ_DBMAX, d)) / PEQ_DBMAX) * (PEQ_GH / 2);
+  const peqXinv = x => PEQ_FMIN * Math.pow(PEQ_FMAX / PEQ_FMIN, Math.max(0, Math.min(PEQ_GW, x)) / PEQ_GW);
+  const peqYinv = y => ((PEQ_GH / 2 - Math.max(0, Math.min(PEQ_GH, y))) / (PEQ_GH / 2)) * PEQ_DBMAX;
+  let peqCtx = null, peqDragI = -1;
+  function peqCalcCtx() { if (ctx) return ctx; if (peqCtx) return peqCtx; try { const OC = window.OfflineAudioContext || window.webkitOfflineAudioContext; peqCtx = OC ? new OC(1, 1, 48000) : null; } catch (e) { peqCtx = null; } return peqCtx; }
+  // respuesta en dB combinada de todas las bandas, muestreada en frecuencias log (getFrequencyResponse = exacto)
+  function peqCurvePath() {
+    const N = 112, c = peqCalcCtx(); const freqs = new Float32Array(N);
+    const lmin = Math.log10(PEQ_FMIN), lmax = Math.log10(PEQ_FMAX);
+    for (let i = 0; i < N; i++) freqs[i] = Math.pow(10, lmin + (lmax - lmin) * i / (N - 1));
+    const total = new Float64Array(N);
+    if (c) { const nyq = c.sampleRate / 2 - 1, mag = new Float32Array(N), ph = new Float32Array(N);
+      peqBands.forEach(b => { try { const f = c.createBiquadFilter(); let ty = PEQTYPES[b.type] || 'peaking'; if (ty === 'peak') ty = 'peaking'; f.type = ty; f.frequency.value = Math.max(10, Math.min(nyq, b.freq || 1000)); f.Q.value = b.q > 0 ? b.q : 0.707; if (GAINTYPE(ty)) f.gain.value = b.gain || 0; f.getFrequencyResponse(freqs, mag, ph); for (let i = 0; i < N; i++) total[i] += 20 * Math.log10(mag[i] || 1e-6); } catch (e) {} }); }
+    let d = ''; for (let i = 0; i < N; i++) { const x = (Math.log10(freqs[i] / PEQ_FMIN) / Math.log10(PEQ_FMAX / PEQ_FMIN)) * PEQ_GW; d += (i ? 'L' : 'M') + x.toFixed(1) + ' ' + peqY(total[i]).toFixed(1); }
+    return d;
+  }
+  function peqGraphSvg() {
+    const major = [100, 1000, 10000].map(f => `<line x1="${peqX(f).toFixed(1)}" y1="0" x2="${peqX(f).toFixed(1)}" y2="${PEQ_GH}" stroke="var(--border)"/><text x="${(peqX(f) + 3).toFixed(1)}" y="${PEQ_GH - 3}" fill="var(--text-2)" font-size="9">${f >= 1000 ? (f / 1000) + 'k' : f}</text>`).join('');
+    const minor = [50, 200, 500, 2000, 5000].map(f => `<line x1="${peqX(f).toFixed(1)}" y1="0" x2="${peqX(f).toFixed(1)}" y2="${PEQ_GH}" stroke="var(--border)" stroke-opacity=".4"/>`).join('');
+    const zero = `<line x1="0" y1="${PEQ_GH / 2}" x2="${PEQ_GW}" y2="${PEQ_GH / 2}" stroke="var(--border)"/><text x="2" y="${PEQ_GH / 2 - 3}" fill="var(--text-2)" font-size="8">+${PEQ_DBMAX}</text><text x="2" y="${PEQ_GH - 3}" fill="var(--text-2)" font-size="8">-${PEQ_DBMAX}dB</text>`;
+    const curve = `<path id="peqcurve" d="${peqCurvePath()}" fill="none" stroke="var(--accent)" stroke-width="2"/>`;
+    const circles = peqBands.map((b, i) => { const useG = GAINTYPE(PEQTYPES[b.type]); const cx = peqX(b.freq).toFixed(1), cy = peqY(useG ? b.gain : 0).toFixed(1); const col = PEQCOLORS[i % PEQCOLORS.length]; return `<g class="pqcircle" data-i="${i}" style="cursor:grab"><circle cx="${cx}" cy="${cy}" r="8" fill="${col}" fill-opacity=".85" stroke="var(--surface)" stroke-width="1.5"/><text x="${cx}" y="${cy}" dy="3.2" text-anchor="middle" font-size="9" fill="#fff" style="pointer-events:none">${i + 1}</text></g>`; }).join('');
+    return `<svg id="peqgraph" viewBox="0 0 ${PEQ_GW} ${PEQ_GH}" style="display:block;width:100%;height:auto;background:var(--surface-2);border-radius:8px;touch-action:none;margin:2px 0 6px">${minor}${major}${zero}${curve}${circles}</svg>`;
+  }
+  function peqLocal(svg, clientX, clientY) { const r = svg.getBoundingClientRect(); return { x: r.width ? (clientX - r.left) / r.width * PEQ_GW : 0, y: r.height ? (clientY - r.top) / r.height * PEQ_GH : 0 }; }
+  // actualiza punto + curva + inputs numéricos en vivo durante el arrastre (sin re-render completo)
+  function peqDragUpdate(i) { const svg = document.getElementById('peqgraph'); if (!svg) return; const b = peqBands[i]; if (!b) return;
+    const g = svg.querySelector('.pqcircle[data-i="' + i + '"]'); if (g) { const useG = GAINTYPE(PEQTYPES[b.type]); const cx = peqX(b.freq).toFixed(1), cy = peqY(useG ? b.gain : 0).toFixed(1); const c = g.querySelector('circle'), t = g.querySelector('text'); if (c) { c.setAttribute('cx', cx); c.setAttribute('cy', cy); } if (t) { t.setAttribute('x', cx); t.setAttribute('y', cy); } }
+    const path = document.getElementById('peqcurve'); if (path) path.setAttribute('d', peqCurvePath());
+    const fi = dsppanel.querySelector('.pqf[data-i="' + i + '"]'); if (fi) fi.value = Math.round(b.freq);
+    const gi = dsppanel.querySelector('.pqg[data-i="' + i + '"]'); if (gi) gi.value = b.gain;
+    const qi = dsppanel.querySelector('.pqq[data-i="' + i + '"]'); if (qi) qi.value = b.q;
+  }
+  // ajusta un nodo biquad vivo sin reconstruir el subgrafo (arrastre fluido)
+  function peqLiveParam(i) { if (!ctx) return; const f = peqNodes[i], b = peqBands[i]; if (!f || !b) return; const nyq = ctx.sampleRate / 2 - 1; f.frequency.value = Math.max(10, Math.min(nyq, b.freq || 1000)); f.Q.value = b.q > 0 ? b.q : 0.707; if (GAINTYPE(f.type)) f.gain.value = b.gain || 0; }
+
   function renderDspPanel() {
     ensureDspPanel();
     let h = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px"><span style="font-weight:600">DSP avanzado</span><span data-act="dspclose" style="cursor:pointer;color:var(--text-2);display:inline-flex">${ic('close', 16)}</span></div>`;
     h += `<div style="display:flex;align-items:center;justify-content:space-between;margin:6px 0"><span style="font-weight:600;font-size:12.5px">EQ paramétrico</span><span data-act="peqtoggle" style="cursor:pointer;font-size:12px;padding:2px 10px;border-radius:999px;background:${peqOn ? 'var(--accent)' : 'var(--surface-2)'};color:${peqOn ? '#fff' : 'var(--text-2)'}">${peqOn ? 'Activado' : 'Desactivado'}</span></div>`;
     h += `<div style="opacity:${peqOn ? 1 : .5}">`;
-    if (!peqBands.length) h += `<div style="font-size:11.5px;color:var(--text-2);margin:4px 0">Sin bandas. Añade una para empezar.</div>`;
+    h += peqGraphSvg();
+    h += `<div style="font-size:10.5px;color:var(--text-2);margin:-2px 0 6px">Arrastra los puntos (grave↔agudo · ±dB) · rueda = Q · doble clic para añadir banda</div>`;
+    if (!peqBands.length) h += `<div style="font-size:11.5px;color:var(--text-2);margin:4px 0">Sin bandas. Arrastra sobre el gráfico (doble clic) o añade una abajo.</div>`;
     peqBands.forEach((b, i) => {
       h += `<div style="display:flex;gap:4px;align-items:center;margin:4px 0;flex-wrap:wrap">
         <select class="pqt" data-i="${i}" style="font-size:11px">${PEQTYPES.map(t => `<option value="${t}" ${PEQTYPES[b.type] === t ? 'selected' : ''}>${PEQLABEL[t]}</option>`).join('')}</select>
@@ -868,6 +911,34 @@ window.player = (function () {
   function endScrub(e) { if (!scrubbing) return; scrubbing = false; const box = scrubEl; scrubEl = null; hideWfBubble(); const f = box ? fracFrom(box, e.clientX) : scrubFrac; seekFrac(f); }
   document.addEventListener('pointerup', endScrub);
   document.addEventListener('pointercancel', () => { if (scrubbing) { scrubbing = false; scrubEl = null; hideWfBubble(); } });
+
+  // ── EQ paramétrico visual: arrastrar puntos (freq/gain), rueda = Q, doble clic = añadir banda ──
+  document.addEventListener('pointerdown', e => {
+    const g = e.target.closest ? e.target.closest('#dsppanel .pqcircle') : null; if (!g) return;
+    peqDragI = +g.dataset.i; const svg = document.getElementById('peqgraph');
+    if (!peqOn) { peqOn = true; rebuildDsp(); markEqBtn(); } else if (peqNodes.length !== peqBands.length) rebuildDsp();
+    try { svg.setPointerCapture(e.pointerId); } catch (x) {} e.preventDefault();
+  });
+  document.addEventListener('pointermove', e => {
+    if (peqDragI < 0) return; const svg = document.getElementById('peqgraph'); const b = peqBands[peqDragI]; if (!svg || !b) { peqDragI = -1; return; }
+    const p = peqLocal(svg, e.clientX, e.clientY);
+    b.freq = Math.round(peqXinv(p.x));
+    if (GAINTYPE(PEQTYPES[b.type])) b.gain = Math.round(peqYinv(p.y) * 2) / 2;
+    peqLiveParam(peqDragI); peqDragUpdate(peqDragI); if (nativeMode) nativeDspApply(); e.preventDefault();
+  });
+  document.addEventListener('pointerup', () => { if (peqDragI < 0) return; peqDragI = -1; persistPeq(); renderDspPanel(); });
+  document.addEventListener('wheel', e => {
+    const g = e.target.closest ? e.target.closest('#dsppanel .pqcircle') : null; if (!g) return;
+    const i = +g.dataset.i, b = peqBands[i]; if (!b) return; e.preventDefault();
+    b.q = Math.max(0.1, Math.min(18, +(b.q * (e.deltaY < 0 ? 1.1 : 1 / 1.1)).toFixed(2)));
+    peqLiveParam(i); peqDragUpdate(i); persistPeq(); if (nativeMode) nativeDspApply();
+  }, { passive: false });
+  document.addEventListener('dblclick', e => {
+    const svg = e.target.closest ? e.target.closest('#peqgraph') : null; if (!svg || (e.target.closest && e.target.closest('.pqcircle'))) return;
+    if (peqBands.length >= 16) return; const p = peqLocal(svg, e.clientX, e.clientY);
+    peqBands.push({ type: 0, freq: Math.round(peqXinv(p.x)), q: 1, gain: Math.round(peqYinv(p.y) * 2) / 2 });
+    if (!peqOn) peqOn = true; dspChanged(); renderDspPanel();
+  });
   // cambios en el panel DSP (selects y campos numéricos: 'change' para no re-render mientras se teclea)
   document.addEventListener('change', e => {
     const t = e.target;
