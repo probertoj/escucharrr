@@ -29,6 +29,7 @@ nav.top a{color:var(--text-2)} nav.top a.on{color:var(--text);font-weight:600}
 
   <div id="resumeSec" style="display:none"><div class="sec">Sigue escuchando</div><div class="row" id="resume"></div></div>
   <div id="becauseSec" style="display:none"><div class="sec" style="margin-top:22px" id="becauseTitle">Porque escuchaste</div><div class="row" id="because"></div></div>
+  <div id="novedadesSec" style="display:none"><div class="sec" style="margin-top:22px">Novedades para ti <span style="font-size:12px;color:var(--muted);font-weight:400">· vía Liderarrr</span></div><div class="row" id="novedades"></div></div>
 
   <div class="sec" style="margin-top:22px">Añadido recientemente</div>
   <div class="row" id="recent"></div>
@@ -97,6 +98,38 @@ function load(){fetch('/api/home').then(r=>r.json()).then(d=>{
 }).catch(e=>greet.textContent='error: '+e.message);}
 load();
 document.addEventListener('escucharrr:changed',load);   // biblioteca en vivo
+
+// ── «Novedades para ti» (solo si Liderarrr está conectado): novedades de tus artistas + afinidad ──
+const _nn=s=>String(s||'').normalize('NFD').toLowerCase().replace(/[^a-z0-9]+/g,'');
+const _ED=/(deluxe|expanded|remaster|anniversary|edition|reissue|re-?master|mono|stereo|bonus|special|version|explicit|flac|mp3|vinyl|\d{2,3}\s*bit|\d{2,3}(\.\d)?\s*khz|hi-?res|24-?96|16-?44)/i;
+function _ct(t){t=String(t||'').trim();for(;;){const m=t.match(/[\[(]([^\])]*)[)\]]\s*$/);if(!m||(!/\d{4}/.test(m[1])&&!_ED.test(m[1])))break;t=t.slice(0,m.index).trim();}return _nn(t.replace(/\s+[-–—]\s*\d{4}\s*$/,''));}
+const _mk=(a,t)=>_nn(a)+'::'+_ct(t);
+async function loadNovedades(){
+  let svc={}; try{ svc=await fetch('/api/config/services').then(r=>r.json()); }catch(e){}
+  if(!(svc.liderarrr&&svc.liderarrr.connected)) return;
+  let nr=[],gr=[],keys={};
+  try{ [nr,gr,keys]=await Promise.all([
+    fetch('/api/liderarrr/newreleases?limit=40').then(r=>r.json()).catch(()=>[]),
+    fetch('/api/liderarrr/globalreleases?days=30').then(r=>r.json()).catch(()=>[]),
+    fetch('/api/liderarrr/wanted/keys').then(r=>r.json()).catch(()=>({})) ]); }catch(e){}
+  if(!Array.isArray(nr))nr=[]; if(!Array.isArray(gr))gr=[]; if(keys&&keys.ok===false)keys={};
+  // mezcla: primero los de tus artistas, luego afinidad; dedupe por matchKey; no poseídos; hasta 16
+  const seen=new Set(), items=[];
+  for(const r of nr.concat(gr)){ if(r.owned) continue; const k=_mk(r.artist,r.title); if(seen.has(k))continue; seen.add(k); items.push(r); if(items.length>=16)break; }
+  if(!items.length) return;
+  const box=document.getElementById('novedades'), sec=document.getElementById('novedadesSec');
+  box.innerHTML=items.map(r=>{ const k=_mk(r.artist,r.title); const w=keys[k];
+    const cov=r.cover?`<img src="${esc(r.cover)}" alt="" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block">`:cover(0);
+    const act=w?`<span class="badge" style="position:absolute;left:6px;top:6px;background:var(--accent-bg);color:var(--accent)">${w.status==='owned'?'conseguido':w.status==='grabbed'?'pedido':'vigilando'}</span>`:`<span class="nwant" data-artist="${esc(r.artist)}" data-title="${esc(r.title)}" data-date="${esc(r.release_date||'')}" data-cover="${esc(r.cover||'')}" title="Quiero — Liderarrr lo buscará" style="position:absolute;right:6px;top:6px;cursor:pointer;background:rgba(0,0,0,.55);color:#fff;border-radius:999px;width:26px;height:26px;display:flex;align-items:center;justify-content:center">${window.icon('want',15)}</span>`;
+    return `<div class="card" style="position:relative"><div class="cov" style="position:relative;border-radius:10px;overflow:hidden;aspect-ratio:1">${cov}${act}</div><div class="t">${esc(r.title)}</div><div class="s">${esc(r.artist)}${r.reason?' · '+esc(r.reason):''}</div></div>`;
+  }).join('');
+  sec.style.display='';
+  box.querySelectorAll('.nwant').forEach(el=>el.onclick=async()=>{ el.style.pointerEvents='none';
+    try{ const rr=await fetch('/api/liderarrr/wanted',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist:el.dataset.artist,title:el.dataset.title,release_date:el.dataset.date||null,cover:el.dataset.cover||null,origin:'inicio'})}).then(x=>x.json());
+      if(rr&&(rr.ok||rr.match_key)) el.outerHTML='<span class="badge" style="position:absolute;left:6px;top:6px;background:var(--accent-bg);color:var(--accent)">vigilando</span>'; else el.style.pointerEvents='auto';
+    }catch(e){ el.style.pointerEvents='auto'; } });
+}
+loadNovedades();
 </script>
 <script src="icons.js" defer></script>
 <script src="nav.js" defer></script>
