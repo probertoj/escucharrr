@@ -25,6 +25,7 @@
     { href: 'inspector.html', label: 'Inspector', ico: 'inspect' },
     { href: 'playlists.html', label: 'Listas', ico: 'lists' },
     { href: 'radio.html', label: 'Radio', ico: 'radio' },
+    { href: 'retos.html', label: 'Retos', ico: 'challenge' },
     { href: 'history.html', label: 'Historial', ico: 'history' },
     { href: 'search.html', label: 'Buscar', ico: 'search' }
   ];

@@ -183,6 +183,13 @@ window.addEventListener('DOMContentLoaded', async () => {
       <div class="d" style="margin-bottom:8px">Redirect URI: <span class="mono">${esc(sp.redirectUri || '')}</span> <button id="spcopy" style="padding:3px 8px;font-size:12px">Copiar</button></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap" id="spotbtns">${sp.configured && !sp.authorized ? '<button id="spotconn">Conectar Spotify</button>' : ''}${sp.authorized ? '<button id="spotsync">Sincronizar</button>' : ''}${sp.configured ? '<button id="spclear">Quitar</button>' : ''}</div>
       <div id="spmsg" style="font-size:12.5px;margin-top:6px;display:none"></div></div>
+    <div class="row" style="display:block"><div class="k" style="display:flex;align-items:center;gap:8px">Liderarrr — retos, calendario y «Quiero» ${(s.liderarrr && s.liderarrr.connected) ? badge(true, 'conectado') : ''}</div>
+      <div class="d" style="margin:3px 0 8px">Conecta tu <b>Liderarrr</b> (panel de completismo/descargas) y escucharrr tirará de su API: los retos de escucha y los deseos se comparten en ambos sentidos, y «Quiero» hace que Liderarrr busque el disco. Pon la URL de tu instancia.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input id="ldurl" placeholder="http://192.168.1.50:3861" value="${esc((s.liderarrr && s.liderarrr.url) || '')}" style="flex:1;min-width:200px">
+        <button id="ldsave">${(s.liderarrr && s.liderarrr.connected) ? 'Actualizar' : 'Conectar'}</button>
+        ${(s.liderarrr && s.liderarrr.connected) ? '<button id="lddisc">Desconectar</button>' : ''}
+      </div><div id="ldmsg" style="font-size:12.5px;margin-top:6px;display:none"></div></div>
     <div class="row"><div class="lbl"><div class="k">Tidal / Qobuz</div><div class="d soon">próximamente</div></div></div>`;
     wireServices(s);
   }
@@ -198,6 +205,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     if ($('spotconn')) $('spotconn').onclick = () => location.href = '/api/spotify/auth';
     if ($('spclear')) $('spclear').onclick = async () => { if (!confirm('¿Quitar la configuración de Spotify?')) return; await fetch('/api/config/spotify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clear: true }) }); loadServices(); };
     if ($('spotsync')) $('spotsync').onclick = async () => { const b = $('spotsync'); b.disabled = true; b.textContent = 'Sincronizando…'; const r = await fetch('/api/spotify/sync', { method: 'POST' }).then(x => x.json()).catch(() => ({})); if (r.ok) srvMsg('spmsg', 'Sincronizado: ' + r.matched + ' de ' + r.saved + ' guardados.', true); else srvMsg('spmsg', r.error || 'Error.', false); b.disabled = false; b.textContent = 'Sincronizar'; };
+    if ($('ldsave')) $('ldsave').onclick = async () => { const b = $('ldsave'); b.disabled = true; b.textContent = 'Conectando…'; const r = await fetch('/api/config/liderarrr', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: ($('ldurl').value || '').trim() }) }).then(x => x.json()).catch(() => ({})); if (r.ok) { srvMsg('ldmsg', '¡Liderarrr conectado! Ya tienes Retos y «Quiero».', true); loadServices(); } else { srvMsg('ldmsg', r.error || 'No se pudo conectar.', false); b.disabled = false; b.textContent = 'Conectar'; } };
+    if ($('lddisc')) $('lddisc').onclick = async () => { await fetch('/api/config/liderarrr', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clear: true }) }); loadServices(); };
   }
   loadServices();
   const qp = new URLSearchParams(location.search);

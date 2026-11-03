@@ -46,6 +46,8 @@
     inspect: '<path d="M4 5.5h11M4 10h7M4 14.5h5"/><circle cx="16" cy="15" r="3.6"/><path d="M18.6 17.6 21.5 20.5"/>',
     sleep: '<path d="M20 13.2A8 8 0 1110.8 4 6.5 6.5 0 0020 13.2z"/><path d="M15 4h4l-4 4h4"/>',
     'thumb-down': '<path d="M7 3v9M7 12l2.2 7a1.6 1.6 0 003-.6V14h5a2 2 0 002-2.4l-1.2-6A2 2 0 0016 4H9.5A2.5 2.5 0 007 6.5"/>',
+    challenge: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.8"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/>',
+    want: '<path d="M12 20s-7-4.4-7-9.5A3.8 3.8 0 0112 7a3.8 3.8 0 017 3.5c0 5.1-7 9.5-7 9.5z"/><path d="M12 11v5M9.5 13.5h5"/>',
     visualizer: '<path d="M4 14v4M8 9v9M12 5v13M16 10v8M20 13v5"/>',
     'theme-auto': '<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 010 17z" fill="currentColor" stroke="none"/>',
     'theme-light': '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5 5l1.6 1.6M17.4 17.4 19 19M19 5l-1.6 1.6M6.6 17.4 5 19"/>',

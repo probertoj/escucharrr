@@ -105,6 +105,48 @@ function loadSpotify() {
 loadSpotify();
 function saveSpotifyTok(t) { spotifyTok = t; try { fs.writeFileSync(SPOTIFY_TOKEN_PATH, JSON.stringify(t)); } catch (e) {} }
 function spotifyConfigured() { return !!(spotifyCfg && spotifyCfg.clientId && spotifyCfg.clientSecret && spotifyCfg.redirectUri); }
+
+// ── Puente a Liderarrr (completismo/adquisición): la URL se configura por UI, nunca hardcodeada ──
+const LIDERARRR_PATH = path.join(__dirname, 'liderarrr.json');
+let liderarrrCfg = null;
+function loadLiderarrr() { try { liderarrrCfg = fs.existsSync(LIDERARRR_PATH) ? JSON.parse(fs.readFileSync(LIDERARRR_PATH, 'utf8')) : null; } catch (e) { liderarrrCfg = null; } return liderarrrCfg; }
+loadLiderarrr();
+function liderarrrUrl() { const u = liderarrrCfg && liderarrrCfg.url; return u ? String(u).replace(/\/+$/, '') : ''; }
+function saveLiderarrr(url) { const clean = String(url || '').trim().replace(/\/+$/, ''); if (clean) fs.writeFileSync(LIDERARRR_PATH, JSON.stringify({ url: clean }, null, 2) + '\n', 'utf8'); else { try { if (fs.existsSync(LIDERARRR_PATH)) fs.unlinkSync(LIDERARRR_PATH); } catch (e) {} } loadLiderarrr(); return liderarrrUrl(); }
+// Reenvía una petición a la API de Liderarrr (misma BD → cambios bidireccionales).
+function liderarrrFetch(method, apipath, body) {
+  return new Promise((resolve, reject) => {
+    const base = liderarrrUrl(); if (!base) return reject(new Error('Liderarrr no configurado'));
+    let u; try { u = new URL(base + apipath); } catch (e) { return reject(new Error('URL de Liderarrr inválida')); }
+    const lib = u.protocol === 'https:' ? https : http;
+    const data = body != null ? JSON.stringify(body) : null;
+    const req = lib.request(u, { method, headers: Object.assign({ Accept: 'application/json' }, data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}) },
+      r => { let b = ''; r.on('data', d => b += d); r.on('end', () => { let j = b; try { j = b ? JSON.parse(b) : null; } catch (e) {} resolve({ status: r.statusCode, body: j }); }); });
+    req.on('error', reject); req.setTimeout(12000, () => req.destroy(new Error('timeout')));
+    if (data) req.write(data); req.end();
+  });
+}
+// matchKey de Liderarrr replicado (sin dependencias) para cruzar su wanted/retos con la biblioteca local.
+function lidNormName(s) { return String(s || '').normalize('NFD').toLowerCase().replace(/[^a-z0-9]+/g, ''); }
+const LID_EDITION_RE = /(deluxe|expanded|remaster|anniversary|edition|reissue|re-?master|mono|stereo|bonus|special|version|explicit|flac|mp3|vinyl|\d{2,3}\s*bit|\d{2,3}(\.\d)?\s*khz|hi-?res|24-?96|16-?44)/i;
+function lidCleanTitle(t) { t = String(t || '').trim(); for (;;) { const m = t.match(/[\[(]([^\])]*)[)\]]\s*$/); if (!m || (!/\d{4}/.test(m[1]) && !LID_EDITION_RE.test(m[1]))) break; t = t.slice(0, m.index).trim(); } t = t.replace(/\s+[-–—]\s*\d{4}\s*$/, '').trim(); return lidNormName(t); }
+function lidMatchKey(artist, title) { return lidNormName(artist) + '::' + lidCleanTitle(title); }
+// índice biblioteca: matchKey → release_group id (cacheado) para saber qué posees/puedes reproducir
+let _lidOwned = { at: 0, map: null };
+function lidOwnedIndex() { if (_lidOwned.map && Date.now() - _lidOwned.at < 15000) return _lidOwned.map; const map = new Map(); for (const a of db.prepare('SELECT id, artist, title FROM v_album').all()) map.set(lidMatchKey(a.artist, a.title), a.id); _lidOwned = { at: Date.now(), map }; return map; }
+function resolveOwnedPairs(pairs) { const idx = lidOwnedIndex(); return (pairs || []).map(p => ({ artist: p.artist, album: p.album, rg_id: idx.get(lidMatchKey(p.artist, p.album)) ?? null })); }
+// Proxy fino de escucharrr → Liderarrr (evita CORS; 'resolve' lo resuelve escucharrr localmente).
+async function handleLiderarrr(req, res, u) {
+  const sub = u.pathname.slice('/api/liderarrr/'.length);
+  if (sub === 'resolve' && req.method === 'POST') { const b = await readBody(req); return sendJSON(res, { ok: true, owned: resolveOwnedPairs(b.pairs || []) }); }
+  if (!liderarrrUrl()) return sendJSON(res, { ok: false, error: 'Liderarrr no está configurado (ponlo en Ajustes → Servicios).' });
+  try {
+    const body = (req.method === 'POST' || req.method === 'DELETE' || req.method === 'PUT') ? await readBody(req) : null;
+    const r = await liderarrrFetch(req.method, '/api/' + sub + (u.search || ''), body);
+    res.writeHead(r.status || 200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(typeof r.body === 'string' ? r.body : JSON.stringify(r.body));
+  } catch (e) { sendJSON(res, { ok: false, error: 'No se pudo contactar con Liderarrr: ' + e.message }); }
+}
 // URIs de redirección (que el usuario registra en Spotify / que Last.fm usa de callback)
 const SPOTIFY_REDIRECT = 'http://127.0.0.1:' + PORT + '/api/spotify/callback';
 const LASTFM_CALLBACK = 'http://127.0.0.1:' + PORT + '/api/lastfm/callback';
@@ -1496,6 +1538,7 @@ async function handleConfig(req, res, u) {
         listenbrainz: { connected: !!lb.token },
         lastfm: { apiKey: lf.apiKey || '', hasSecret: !!lf.apiSecret, connected: !!lf.sessionKey, callbackUri: LASTFM_CALLBACK },
         spotify: { configured: spotifyConfigured(), authorized: !!spotifyTok, clientId: (spotifyCfg && spotifyCfg.clientId) || '', redirectUri: SPOTIFY_REDIRECT, matched: Q.spotifyCount.get().n },
+        liderarrr: { url: liderarrrUrl(), connected: !!liderarrrUrl() },
         enabled: scrobble.enabledServices(scrobCfg || {}), pending: scrobble.pendingCount(db, scrobCfg || {}) });
     }
     const body = await readBody(req);
@@ -1521,6 +1564,14 @@ async function handleConfig(req, res, u) {
       if (!clientId || !clientSecret) return sendJSON(res, { ok: false, error: 'Hacen falta el Client ID y el Client Secret.' });
       saveSpotifyCfg(clientId, clientSecret);
       return sendJSON(res, { ok: true, configured: spotifyConfigured(), redirectUri: SPOTIFY_REDIRECT });
+    }
+    // Liderarrr: guarda la URL (cualquiera puede apuntar a su instancia) y la valida llamando a su API
+    if (sub === 'liderarrr') {
+      if (body.clear) { saveLiderarrr(''); return sendJSON(res, { ok: true, connected: false }); }
+      const url = String(body.url || '').trim(); if (!url) return sendJSON(res, { ok: false, error: 'Pon la URL de tu Liderarrr (p. ej. http://192.168.1.50:3861).' });
+      saveLiderarrr(url);
+      try { const r = await liderarrrFetch('GET', '/api/wanted/keys', null); if (r.status && r.status < 500) return sendJSON(res, { ok: true, connected: true, url: liderarrrUrl() }); saveLiderarrr(''); return sendJSON(res, { ok: false, error: 'Responde con HTTP ' + r.status + ' (¿es la URL correcta?).' }); }
+      catch (e) { saveLiderarrr(''); return sendJSON(res, { ok: false, error: 'No responde: ' + e.message }); }
     }
     if (sub === 'folders') { writeWatchFolders(Array.isArray(body.folders) ? body.folders : []); startWatching(); if (watchConfig() && watchConfig().music.length) _ingSchedule('music'); return sendJSON(res, { ok: true, ...configInfo() }); }
     if (sub === 'obsidian') { writeObsidian(String(body.vault || '').trim(), String(body.albumsFolder || '').trim()); startWatching(); _ingSchedule('vault'); return sendJSON(res, { ok: true, ...configInfo() }); }
@@ -1901,6 +1952,7 @@ http.createServer((req, res) => {
   if (u.pathname.startsWith('/api/upnp/')) return void handleUpnp(req, res, u);
   if (u.pathname.startsWith('/api/spotify/')) return void handleSpotify(req, res, u);
   if (u.pathname.startsWith('/api/lastfm/')) return void handleLastfm(req, res, u);
+  if (u.pathname.startsWith('/api/liderarrr/')) return void handleLiderarrr(req, res, u);
   if (u.pathname === '/api/config' || u.pathname.startsWith('/api/config/')) return void handleConfig(req, res, u);
   if (u.pathname.startsWith('/api/dsp/')) return void handleDsp(req, res, u);
   if (u.pathname.startsWith('/api/radio/')) return void handleRadio(req, res, u);

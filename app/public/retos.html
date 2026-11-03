@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — retos</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.rgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;margin-top:6px}
+.rcard{display:flex;gap:14px;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:13px;padding:14px;cursor:pointer;text-decoration:none;color:inherit}
+.rcard:hover{border-color:var(--accent)}
+.rcard .nm{font-weight:600;font-size:15px;line-height:1.25}
+.rcard .mt{font-size:12.5px;color:var(--text-2);margin-top:3px}
+.ring{flex:none}
+.item{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--border)}
+.item .pos{width:26px;text-align:right;color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
+.item .ti{flex:1;min-width:0}
+.item .ti .a{font-size:14px}
+.item .ti .b{font-size:12.5px;color:var(--text-2)}
+.item .act{display:flex;gap:6px;align-items:center}
+.pill{font-size:11px;border-radius:999px;padding:2px 9px;background:var(--surface-2);color:var(--text-2)}
+.pill.own{background:var(--accent-bg);color:var(--accent)}
+.pill.heard{background:var(--surface-2);color:var(--text)}
+.btn-ghost{cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 11px;font-size:13px;display:inline-flex;align-items:center;gap:5px}
+textarea{width:100%;min-height:92px;font:inherit;padding:9px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:var(--text);box-sizing:border-box}
+.note{background:var(--surface-2);border-radius:12px;padding:16px 18px;color:var(--text-2);font-size:14px;line-height:1.55}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 style="font-size:28px;margin-bottom:2px">Retos de escucha</h1>
+  <div style="color:var(--text-2);font-size:14px;margin-bottom:16px">Listas «que hay que oír» (1001 Albums, charts…) desde tu <b>Liderarrr</b>: lo que tienes se reproduce aquí; lo que falta lo puedes marcar <b>«Quiero»</b> y Liderarrr lo busca. Lo que cambies aquí o en Liderarrr se ve en ambos.</div>
+  <div id="app">cargando…</div>
+</div>
+
+<script src="player.js" defer></script>
+<script src="icons.js" defer></script>
+<script src="nav.js" defer></script>
+<script>
+const esc = s => String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const app = document.getElementById('app');
+const api = (p, opt) => fetch('/api/liderarrr/'+p, opt).then(r=>r.json());
+
+function ring(pct, sub){ const C=2*Math.PI*18, len=C*Math.min(100,pct||0)/100;
+  return `<svg class="ring" width="52" height="52" viewBox="0 0 52 52"><circle cx="26" cy="26" r="18" fill="none" stroke="var(--surface-2)" stroke-width="5"/><circle cx="26" cy="26" r="18" fill="none" stroke="var(--accent)" stroke-width="5" stroke-linecap="round" stroke-dasharray="${len.toFixed(1)} ${(C-len).toFixed(1)}" transform="rotate(-90 26 26)"/><text x="26" y="29" text-anchor="middle" font-size="13" font-weight="600" fill="var(--text)">${pct||0}%</text></svg>`;
+}
+
+async function notConnected(){
+  app.innerHTML = `<div class="note">No hay ningún <b>Liderarrr</b> conectado. Ve a <a href="settings.html#">Ajustes → Servicios</a>, pon la URL de tu instancia y pulsa Conectar. Los retos y los deseos viven en Liderarrr; escucharrr los muestra y reproduce lo que tienes.</div>`;
+}
+
+async function loadList(){
+  let list;
+  try { list = await api('challenges'); } catch(e){ return notConnected(); }
+  if (list && list.ok === false) return notConnected();
+  if (!Array.isArray(list)) return notConnected();
+  let h = `<div style="display:flex;justify-content:flex-end;margin-bottom:10px"><button class="btn-ghost" id="newreto">${window.icon('plus',14)}Nuevo reto</button></div>`;
+  h += `<div id="newform" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:14px">
+    <input id="rname" placeholder="Nombre del reto" style="width:100%;margin-bottom:8px">
+    <textarea id="rtext" placeholder="Pega la lista — una por línea: Artista - Álbum (año opcional). Vacío = reto en blanco para ir rellenando."></textarea>
+    <div style="display:flex;gap:8px;margin-top:8px"><button class="btn-accent" id="rcreate" style="padding:7px 14px">Crear</button><button class="btn-ghost" id="rcancel">Cancelar</button></div>
+    <div id="rmsg" style="font-size:12.5px;margin-top:6px;display:none"></div></div>`;
+  h += `<div class="rgrid">` + list.map(c => `<a class="rcard" href="#${c.id}">${ring(c.pct)}<div><div class="nm">${esc(c.name)}</div><div class="mt">${c.owned}/${c.item_count} en tu biblioteca · ${esc(c.source||'')}</div></div></a>`).join('') + `</div>`;
+  app.innerHTML = h;
+  document.getElementById('newreto').onclick = () => { const f=document.getElementById('newform'); f.style.display = f.style.display==='none'?'block':'none'; };
+  document.getElementById('rcancel').onclick = () => { document.getElementById('newform').style.display='none'; };
+  document.getElementById('rcreate').onclick = async () => {
+    const name=(document.getElementById('rname').value||'').trim(), text=document.getElementById('rtext').value||'';
+    const m=document.getElementById('rmsg'); const b=document.getElementById('rcreate'); b.disabled=true; b.textContent='Creando…';
+    try { const r = await api('challenges',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,text})});
+      if (r && r.id){ location.hash = '#'+r.id; } else { m.style.display='block'; m.style.color='#c0392b'; m.textContent=(r&&r.error)||'No se pudo crear.'; }
+    } catch(e){ m.style.display='block'; m.style.color='#c0392b'; m.textContent='Error de red.'; }
+    b.disabled=false; b.textContent='Crear';
+  };
+}
+
+async function loadDetail(id){
+  app.innerHTML = 'cargando reto…';
+  let c; try { c = await api('challenges/'+id); } catch(e){ return notConnected(); }
+  if (!c || c.error){ app.innerHTML = '<div class="note">Reto no encontrado.</div>'; return; }
+  // resuelve qué ítems tienes EN ESCUCHARRR (para reproducir)
+  let owned = {};
+  try { const rr = await api('resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pairs:c.items.map(i=>({artist:i.artist,album:i.album}))})});
+    (rr.owned||[]).forEach(o=>{ if(o.rg_id) owned[o.artist+'\u0000'+o.album]=o.rg_id; }); } catch(e){}
+  const ownedRg = c.items.map(i=>owned[i.artist+'\u0000'+i.album]).filter(Boolean);
+  let h = `<a href="#" style="color:var(--text-2);font-size:13px;display:inline-flex;align-items:center;gap:5px;margin-bottom:10px">${window.icon('arrow-left',14)}Todos los retos</a>`;
+  h += `<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:14px">${ring(c.pct)}
+    <div style="flex:1;min-width:200px"><div style="font-family:var(--serif);font-size:22px;font-weight:600">${esc(c.name)}</div>
+      <div style="font-size:13px;color:var(--text-2);margin-top:3px">${c.owned}/${c.item_count} tienes · ${c.listened||0}/${c.item_count} oídos (Liderarrr)</div></div>
+    ${ownedRg.length?`<button class="btn-accent" id="retoradio" style="padding:8px 14px;display:inline-flex;align-items:center;gap:6px">${window.icon('radio',15)}Reto radio</button>`:''}</div>`;
+  h += `<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap"><input id="additems" placeholder="Añadir discos: Artista - Álbum (una por línea)" style="flex:1;min-width:220px"><button class="btn-ghost" id="addbtn">Añadir</button></div><div id="amsg" style="font-size:12.5px;margin-bottom:8px;display:none"></div>`;
+  h += c.items.map(i => {
+    const rg = owned[i.artist+'\u0000'+i.album];
+    const left = rg ? `<span class="play" data-rg="${rg}" title="Reproducir" style="cursor:pointer;color:var(--accent);display:inline-flex">${window.icon('play',16)}</span>` : `<span style="width:16px;display:inline-block"></span>`;
+    const tag = rg ? '<span class="pill own">en tu biblioteca</span>' : '<span class="pill">no la tienes</span>';
+    const heard = i.listened ? '<span class="pill heard">oído</span>' : '';
+    const want = rg ? '' : `<span class="wbtn" data-artist="${esc(i.artist)}" data-title="${esc(i.album)}" data-year="${i.year||''}" title="Quiero — Liderarrr lo buscará" style="cursor:pointer;color:var(--text-2);display:inline-flex">${window.icon('want',16)}</span>`;
+    const link = i.artist_id && rg ? `href="album.html?id=${rg}"` : '';
+    return `<div class="item"><span class="pos">${i.position+1}</span>${left}<div class="ti"><div class="a">${esc(i.album)}</div><div class="b">${esc(i.artist)}${i.year?' · '+i.year:''}</div></div><div class="act">${heard}${tag}${want}</div></div>`;
+  }).join('');
+  app.innerHTML = h;
+
+  app.querySelectorAll('.play').forEach(el => el.onclick = () => { if (window.player) window.player.playAlbum(+el.dataset.rg, 0); });
+  const rr = document.getElementById('retoradio'); if (rr) rr.onclick = () => { if (window.player) window.player.radioFrom(ownedRg[0]); };
+  app.querySelectorAll('.wbtn').forEach(el => el.onclick = async () => {
+    el.style.pointerEvents='none';
+    try { const r = await api('wanted',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist:el.dataset.artist,title:el.dataset.title,year:el.dataset.year||null,origin:'escucharrr'})});
+      if (r && (r.ok||r.match_key)) { el.outerHTML = '<span class="pill" style="background:var(--accent-bg);color:var(--accent)">vigilando</span>'; } else el.style.pointerEvents='auto';
+    } catch(e){ el.style.pointerEvents='auto'; }
+  });
+  document.getElementById('addbtn').onclick = async () => {
+    const t=(document.getElementById('additems').value||'').trim(); if(!t) return; const m=document.getElementById('amsg');
+    try { const r = await api('challenges/'+id+'/items',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});
+      if (r && r.added!=null){ m.style.display='block'; m.style.color='var(--accent)'; m.textContent='Añadidos '+r.added+'.'; loadDetail(id); } else { m.style.display='block'; m.style.color='#c0392b'; m.textContent=(r&&r.error)||'No se pudo añadir.'; }
+    } catch(e){ m.style.display='block'; m.style.color='#c0392b'; m.textContent='Error de red.'; }
+  };
+}
+
+function route(){ const id = location.hash.replace(/^#/,''); if (id && /^\d+$/.test(id)) loadDetail(id); else loadList(); }
+window.addEventListener('hashchange', route);
+route();
+document.addEventListener('escucharrr:changed', route);
+</script>
+</body>
+</html>
