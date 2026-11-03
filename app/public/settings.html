@@ -120,10 +120,8 @@ window.addEventListener('DOMContentLoaded', async () => {
       <div class="eqbands" id="eqbands">${bands}</div></div>
   </div></div>
 
-  <div class="grp"><h2><span class="gi">${window.icon('refresh',18)}</span> Servicios y scrobbling</h2><div class="body">
-    <div class="row"><div class="lbl"><div class="k">Scrobbling</div><div class="d">${(scr.enabled&&scr.enabled.length)?'activo: '+scr.enabled.map(esc).join(', ')+(scr.pending?` · ${scr.pending} en cola`:''):'desactivado (crea <span class="mono">app/scrobble.json</span> a partir de <span class="mono">scrobble.example.json</span>)'}</div></div></div>
-    <div class="row"><div class="lbl"><div class="k">Spotify — ¿tengo este disco en mi biblioteca?</div><div class="d" id="spotrow">comparando tus discos locales con tus álbumes guardados en Spotify…</div></div><span id="spotbtns"></span></div>
-    <div class="row"><div class="lbl"><div class="k">Tidal / Qobuz</div><div class="d soon">próximamente — ver <span class="mono">docs/ajustes-vs-roon.md</span></div></div></div>
+  <div class="grp"><h2><span class="gi">${window.icon('refresh',18)}</span> Servicios y scrobbling</h2><div class="body" id="servicesbody">
+    <div class="d">cargando…</div>
   </div></div>
 
   <div class="grp"><h2><span class="gi">${window.icon('theme-auto',18)}</span> Interfaz</h2><div class="body">
@@ -156,20 +154,58 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   ['chooseout', 'chooseout2'].forEach(id => { const co = document.getElementById(id); if (co) co.addEventListener('click', () => { if (P && P.openOutput) P.openOutput(); }); });
 
-  // Spotify: comparar la biblioteca local con tus álbumes guardados
-  function renderSpotify(sp) {
-    const row = document.getElementById('spotrow'), btns = document.getElementById('spotbtns'); if (!row) return;
-    sp = sp || {};
-    if (!sp.configured) { row.innerHTML = 'Crea <span class="mono">app/spotify.json</span> (a partir de <span class="mono">spotify.example.json</span>) con una app de <span class="mono">developer.spotify.com</span> y su Redirect URI.'; btns.innerHTML = ''; return; }
-    if (!sp.authorized) { row.textContent = 'Conecta tu cuenta para traer tus álbumes guardados (solo lectura, no reproduce nada).'; btns.innerHTML = '<button id="spotconn">Conectar Spotify</button>'; document.getElementById('spotconn').onclick = () => location.href = '/api/spotify/auth'; return; }
-    row.innerHTML = 'Conectado. <b>' + (sp.matched || 0) + '</b> de tus discos locales están en tu Spotify (se indica en cada álbum).';
-    btns.innerHTML = '<button id="spotsync">Sincronizar</button>';
-    document.getElementById('spotsync').onclick = async () => { const b = document.getElementById('spotsync'); b.disabled = true; b.textContent = 'Sincronizando…'; try { const r = await fetch('/api/spotify/sync', { method: 'POST' }).then(x => x.json()); if (r.ok) row.innerHTML = 'Sincronizado: <b>' + r.matched + '</b> de tus discos están en Spotify (de ' + r.saved + ' guardados).'; else row.textContent = 'Error: ' + (r.error || ''); } catch (e) { row.textContent = 'Error de red.'; } b.disabled = false; b.textContent = 'Sincronizar'; };
+  // ── Servicios (ListenBrainz · Last.fm · Spotify): configuración con botón, sin tocar JSON ──
+  const srvMsg = (id, t, ok) => { const m = document.getElementById(id); if (!m) return; m.textContent = t || ''; m.style.display = t ? 'block' : 'none'; m.style.color = ok ? 'var(--accent)' : '#c0392b'; };
+  async function postScrobble(body) { return fetch('/api/config/scrobble', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json()); }
+  function badge(on, txt) { return `<span class="tag" style="${on ? 'background:var(--accent-bg);color:var(--accent)' : ''}">${esc(txt)}</span>`; }
+  async function loadServices() { let s = {}; try { s = await fetch('/api/config/services').then(r => r.json()); } catch (e) {} renderServices(s || {}); }
+  function renderServices(s) {
+    const box = document.getElementById('servicesbody'); if (!box) return;
+    const lb = s.listenbrainz || {}, lf = s.lastfm || {}, sp = s.spotify || {};
+    box.innerHTML = `
+    <div class="row" style="display:block"><div class="k" style="display:flex;align-items:center;gap:8px">Scrobbling ${(s.enabled && s.enabled.length) ? badge(true, 'activo: ' + s.enabled.join(', ') + (s.pending ? ' · ' + s.pending + ' en cola' : '')) : badge(false, 'desactivado')}</div>
+      <div class="d" style="margin-top:3px">Envía tus escuchas a ListenBrainz y/o Last.fm. Conéctalos abajo con un botón, sin editar ficheros.</div></div>
+    <div class="row" style="display:block"><div class="k" style="display:flex;align-items:center;gap:8px">ListenBrainz ${lb.connected ? badge(true, 'conectado') : ''}</div>
+      <div class="d" style="margin:3px 0 8px">Pega tu <b>token</b> de <span class="mono">listenbrainz.org/settings</span>; se valida al conectar.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${lb.connected ? '<button id="lbdisc">Desconectar</button>' : '<input id="lbtoken" type="password" placeholder="token de ListenBrainz" style="flex:1;min-width:200px"><button id="lbsave">Conectar</button>'}</div>
+      <div id="lbmsg" style="font-size:12.5px;margin-top:6px;display:none"></div></div>
+    <div class="row" style="display:block"><div class="k" style="display:flex;align-items:center;gap:8px">Last.fm ${lf.connected ? badge(true, 'conectado') : ''}</div>
+      <div class="d" style="margin:3px 0 8px">Crea una API account en <span class="mono">last.fm/api/account/create</span> (Callback: <span class="mono">${esc(lf.callbackUri || '')}</span>), pega la <b>API key</b> y el <b>secret</b>, guarda y pulsa Conectar.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input id="lfkey" placeholder="API key" value="${esc(lf.apiKey || '')}" style="flex:1;min-width:140px">
+        <input id="lfsecret" type="password" placeholder="shared secret" style="flex:1;min-width:140px">
+        <button id="lfsave">Guardar claves</button>
+        ${(lf.apiKey && lf.hasSecret) ? (lf.connected ? '<button id="lfdisc">Desconectar</button>' : '<button id="lfconn">Conectar con Last.fm</button>') : ''}
+      </div><div id="lfmsg" style="font-size:12.5px;margin-top:6px;display:none"></div></div>
+    <div class="row" style="display:block"><div class="k" style="display:flex;align-items:center;gap:8px">Spotify — ¿tengo este disco en mi biblioteca? ${sp.authorized ? badge(true, 'conectado') : sp.configured ? badge(false, 'sin conectar') : ''}</div>
+      <div class="d" id="spotrow" style="margin:3px 0 8px">${sp.authorized ? 'Conectado. <b>' + (sp.matched || 0) + '</b> de tus discos locales están en tu Spotify.' : 'Compara tus discos locales con tu Spotify (solo lectura, no reproduce). Crea una app en <span class="mono">developer.spotify.com/dashboard</span> con la Redirect URI de abajo.'}</div>
+      ${sp.configured ? '' : `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><input id="spid" placeholder="Client ID" value="${esc(sp.clientId || '')}" style="flex:1;min-width:140px"><input id="spsecret" type="password" placeholder="Client Secret" style="flex:1;min-width:140px"><button id="spsave">Guardar</button></div>`}
+      <div class="d" style="margin-bottom:8px">Redirect URI: <span class="mono">${esc(sp.redirectUri || '')}</span> <button id="spcopy" style="padding:3px 8px;font-size:12px">Copiar</button></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap" id="spotbtns">${sp.configured && !sp.authorized ? '<button id="spotconn">Conectar Spotify</button>' : ''}${sp.authorized ? '<button id="spotsync">Sincronizar</button>' : ''}${sp.configured ? '<button id="spclear">Quitar</button>' : ''}</div>
+      <div id="spmsg" style="font-size:12.5px;margin-top:6px;display:none"></div></div>
+    <div class="row"><div class="lbl"><div class="k">Tidal / Qobuz</div><div class="d soon">próximamente</div></div></div>`;
+    wireServices(s);
   }
-  renderSpotify(info.spotify);
-  const sq = new URLSearchParams(location.search).get('spotify');
-  if (sq === 'ok') { const r = document.getElementById('spotrow'); if (r) r.innerHTML = '¡Conectado! Sincronizando tu biblioteca…'; setTimeout(() => fetch('/api/spotify/status').then(x => x.json()).then(renderSpotify).catch(() => {}), 2500); }
-  else if (sq === 'error') { const r = document.getElementById('spotrow'); if (r) r.textContent = 'No se pudo conectar con Spotify. Revisa app/spotify.json y la Redirect URI.'; }
+  function wireServices(s) {
+    const $ = id => document.getElementById(id);
+    if ($('lbsave')) $('lbsave').onclick = async () => { const b = $('lbsave'); b.disabled = true; b.textContent = 'Validando…'; const r = await postScrobble({ listenbrainz: { token: ($('lbtoken').value || '').trim() } }).catch(() => ({})); if (r.ok) { srvMsg('lbmsg', 'Conectado' + (r.user ? ' como ' + r.user : '') + '.', true); loadServices(); } else { srvMsg('lbmsg', r.error || 'No se pudo conectar.', false); b.disabled = false; b.textContent = 'Conectar'; } };
+    if ($('lbdisc')) $('lbdisc').onclick = async () => { await postScrobble({ clear: 'listenbrainz' }); loadServices(); };
+    if ($('lfsave')) $('lfsave').onclick = async () => { const b = $('lfsave'); b.disabled = true; b.textContent = 'Guardando…'; const r = await postScrobble({ lastfm: { apiKey: ($('lfkey').value || '').trim(), apiSecret: ($('lfsecret').value || '').trim() } }).catch(() => ({})); if (r.ok) { srvMsg('lfmsg', 'Claves guardadas. Ahora pulsa «Conectar con Last.fm».', true); loadServices(); } else { srvMsg('lfmsg', r.error || 'Error.', false); b.disabled = false; b.textContent = 'Guardar claves'; } };
+    if ($('lfconn')) $('lfconn').onclick = () => location.href = '/api/lastfm/connect';
+    if ($('lfdisc')) $('lfdisc').onclick = async () => { await postScrobble({ clear: 'lastfm' }); loadServices(); };
+    if ($('spsave')) $('spsave').onclick = async () => { const b = $('spsave'); b.disabled = true; b.textContent = 'Guardando…'; const r = await fetch('/api/config/spotify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clientId: ($('spid').value || '').trim(), clientSecret: ($('spsecret').value || '').trim() }) }).then(x => x.json()).catch(() => ({})); if (r.ok) { srvMsg('spmsg', 'Guardado. Ahora pulsa «Conectar Spotify».', true); loadServices(); } else { srvMsg('spmsg', r.error || 'Error.', false); b.disabled = false; b.textContent = 'Guardar'; } };
+    if ($('spcopy')) $('spcopy').onclick = () => { try { navigator.clipboard.writeText((s.spotify || {}).redirectUri || ''); srvMsg('spmsg', 'Redirect URI copiada.', true); } catch (e) {} };
+    if ($('spotconn')) $('spotconn').onclick = () => location.href = '/api/spotify/auth';
+    if ($('spclear')) $('spclear').onclick = async () => { if (!confirm('¿Quitar la configuración de Spotify?')) return; await fetch('/api/config/spotify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clear: true }) }); loadServices(); };
+    if ($('spotsync')) $('spotsync').onclick = async () => { const b = $('spotsync'); b.disabled = true; b.textContent = 'Sincronizando…'; const r = await fetch('/api/spotify/sync', { method: 'POST' }).then(x => x.json()).catch(() => ({})); if (r.ok) srvMsg('spmsg', 'Sincronizado: ' + r.matched + ' de ' + r.saved + ' guardados.', true); else srvMsg('spmsg', r.error || 'Error.', false); b.disabled = false; b.textContent = 'Sincronizar'; };
+  }
+  loadServices();
+  const qp = new URLSearchParams(location.search);
+  if (qp.get('spotify') === 'ok') setTimeout(() => { srvMsg('spmsg', '¡Spotify conectado! Sincronizando…', true); loadServices(); }, 1500);
+  else if (qp.get('spotify') === 'error') setTimeout(() => srvMsg('spmsg', 'No se pudo conectar con Spotify. Revisa las claves y la Redirect URI.', false), 600);
+  if (qp.get('lastfm') === 'ok') setTimeout(() => { srvMsg('lfmsg', '¡Last.fm conectado!', true); loadServices(); }, 800);
+  else if (qp.get('lastfm') === 'error') setTimeout(() => srvMsg('lfmsg', 'No se pudo conectar con Last.fm. Revisa la API key y el secret.', false), 600);
+  else if (qp.get('lastfm') === 'noconfig') setTimeout(() => srvMsg('lfmsg', 'Primero guarda la API key y el secret.', false), 600);
 
   // ── Biblioteca editable: carpetas vigiladas + Obsidian + reescaneo ──
   const CFG = { folders: [], obsidian: null };

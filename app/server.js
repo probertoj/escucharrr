@@ -70,8 +70,29 @@ let db = new DatabaseSync(DB_PATH);
 initAppSchema(db);
 const lyrics = require('../data-layer/lyrics');
 let scrobCfg = null;
-function loadScrobbleCfg() { const p = path.join(__dirname, 'scrobble.json'); try { scrobCfg = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null; } catch (e) { scrobCfg = null; } return scrobCfg; }
+const SCROBBLE_PATH = path.join(__dirname, 'scrobble.json');
+function loadScrobbleCfg() { try { scrobCfg = fs.existsSync(SCROBBLE_PATH) ? JSON.parse(fs.readFileSync(SCROBBLE_PATH, 'utf8')) : null; } catch (e) { scrobCfg = null; } return scrobCfg; }
 loadScrobbleCfg();
+// Guarda scrobble.json fusionando (conserva lo no tocado, p. ej. la sessionKey de Last.fm).
+function saveScrobbleCfg(patch) {
+  const cfg = scrobCfg || { listenbrainz: {}, lastfm: {} };
+  if (patch.listenbrainz) cfg.listenbrainz = Object.assign({}, cfg.listenbrainz, patch.listenbrainz);
+  if (patch.lastfm) cfg.lastfm = Object.assign({}, cfg.lastfm, patch.lastfm);
+  fs.writeFileSync(SCROBBLE_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+  scrobCfg = cfg; return cfg;
+}
+// Llamada firmada a la API de auth de Last.fm (auth.getToken / auth.getSession).
+async function lfmAuthCall(method, extra) {
+  const lf = (scrobCfg && scrobCfg.lastfm) || {};
+  if (!lf.apiKey || !lf.apiSecret) throw new Error('Faltan la API key y el secret de Last.fm');
+  const params = Object.assign({ method, api_key: lf.apiKey }, extra || {});
+  params.api_sig = scrobble.lastfmSig(params, lf.apiSecret);
+  params.format = 'json';
+  const r = await scrobble.post('https://ws.audioscrobbler.com/2.0/', { form: true, body: params });
+  let j = {}; try { j = JSON.parse(r.body); } catch (e) {}
+  if (r.status !== 200 || j.error) throw new Error('Last.fm ' + (j.error || r.status) + ': ' + (j.message || '').slice(0, 160));
+  return j;
+}
 
 // Spotify (SOLO comparar biblioteca local ↔ álbumes guardados del usuario; no reproduce).
 const spotify = require('../data-layer/spotify');
@@ -84,6 +105,17 @@ function loadSpotify() {
 loadSpotify();
 function saveSpotifyTok(t) { spotifyTok = t; try { fs.writeFileSync(SPOTIFY_TOKEN_PATH, JSON.stringify(t)); } catch (e) {} }
 function spotifyConfigured() { return !!(spotifyCfg && spotifyCfg.clientId && spotifyCfg.clientSecret && spotifyCfg.redirectUri); }
+// URIs de redirección (que el usuario registra en Spotify / que Last.fm usa de callback)
+const SPOTIFY_REDIRECT = 'http://127.0.0.1:' + PORT + '/api/spotify/callback';
+const LASTFM_CALLBACK = 'http://127.0.0.1:' + PORT + '/api/lastfm/callback';
+// Guarda spotify.json (clientId/clientSecret) con la Redirect URI fija; borra el token si cambian las claves.
+function saveSpotifyCfg(clientId, clientSecret) {
+  const changed = !spotifyCfg || spotifyCfg.clientId !== clientId || spotifyCfg.clientSecret !== clientSecret;
+  const cfg = { clientId, clientSecret, redirectUri: SPOTIFY_REDIRECT };
+  fs.writeFileSync(path.join(__dirname, 'spotify.json'), JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+  if (changed) { try { if (fs.existsSync(SPOTIFY_TOKEN_PATH)) fs.unlinkSync(SPOTIFY_TOKEN_PATH); } catch (e) {} }
+  loadSpotify(); return cfg;
+}
 async function spotifyAccessToken() {
   if (!spotifyConfigured() || !spotifyTok) return null;
   if (spotify.expired(spotifyTok)) { try { saveSpotifyTok(await spotify.refresh(spotifyCfg, spotifyTok.refresh_token)); } catch (e) { return null; } }
@@ -1008,6 +1040,27 @@ async function handleSpotify(req, res, u) {
   } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 
+// ── Last.fm: conectar por web (auth.getToken → autorizar → auth.getSession) ──
+async function handleLastfm(req, res, u) {
+  const sub = u.pathname.slice('/api/lastfm/'.length);
+  try {
+    if (sub === 'connect') {
+      if (!(scrobCfg && scrobCfg.lastfm && scrobCfg.lastfm.apiKey && scrobCfg.lastfm.apiSecret)) { res.writeHead(302, { Location: '/settings.html?lastfm=noconfig' }); return res.end(); }
+      // con cb, Last.fm devuelve a nuestro callback con ?token=... (sin guardar nada en memoria)
+      const url = 'https://www.last.fm/api/auth/?api_key=' + encodeURIComponent(scrobCfg.lastfm.apiKey) + '&cb=' + encodeURIComponent(LASTFM_CALLBACK);
+      res.writeHead(302, { Location: url }); return res.end();
+    }
+    if (sub === 'callback') {
+      const token = u.searchParams.get('token');
+      if (!token) { res.writeHead(302, { Location: '/settings.html?lastfm=error' }); return res.end(); }
+      try { const j = await lfmAuthCall('auth.getSession', { token }); saveScrobbleCfg({ lastfm: { sessionKey: j.session.key } }); }
+      catch (e) { res.writeHead(302, { Location: '/settings.html?lastfm=error' }); return res.end(); }
+      res.writeHead(302, { Location: '/settings.html?lastfm=ok' }); return res.end();
+    }
+    res.writeHead(404); res.end('{}');
+  } catch (e) { res.writeHead(302, { Location: '/settings.html?lastfm=error' }); res.end(); }
+}
+
 // ── scrobbling: now-playing (efímero) + submit (cola) + estado ──────────────
 function scrobbleMetaOf(trackId) { const m = Q.scrobbleMeta.get(trackId); if (!m || !m.artist || !m.title) return null; m.track_id = trackId; return m; }
 async function handleScrobble(req, res, u) {
@@ -1436,7 +1489,39 @@ async function handleConfig(req, res, u) {
   try {
     if (req.method === 'GET' && sub === '') return sendJSON(res, { ok: true, ...configInfo() });
     if (sub === 'browse') return void handleBrowse(req, res);
+    // estado de las integraciones (sin exponer secretos: sólo apiKey/clientId y booleanos)
+    if (req.method === 'GET' && sub === 'services') {
+      const lf = (scrobCfg && scrobCfg.lastfm) || {}, lb = (scrobCfg && scrobCfg.listenbrainz) || {};
+      return sendJSON(res, { ok: true,
+        listenbrainz: { connected: !!lb.token },
+        lastfm: { apiKey: lf.apiKey || '', hasSecret: !!lf.apiSecret, connected: !!lf.sessionKey, callbackUri: LASTFM_CALLBACK },
+        spotify: { configured: spotifyConfigured(), authorized: !!spotifyTok, clientId: (spotifyCfg && spotifyCfg.clientId) || '', redirectUri: SPOTIFY_REDIRECT, matched: Q.spotifyCount.get().n },
+        enabled: scrobble.enabledServices(scrobCfg || {}), pending: scrobble.pendingCount(db, scrobCfg || {}) });
+    }
     const body = await readBody(req);
+    // ListenBrainz: valida el token y lo guarda (o lo quita). Last.fm: guarda apiKey/secret (o quita todo).
+    if (sub === 'scrobble') {
+      if (body.clear === 'listenbrainz') { saveScrobbleCfg({ listenbrainz: { token: '' } }); return sendJSON(res, { ok: true, enabled: scrobble.enabledServices(scrobCfg || {}) }); }
+      if (body.clear === 'lastfm') { saveScrobbleCfg({ lastfm: { apiKey: '', apiSecret: '', sessionKey: '' } }); return sendJSON(res, { ok: true, enabled: scrobble.enabledServices(scrobCfg || {}) }); }
+      if (body.listenbrainz && typeof body.listenbrainz.token === 'string') {
+        const token = body.listenbrainz.token.trim();
+        if (!token) { saveScrobbleCfg({ listenbrainz: { token: '' } }); return sendJSON(res, { ok: true, enabled: scrobble.enabledServices(scrobCfg || {}) }); }
+        const r = await scrobble.post('https://api.listenbrainz.org/1/validate-token', { body: JSON.stringify({}), headers: { Authorization: 'Token ' + token } });
+        let j = {}; try { j = JSON.parse(r.body); } catch (e) {}
+        if (r.status === 200 && j.valid) { saveScrobbleCfg({ listenbrainz: { token } }); return sendJSON(res, { ok: true, user: j.user_name, enabled: scrobble.enabledServices(scrobCfg || {}) }); }
+        return sendJSON(res, { ok: false, error: 'Token de ListenBrainz no válido.' });
+      }
+      if (body.lastfm) { saveScrobbleCfg({ lastfm: { apiKey: String(body.lastfm.apiKey || '').trim(), apiSecret: String(body.lastfm.apiSecret || '').trim() } }); return sendJSON(res, { ok: true, needsConnect: !((scrobCfg.lastfm || {}).sessionKey), enabled: scrobble.enabledServices(scrobCfg || {}) }); }
+      return sendJSON(res, { ok: false, error: 'Nada que guardar.' });
+    }
+    // Spotify: guarda clientId/clientSecret (la Redirect URI es fija y se muestra para registrarla)
+    if (sub === 'spotify') {
+      const clientId = String(body.clientId || '').trim(), clientSecret = String(body.clientSecret || '').trim();
+      if (body.clear) { try { if (fs.existsSync(path.join(__dirname, 'spotify.json'))) fs.unlinkSync(path.join(__dirname, 'spotify.json')); if (fs.existsSync(SPOTIFY_TOKEN_PATH)) fs.unlinkSync(SPOTIFY_TOKEN_PATH); } catch (e) {} loadSpotify(); return sendJSON(res, { ok: true, configured: false }); }
+      if (!clientId || !clientSecret) return sendJSON(res, { ok: false, error: 'Hacen falta el Client ID y el Client Secret.' });
+      saveSpotifyCfg(clientId, clientSecret);
+      return sendJSON(res, { ok: true, configured: spotifyConfigured(), redirectUri: SPOTIFY_REDIRECT });
+    }
     if (sub === 'folders') { writeWatchFolders(Array.isArray(body.folders) ? body.folders : []); startWatching(); if (watchConfig() && watchConfig().music.length) _ingSchedule('music'); return sendJSON(res, { ok: true, ...configInfo() }); }
     if (sub === 'obsidian') { writeObsidian(String(body.vault || '').trim(), String(body.albumsFolder || '').trim()); startWatching(); _ingSchedule('vault'); return sendJSON(res, { ok: true, ...configInfo() }); }
     if (sub === 'rescan') { const r = await rescanNow(Array.isArray(body.what) ? body.what : ['music', 'vault']); return sendJSON(res, { ok: true, ...r }); }
@@ -1815,6 +1900,7 @@ http.createServer((req, res) => {
   if (u.pathname.startsWith('/api/native/')) return void handleNative(req, res, u);
   if (u.pathname.startsWith('/api/upnp/')) return void handleUpnp(req, res, u);
   if (u.pathname.startsWith('/api/spotify/')) return void handleSpotify(req, res, u);
+  if (u.pathname.startsWith('/api/lastfm/')) return void handleLastfm(req, res, u);
   if (u.pathname === '/api/config' || u.pathname.startsWith('/api/config/')) return void handleConfig(req, res, u);
   if (u.pathname.startsWith('/api/dsp/')) return void handleDsp(req, res, u);
   if (u.pathname.startsWith('/api/radio/')) return void handleRadio(req, res, u);
