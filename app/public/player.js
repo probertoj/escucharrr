@@ -152,7 +152,7 @@ window.player = (function () {
   function cover(id, s) { return `<img src="/api/cover?rg=${id || 0}" alt="" draggable="false" style="width:${s}px;height:${s}px;object-fit:cover;border-radius:7px;display:block">`; }
   function logPlay() { const c = cur(); if (c && c.trackId && loggedIdx !== idx) { loggedIdx = idx; fetch('/api/play', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ track_id: c.trackId, zone: zone.name }) }).catch(() => {}); } }
   const spost = (p, b) => fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).catch(() => {});
-  function trackStarted() { trackStartEpoch = Math.floor(Date.now() / 1000); const c = cur(); if (c && c.trackId) spost('/api/scrobble/nowplaying', { track_id: c.trackId }); fetchPeaks(); if (lypanel && lypanel.style.display === 'block') loadLyrics(); }   // "sonando ahora" + recargar letra si el panel está abierto
+  function trackStarted() { trackStartEpoch = Math.floor(Date.now() / 1000); const c = cur(); if (c && c.trackId) spost('/api/scrobble/nowplaying', { track_id: c.trackId }); fetchPeaks(); if (lypanel && lypanel.style.display === 'block') loadLyrics(); if (npfs && npfs.style.display === 'flex') { npLyActive = -1; loadNpMeta(); renderNpFs(); } }   // "sonando ahora" + recargar letra/metadatos si el panel/fullscreen está abierto
   // scrobble al superar el umbral (mitad de la pista o 4 min; pistas ≥ 30 s), una sola vez
   function maybeScrobble() {
     const c = cur(); if (!c || !c.trackId || scrobbledIdx === idx) return;
@@ -187,46 +187,102 @@ window.player = (function () {
     for (let i = 0; i < n; i++) { const h = Math.max(3, peaks[i] / 255 * 100); const y = ((100 - h) / 2).toFixed(1); b += '<rect x="' + (i + 0.12).toFixed(2) + '" y="' + y + '" width="0.76" height="' + h.toFixed(1) + '" rx="0.3"/>'; }
     return '<svg viewBox="0 0 ' + n + ' 100" preserveAspectRatio="none" width="100%" height="100%" style="display:block">' + b + '</svg>';
   }
-  // ── pantalla "ahora suena" a pantalla completa (estilo Roon) ──
-  let npfs = null;
-  function ensureNpFs() { if (npfs) return; npfs = document.createElement('div'); npfs.id = 'npfs'; npfs.setAttribute('style', 'position:fixed;inset:0;z-index:75;background:var(--bg);display:none;flex-direction:column;overflow:auto'); document.body.appendChild(npfs); }
-  function toggleNpFs() { ensureNpFs(); if (npfs.style.display === 'flex') { npfs.style.display = 'none'; return; } renderNpFs(); npfs.style.display = 'flex'; }
+  // ── pantalla "ahora suena" a pantalla completa, por PÁGINAS (estilo Roon component_fullscreen_nowplaying:
+  //    atom_nowplaying_{image,lyrics,credits,review,bio}). Carátula · Letra (LRC sincronizada) · Créditos · Reseña · Artista. ──
+  let npfs = null, npPage = 'cover', npMeta = null, npMetaId = -1, npBio = null, npBioId = -1, npLyActive = -1;
+  function ensureNpFs() { if (npfs) return; npfs = document.createElement('div'); npfs.id = 'npfs'; npfs.setAttribute('style', 'position:fixed;inset:0;z-index:75;background:var(--bg);display:none;flex-direction:column;overflow:hidden'); document.body.appendChild(npfs); }
+  function toggleNpFs() { ensureNpFs(); if (npfs.style.display === 'flex') { npfs.style.display = 'none'; return; } npPage = 'cover'; npLyActive = -1; loadNpMeta(); renderNpFs(); npfs.style.display = 'flex'; }
+  // Metadatos del álbum/artista para las páginas (créditos/reseña/bio); cacheados por álbum.
+  function loadNpMeta() {
+    const c = cur(); if (!c || !c.albumId) { npMeta = null; npMetaId = -1; return; }
+    if (npMetaId === c.albumId && npMeta) { return; }
+    npMetaId = c.albumId; npMeta = null;
+    fetch('/api/album?id=' + c.albumId).then(r => r.json()).then(a => { const cc = cur(); if (!cc || cc.albumId !== npMetaId) return; npMeta = a; if (a.artist_id) fetchNpBio(a.artist_id); if (npfs && npfs.style.display === 'flex' && (npPage === 'credits' || npPage === 'review')) renderNpFs(); }).catch(() => {});
+  }
+  function fetchNpBio(aid) { if (!aid) return; if (npBioId === aid && npBio) return; npBioId = aid; npBio = null; fetch('/api/artist?id=' + aid).then(r => r.json()).then(a => { npBio = a; if (npfs && npfs.style.display === 'flex' && npPage === 'bio') renderNpFs(); }).catch(() => {}); }
+  // Letra con sincronía: comparte lyCache/parseLRC con el panel de esquina.
+  function npEnsureLyrics(cb) { const c = cur(); if (!c || !c.trackId) { cb && cb(null); return; } if (lyCache[c.trackId]) { cb && cb(lyCache[c.trackId]); return; } fetch('/api/lyrics?track=' + c.trackId).then(r => r.json()).then(j => { j.syncedArr = j.synced ? parseLRC(j.synced) : null; lyCache[c.trackId] = j; const cc = cur(); if (cc && cc.trackId === c.trackId) cb && cb(j); }).catch(() => cb && cb(null)); }
+  const npMd = s => window.mdToHtml ? window.mdToHtml(s) : esc(s).replace(/\n/g, '<br>');
+  const npCredLabel = x => x.role === 'instrumento' && x.instrument ? x.instrument : (x.role === 'voz' && x.instrument ? 'voz (' + x.instrument + ')' : x.role);
+  function npPageHtml(c, wf, frac, len, p) {
+    if (npPage === 'lyrics') return `<div id="nplyrics" style="width:100%;max-width:560px;text-align:center;font-size:19px;line-height:1.85;padding:6px 0;color:var(--text-2)">Buscando letra…</div>`;
+    if (npPage === 'credits') {
+      if (!npMeta) return `<div style="color:var(--text-2);margin-top:30px">Cargando créditos…</div>`;
+      const cr = npMeta.credits || [];
+      if (!cr.length) return `<div style="color:var(--text-2);margin-top:30px;text-align:center">Sin créditos. Identifica el álbum para enriquecerlos.</div>`;
+      return `<div style="width:100%;max-width:520px;margin-top:4px">` + cr.map(x => `<div style="display:flex;gap:14px;padding:8px 0;border-bottom:1px solid var(--border)"><div style="width:42%;color:var(--text-2);font-size:13px">${esc(npCredLabel(x))}</div><div style="flex:1;font-size:14px">${(x.artists || []).map(esc).join(', ')}</div></div>`).join('') + `</div>`;
+    }
+    if (npPage === 'review') {
+      if (!npMeta) return `<div style="color:var(--text-2);margin-top:30px">Cargando…</div>`;
+      const rv = (npMeta.reviews && npMeta.reviews[0]) || (npMeta.about ? { text: npMeta.about, label: 'Reseña' } : null);
+      if (!rv || !rv.text) return `<div style="color:var(--text-2);margin-top:30px;text-align:center">Sin reseña. Añádela desde la ficha del álbum.</div>`;
+      return `<div style="width:100%;max-width:560px;margin-top:4px"><div style="font-size:12px;color:var(--text-2);margin-bottom:8px">${esc(rv.label || 'Reseña')}</div><div style="line-height:1.7;font-size:15px">${npMd(rv.text)}</div></div>`;
+    }
+    if (npPage === 'bio') {
+      if (!npBio) return `<div style="color:var(--text-2);margin-top:30px">Cargando biografía…</div>`;
+      if (!npBio.bio) return `<div style="color:var(--text-2);margin-top:30px;text-align:center">Sin biografía${npBio.name ? ' de ' + esc(npBio.name) : ''}.</div>`;
+      return `<div style="width:100%;max-width:560px;margin-top:4px"><div style="font-weight:600;font-size:18px;margin-bottom:8px">${esc(npBio.name || '')}</div><div style="line-height:1.7;font-size:15px">${npMd(npBio.bio)}</div></div>`;
+    }
+    // 'cover' (por defecto): carátula grande + título/artista + "a continuación"
+    const up = q.slice(idx + 1, idx + 6);
+    return `<div style="width:min(44vh,300px);aspect-ratio:1;border-radius:16px;overflow:hidden;box-shadow:0 12px 44px rgba(0,0,0,.28);margin-top:6px;flex:none"><img src="/api/cover?rg=${c.albumId}" alt="" style="width:100%;height:100%;object-fit:cover;display:block"></div>
+      <div style="text-align:center;margin-top:16px">
+        <div style="font-family:var(--serif);font-size:26px;font-weight:600;line-height:1.2">${esc(c.title)}</div>
+        <div style="font-size:16px;color:var(--text-2);margin-top:5px">${esc(c.artist || '')}${c.album ? ` · <a href="album.html?id=${c.albumId}" style="color:var(--text-2)">${esc(c.album)}</a>` : ''}</div>
+      </div>
+      ${up.length ? `<div style="width:100%;max-width:460px;margin-top:20px"><div style="font-size:12px;color:var(--text-2);margin-bottom:6px">A continuación</div>${up.map((t, i) => `<div data-act="npjump" data-i="${idx + 1 + i}" style="display:flex;gap:10px;padding:7px 8px;border-radius:7px;cursor:pointer;font-size:14px"><span style="color:var(--text-2);width:18px;text-align:right">${idx + 2 + i}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(t.title)}</span><span style="color:var(--text-2);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:40%">${esc(t.artist || '')}</span></div>`).join('')}</div>` : ''}`;
+  }
+  function renderNpLyInto(j) {
+    const box = document.getElementById('nplyrics'); if (!box) return;
+    if (!j || !j.found) { box.innerHTML = '<span style="color:var(--text-2)">' + (j && j.instrumental ? 'Instrumental.' : 'Sin letra para esta pista.') + '</span>'; return; }
+    if (j.syncedArr && j.syncedArr.length) { box.innerHTML = j.syncedArr.map((l, i) => `<div class="nplyline" data-i="${i}" style="padding:4px 0;color:var(--text-2);transition:color .12s,font-size .12s">${esc(l.text) || '♪'}</div>`).join(''); npLyActive = -1; syncNpLy(); }
+    else if (j.plain) { box.innerHTML = '<div style="white-space:pre-wrap;text-align:left">' + esc(j.plain) + '</div>'; }
+    else box.innerHTML = '<span style="color:var(--text-2)">Sin letra para esta pista.</span>';
+  }
+  // resalta y centra la línea LRC en curso (en la página de letra del fullscreen)
+  function syncNpLy() {
+    if (!npfs || npfs.style.display !== 'flex' || npPage !== 'lyrics') return;
+    const c = cur(); const j = c && lyCache[c.trackId]; if (!j || !j.syncedArr) return;
+    const p = posMs(); const arr = j.syncedArr; let a = -1; for (let i = 0; i < arr.length; i++) { if (arr[i].t <= p) a = i; else break; }
+    if (a === npLyActive) return; npLyActive = a;
+    const lines = npfs.querySelectorAll('.nplyline'); if (!lines.length) return;
+    lines.forEach((el, i) => { const on = i === a; el.style.color = on ? 'var(--accent)' : 'var(--text-2)'; el.style.fontWeight = on ? '700' : '400'; el.style.fontSize = on ? '22px' : '19px'; });
+    if (a >= 0 && lines[a]) lines[a].scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+  const NP_PAGES = [['cover', 'Carátula'], ['lyrics', 'Letra'], ['credits', 'Créditos'], ['review', 'Reseña'], ['bio', 'Artista']];
   function renderNpFs() {
     if (!npfs) return; const c = cur(); if (!c) { npfs.style.display = 'none'; return; }
     const len = lenMs(), p = posMs(), frac = len ? Math.min(100, p / len * 100) : 0, wf = curPeaks && curPeaksTrack === c.trackId;
-    const up = q.slice(idx + 1, idx + 6);
+    const tabs = NP_PAGES.map(([k, lab]) => `<span data-act="nppage" data-page="${k}" style="cursor:pointer;font-size:13px;padding:5px 13px;border-radius:999px;${npPage === k ? 'background:var(--surface-2);color:var(--text);font-weight:600' : 'color:var(--text-2)'}">${lab}</span>`).join('');
     npfs.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 20px">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 20px;flex:none">
         <span style="color:var(--text-2);font-size:13px">Ahora suena${nativeMode ? ' · nativo' : upnpMode ? ' · ' + esc(upnpDevName || 'red') : ''}</span>
         <span data-act="npclose" title="Cerrar" style="cursor:pointer;display:inline-flex;color:var(--text-2)">${ic('close', 22)}</span>
       </div>
-      <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:0 20px 36px;max-width:680px;margin:0 auto;width:100%">
-        <div style="width:min(54vh,320px);aspect-ratio:1;border-radius:16px;overflow:hidden;box-shadow:0 12px 44px rgba(0,0,0,.28)"><img src="/api/cover?rg=${c.albumId}" alt="" style="width:100%;height:100%;object-fit:cover;display:block"></div>
-        <div style="text-align:center">
-          <div style="font-family:var(--serif);font-size:27px;font-weight:600;line-height:1.2">${esc(c.title)}</div>
-          <div style="font-size:16px;color:var(--text-2);margin-top:5px">${esc(c.artist || '')}${c.album ? ` · <a href="album.html?id=${c.albumId}" style="color:var(--text-2)">${esc(c.album)}</a>` : ''}</div>
-        </div>
-        <div style="width:100%;display:flex;align-items:center;gap:10px">
+      <div style="display:flex;gap:6px;justify-content:center;flex-wrap:wrap;padding:0 16px 8px;flex:none">${tabs}</div>
+      <div id="nppagebody" style="flex:1;overflow:auto;display:flex;flex-direction:column;align-items:center;padding:8px 20px 16px;max-width:720px;margin:0 auto;width:100%">${npPageHtml(c, wf, frac, len, p)}</div>
+      <div style="flex:none;border-top:1px solid var(--border);background:var(--bg);padding:12px 20px;max-width:720px;margin:0 auto;width:100%;box-sizing:border-box">
+        <div style="display:flex;align-items:center;gap:10px">
           <span id="npfsel" style="font-size:12px;color:var(--muted);width:40px;text-align:right">${mmss(p)}</span>
           ${wf
-            ? `<div data-act="seek" title="Buscar" style="position:relative;flex:1;height:48px;cursor:pointer"><div style="position:absolute;inset:0;fill:var(--surface-2)">${wfSvg(curPeaks)}</div><div id="npfswf" style="position:absolute;inset:0;fill:var(--accent);clip-path:inset(0 ${100 - frac}% 0 0)">${wfSvg(curPeaks)}</div></div>`
+            ? `<div data-act="seek" title="Buscar" style="position:relative;flex:1;height:40px;cursor:pointer"><div style="position:absolute;inset:0;fill:var(--surface-2)">${wfSvg(curPeaks)}</div><div id="npfswf" style="position:absolute;inset:0;fill:var(--accent);clip-path:inset(0 ${100 - frac}% 0 0)">${wfSvg(curPeaks)}</div></div>`
             : `<div data-act="seek" title="Buscar" style="flex:1;height:10px;display:flex;align-items:center;cursor:pointer"><div style="width:100%;height:5px;background:var(--surface-2);border-radius:999px;overflow:hidden"><div id="npfsprog" style="width:${frac}%;height:100%;background:var(--accent)"></div></div></div>`}
           <span style="font-size:12px;color:var(--muted);width:40px">${mmss(len)}</span>
         </div>
-        <div style="display:flex;align-items:center;gap:30px;color:var(--text)">
-          <span data-act="prev" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Anterior">${ic('prev', 28)}</span>
-          <span data-act="toggle" style="cursor:pointer;display:inline-flex" title="Play/Pausa">${ic(playing ? 'pause' : 'play', 46)}</span>
-          <span data-act="next" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Siguiente">${ic('next', 28)}</span>
+        <div style="display:flex;align-items:center;justify-content:center;gap:30px;color:var(--text);margin-top:10px">
+          <span data-act="prev" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Anterior">${ic('prev', 26)}</span>
+          <span data-act="toggle" style="cursor:pointer;display:inline-flex" title="Play/Pausa">${ic(playing ? 'pause' : 'play', 44)}</span>
+          <span data-act="next" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Siguiente">${ic('next', 26)}</span>
         </div>
-        <div style="display:flex;align-items:center;gap:20px;color:var(--text-2)">
+        <div style="display:flex;align-items:center;justify-content:center;gap:20px;color:var(--text-2);margin-top:9px">
           <span data-act="mute" style="cursor:pointer;display:inline-flex" title="Silenciar">${ic(volIcon(), 18)}</span>
           <input data-act="vol" type="range" min="0" max="1" step="0.01" value="${vol}" title="Volumen" style="width:120px;accent-color:var(--accent)">
-          <span data-act="lyrics" title="Letra" style="cursor:pointer;display:inline-flex">${ic('lyrics', 18)}</span>
           <span data-act="eq" title="Ecualizador y crossfade" style="cursor:pointer;display:inline-flex;${eqOn || xfade > 0 ? 'color:var(--accent)' : ''}">${ic('eq', 18)}</span>
           <span data-act="zone" title="Salida / zona" style="cursor:pointer;display:inline-flex;${nativeMode || upnpMode ? 'color:var(--accent)' : ''}">${ic('zone', 18)}</span>
         </div>
-        ${up.length ? `<div style="width:100%;margin-top:6px"><div style="font-size:12px;color:var(--text-2);margin-bottom:6px">A continuación</div>${up.map((t, i) => `<div data-act="npjump" data-i="${idx + 1 + i}" style="display:flex;gap:10px;padding:7px 8px;border-radius:7px;cursor:pointer;font-size:14px"><span style="color:var(--text-2);width:18px;text-align:right">${idx + 2 + i}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(t.title)}</span><span style="color:var(--text-2);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:40%">${esc(t.artist || '')}</span></div>`).join('')}</div>` : ''}
       </div>`;
+    if (npPage === 'lyrics') npEnsureLyrics(renderNpLyInto);
+    if ((npPage === 'credits' || npPage === 'review') && !npMeta) loadNpMeta();
   }
   function ensureBar() { if (bar) return; bar = document.createElement('div'); bar.id = 'nowbar'; bar.setAttribute('style', 'position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);border-top:1px solid var(--border);padding:8px 16px;display:none;align-items:center;gap:14px'); document.body.appendChild(bar); }
   const ic = (n, s) => window.icon ? window.icon(n, s || 18) : '';           // icono de línea monocromo
@@ -267,7 +323,7 @@ window.player = (function () {
   }
   function progress() { const c = cur(); if (!c) return; const len = lenMs(), p = posMs(); const frac = len ? Math.min(100, p / len * 100) : 0; const pr = document.getElementById('npprog'), wf = document.getElementById('npwf'), el = document.getElementById('npel'); if (pr && len) pr.style.width = frac + '%'; if (wf && len) wf.style.clipPath = 'inset(0 ' + (100 - frac) + '% 0 0)'; if (el) el.textContent = mmss(p);
     const pr2 = document.getElementById('npfsprog'), wf2 = document.getElementById('npfswf'), el2 = document.getElementById('npfsel'); if (pr2 && len) pr2.style.width = frac + '%'; if (wf2 && len) wf2.style.clipPath = 'inset(0 ' + (100 - frac) + '% 0 0)'; if (el2) el2.textContent = mmss(p);
-    maybeScrobble(); maybeRadio(); syncLy(); }
+    maybeScrobble(); maybeRadio(); syncLy(); syncNpLy(); }
   const emit = () => document.dispatchEvent(new Event('player:change'));
 
   // ── crossfade: al acercarse el final de la pista activa, solapa con la siguiente ──
@@ -728,6 +784,7 @@ window.player = (function () {
     else if (k === 'next') next();
     else if (k === 'toggle') toggle();
     else if (k === 'npopen' || k === 'npclose') toggleNpFs();
+    else if (k === 'nppage') { npPage = a.dataset.page; npLyActive = -1; renderNpFs(); }
     else if (k === 'npjump') jumpTo(+a.dataset.i);
     else if (k === 'eq') toggleEqPanel();
     else if (k === 'lyrics') toggleLyPanel();
