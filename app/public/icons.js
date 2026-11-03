@@ -47,6 +47,7 @@
     sleep: '<path d="M20 13.2A8 8 0 1110.8 4 6.5 6.5 0 0020 13.2z"/><path d="M15 4h4l-4 4h4"/>',
     'thumb-down': '<path d="M7 3v9M7 12l2.2 7a1.6 1.6 0 003-.6V14h5a2 2 0 002-2.4l-1.2-6A2 2 0 0016 4H9.5A2.5 2.5 0 007 6.5"/>',
     challenge: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.8"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/>',
+    calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 9.5h17M8 3.5v3M16 3.5v3"/>',
     want: '<path d="M12 20s-7-4.4-7-9.5A3.8 3.8 0 0112 7a3.8 3.8 0 017 3.5c0 5.1-7 9.5-7 9.5z"/><path d="M12 11v5M9.5 13.5h5"/>',
     visualizer: '<path d="M4 14v4M8 9v9M12 5v13M16 10v8M20 13v5"/>',
     'theme-auto': '<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 010 17z" fill="currentColor" stroke="none"/>',
