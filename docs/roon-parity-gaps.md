@@ -253,10 +253,12 @@ ha corrido sobre el NAS). `lyrics.found` = 0 (se baja bajo demanda vía LRCLIB).
 volumen y waveform están GATEADOS por una pasada de `analyze.js` (horas sobre SMB), no son gratis.
 
 **Las 5 siguientes (propuesta priorizada):**
-1. **Pantalla "Now Playing" a pantalla completa con páginas** (carátula grande + **letra
-   sincronizada LRC** + créditos + reseña + bio), modelo `component_fullscreen_nowplaying`/
-   `atom_nowplaying_*` de Roon y el now-playing de Plexamp. Solo UI + endpoints existentes
-   (`/api/lyrics`, `/api/album`). Barato, alto valor. **P1**.
+1. ✅ **HECHO (Nov 3 2026)** — **Pantalla "Now Playing" a pantalla completa con páginas**
+   (Carátula · Letra LRC sincronizada · Créditos · Reseña · Artista), modelo
+   `component_fullscreen_nowplaying`/`atom_nowplaying_*`. En `player.js` (npfs): pestañas +
+   transporte/waveform fijos; letra reutiliza `parseLRC`/`lyCache`; créditos/reseña/bio de
+   `/api/album`+`/api/artist`. Nota del RE: `npfs` ya existía (carátula+waveform+cola); esto
+   le añadió las páginas. Probado en vivo con Kind of Blue.
 2. **Nivelado de volumen (ReplayGain/R128)**: correr/ampliar `analyze.js` para poblar gain/peak y
    aplicar ganancia por pista/álbum en el reproductor (web + nativo) con toggle. Roon `volume
    leveling`, Plexamp `loudness leveling`. Alto valor; coste = pasada de análisis (incremental). **P1/P2**.
