@@ -400,3 +400,38 @@ densidad/orden unificados, atajos, clásica a fondo, ajustes de salida finos.
 
 Diferido: **clásica/obras a fondo** (la biblioteca tiene ~5 obras; bajo ROI hoy), **temas/skins**
 avanzados, **sync de listas** a Tidal/Qobuz (sin cuentas), **mezcla armónica** (key/BPM).
+
+---
+
+## RE pasada 4 (Nov 3 2026) — géneros/mantenimiento/temas/notificaciones → próximas 5
+
+Cuarto byte-mining enfocado en lo último sin cubrir. **Roon:** mapeo de géneros fuerte
+(`component_edit_genre_mappings`, `dialog_edit_genre_mapping`, `edit_genre_mapping_hide/option/save`,
+`add_genre_mapping` — renombrar/ocultar etiquetas crudas a un género canónico); mantenimiento
+(`dialog_library_maintenance`, `edit_album_reanalyze`, `edit_track_reanalyze`, `component_skipped_files`);
+origen de metadatos (`import_settings_prefer_file|metadata|best`); temas/display (`current_theme`,
+`themes`, `background_image_blur/spec`, `display_settings_menu`); perfiles multi-usuario fuerte
+(`Profiles`, `create/edit/delete_profile`, `dialog_profile_stats_*`, `edit_move_plays_profile_row`);
+`notification` 56/`alert` 267; clásica (composition 173, conductor 44, period 40, ensemble 40).
+**Plexamp:** temas/skins (theme 104, color 168, palette 41, skin 20, accent 7, backdrop 13), mood 127,
+armónica (key 228/tempo 56/bpm 6 — necesita análisis), dj 435 (descartado).
+
+**Cotejo:** escucharrr tiene géneros crudos de tags (ruidosos), análisis global (no por-álbum desde la
+UI), tema claro/oscuro/auto (sin color de acento), eventos SSE de biblioteca (sin toasts), single-user.
+
+### Las próximas 5 (propuesta priorizada)
+1. **Mapeo y limpieza de géneros** — renombrar etiquetas crudas a un género canónico y ocultar ruido;
+   convierte "sin clasificar" en algo accionable. Alto valor con una biblioteca de 25k álbumes de tags
+   dispares. Roon `component_edit_genre_mappings`/`edit_genre_mapping_hide`. **P2**.
+2. **Reanálisis por álbum desde la UI** — botón que corre `analyze.js`/`waveform.js --rg` en segundo
+   plano para un disco (loudness/waveform), sin tocar el escaneo global. Roon `edit_album_reanalyze`. **P3**.
+3. **Temas: color de acento (+ "del disco")** sobre el claro/oscuro/auto ya existente. Plexamp
+   themes/skins/accent/palette. **P3**.
+4. **Notificaciones in-app (toasts)** para eventos de fondo: escaneo terminado, deseo **conseguido** vía
+   Liderarrr, scrobble en cola enviado. Surfacing de SSE + estado de Liderarrr. Roon `notification`/`alert`. **P3**.
+5. **Preferencia de origen de metadatos por álbum** (tus tags vs enriquecido) — el toggle grueso que la
+   RE del modelo de Roon (`ContentPreferences`) reveló como real. Roon `import_settings_prefer_*`. **P3**.
+
+Diferido: **perfiles multi-usuario** (ROI bajo en una app personal), **clásica/obras a fondo** (pocas
+obras), **mezcla armónica/similitud sónica espectral** (necesitan análisis que no tenemos), **ARC/
+remoto** (N/A), **DJ con voz** (descartado).
