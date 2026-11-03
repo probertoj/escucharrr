@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — limpiar géneros</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.grow{display:flex;gap:10px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--border)}
+.grow .raw{flex:1;min-width:0;font-size:14px}
+.grow .raw .n{color:var(--muted);font-size:12px;margin-left:6px}
+.grow input[type=text]{width:180px;font-size:13px}
+.grow label{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:var(--text-2);cursor:pointer}
+.grow .st{width:70px;font-size:11px;text-align:right}
+.note{background:var(--surface-2);border-radius:12px;padding:16px;color:var(--text-2);font-size:14px;line-height:1.55}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap"><h1 style="font-size:26px;margin:0">Limpiar géneros</h1><a href="genres.html" style="color:var(--text-2);font-size:13px">← Géneros</a><span id="count" style="color:var(--text-2);font-size:13px;margin-left:auto"></span></div>
+  <div style="color:var(--text-2);font-size:14px;margin-bottom:12px">Renombra una etiqueta cruda a un género <b>canónico</b> (p. ej. «Slacker Rock» → «indie») u <b>ocúltala</b> si es ruido. Se aplica en toda la app al instante; no toca tus ficheros.</div>
+  <input id="filter" type="search" placeholder="Filtrar géneros…" style="width:100%;margin-bottom:10px">
+  <div id="list">cargando…</div>
+</div>
+<script src="icons.js" defer></script>
+<script src="nav.js" defer></script>
+<script src="player.js" defer></script>
+<script>
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const listEl=document.getElementById('list');
+let DATA=[], CANON=[];
+async function load(){
+  let d; try{ d=await fetch('/api/genremap').then(r=>r.json()); }catch(e){ listEl.innerHTML='<div class="note">No se pudo cargar.</div>'; return; }
+  DATA=d.genres||[]; CANON=d.canon||[];
+  document.getElementById('count').textContent=DATA.length+' géneros';
+  render();
+}
+function render(){
+  const q=(document.getElementById('filter').value||'').toLowerCase();
+  const rows=DATA.filter(g=>!q || g.raw.toLowerCase().includes(q) || (g.canonical||'').toLowerCase().includes(q));
+  listEl.innerHTML='<datalist id="canons">'+CANON.map(c=>`<option value="${esc(c)}">`).join('')+'</datalist>'
+    + (rows.length?rows.map(g=>`<div class="grow" data-raw="${esc(g.raw)}">
+        <span class="raw">${esc(g.raw)}<span class="n">${g.n}</span></span>
+        <span style="color:var(--muted)">→</span>
+        <input type="text" class="canon" list="canons" placeholder="(sin cambios)" value="${esc(g.canonical||'')}" ${g.hidden?'disabled':''}>
+        <label><input type="checkbox" class="hide" ${g.hidden?'checked':''}> ocultar</label>
+        <span class="st" id="st-${esc(g.raw).replace(/[^a-z0-9]/gi,'_')}"></span></div>`).join('')
+      : '<div class="note">Ningún género coincide.</div>');
+}
+function stId(raw){ return 'st-'+raw.replace(/[^a-z0-9]/gi,'_'); }
+async function save(raw, canonical, hidden){
+  const st=document.getElementById(stId(raw)); if(st){st.textContent='…';st.style.color='var(--text-2)';}
+  try{ const r=await fetch('/api/genremap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({raw,canonical,hidden})}).then(x=>x.json());
+    const g=DATA.find(x=>x.raw===raw); if(g){g.canonical=canonical;g.hidden=hidden;}
+    if(st){st.textContent=r.ok?'guardado':'error';st.style.color=r.ok?'var(--accent)':'#c0392b'; setTimeout(()=>{if(st)st.textContent='';},1500);}
+  }catch(e){ if(st){st.textContent='error';st.style.color='#c0392b';} }
+}
+listEl.addEventListener('change',e=>{
+  const row=e.target.closest('.grow'); if(!row)return; const raw=row.dataset.raw;
+  const canon=row.querySelector('.canon'), hide=row.querySelector('.hide');
+  if(e.target.classList.contains('hide')){ canon.disabled=hide.checked; }
+  save(raw, canon.value.trim(), hide.checked?1:0);
+});
+document.getElementById('filter').addEventListener('input',render);
+load();
+</script>
+</body>
+</html>

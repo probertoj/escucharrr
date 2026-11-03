@@ -53,7 +53,8 @@ function initAppSchema(d) {
   CREATE TABLE IF NOT EXISTS dsp_preset (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, state TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS radio_station (id INTEGER PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, homepage TEXT, favicon TEXT, created_at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS skipped_file (path TEXT, reason TEXT, at TEXT DEFAULT (datetime('now')));
-  CREATE TABLE IF NOT EXISTS smart_playlist (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, rules TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));`);
+  CREATE TABLE IF NOT EXISTS smart_playlist (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, rules TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
+  CREATE TABLE IF NOT EXISTS genre_map (raw TEXT PRIMARY KEY, canonical TEXT, hidden INTEGER DEFAULT 0);`);
   // Índices sobre las claves foráneas del grafo: sin ellos, recorrer release_group -> release -> medium -> track -> local_file
   // hace scans anidados por álbum (inviable con decenas de miles de discos). Cada uno en su try por si el grafo aún no existe.
   for (const ix of [
@@ -529,7 +530,7 @@ function home() {
     counts: { artists: Q.cArtists.get().n, albums: Q.cAlbums.get().n, tracks: Q.cTracks.get().n, genres: Q.cGenres.get().n },
     recent: Q.recent.all(),
     tiers: Q.tiers.all(),
-    genres: Q.topGenres.all(),
+    genres: gmAgg(Q.allGenres.all()).slice(0, 8),
     listening: {
       total: Q.totalPlays.get(),
       daily: Q.daily.all(),
@@ -586,7 +587,7 @@ function versionsOf(id, title) {
 }
 function album(id) {
   const a = Q.album.get(id); if (!a) return null;
-  a.genres = (Q.genresOf.get(id).gs || '').split('|').filter(Boolean);
+  a.genres = gmList((Q.genresOf.get(id).gs || '').split('|').filter(Boolean));
   a.format = (Q.formatOf.get(id) || {}).f || null;
   // Reseñas: TODAS las fuentes disponibles (para el selector estilo Roon). La editable (tuya/Obsidian)
   // va primera y es la que "manda"; la editorial externa (Wikipedia) se ofrece como alternativa.
@@ -636,7 +637,7 @@ function libraryList() {
   const label = new Map(Q.labelAll.all().map(r => [r.id, r.c]));       // sello discográfico → faceta Focus
   const tags = new Map(Q.tagsAll.all().map(r => [r.id, (r.gs || '').split('|').filter(Boolean)]));
   for (const a of rows) {
-    a.genres = genres.get(a.id) || [];
+    a.genres = gmList(genres.get(a.id) || []);
     a.format = format.get(a.id) || null;
     a.country = country.get(a.id) || null;
     a.label = label.get(a.id) || null;
@@ -800,7 +801,7 @@ function artist(id) {
   a.bio = edit ? edit.v : a.bio;
   a.bio_source = edit ? { source: 'user' } : (Q.artistBioProv.get(id) || null);
   a.tier_key = (Q.artistTier.get(id) || {}).tier_key || null;
-  a.genres = Q.artistGenres.all(id);
+  a.genres = gmAgg(Q.artistGenres.all(id));
   a.albums = Q.artistAlbums.all(id);
   const own = new Set(a.albums.map(x => x.id));
   a.appears = Q.artistAppears.all(id)
@@ -925,13 +926,40 @@ async function handleSmart(req, res, u) {
     res.writeHead(404); res.end('{}');
   } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }
+async function handleGenreMap(req, res, u) {
+  try {
+    if (req.method === 'GET') {
+      const rows = Q.allGenres.all().map(r => { const m = _gmap.get(String(r.name).toLowerCase()) || {}; return { raw: r.name, n: r.n, canonical: m.canonical || '', hidden: !!m.hidden }; });
+      return sendJSON(res, { ok: true, genres: rows, canon: gmAgg(Q.allGenres.all()).map(g => g.name) });
+    }
+    const b = await readBody(req); const raw = String(b.raw || '').trim(); if (!raw) return sendJSON(res, { ok: false, error: 'falta raw' });
+    const canonical = String(b.canonical || '').trim(), hidden = b.hidden ? 1 : 0;
+    if (!canonical && !hidden) db.prepare('DELETE FROM genre_map WHERE raw=?').run(raw);
+    else db.prepare('INSERT INTO genre_map(raw,canonical,hidden) VALUES(?,?,?) ON CONFLICT(raw) DO UPDATE SET canonical=excluded.canonical, hidden=excluded.hidden').run(raw, canonical || null, hidden);
+    loadGenreMap();
+    try { sseBroadcast('library'); } catch (e) {}
+    return sendJSON(res, { ok: true });
+  } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
+}
+// ── mapeo de géneros: renombrar etiquetas crudas a un canónico u ocultarlas (ruido) ──
+let _gmap = new Map();   // raw(min) → { canonical, hidden }
+function loadGenreMap() { _gmap = new Map(); try { for (const r of db.prepare('SELECT raw, canonical, hidden FROM genre_map').all()) _gmap.set(String(r.raw).toLowerCase(), { canonical: r.canonical, hidden: !!r.hidden }); } catch (e) {} }
+function gmOne(name) { const m = _gmap.get(String(name || '').toLowerCase()); if (!m) return name; if (m.hidden) return null; return m.canonical || name; }
+function gmList(arr) { const out = [], seen = new Set(); for (const g of arr || []) { const n = gmOne(g); if (n == null) continue; const k = n.toLowerCase(); if (seen.has(k)) continue; seen.add(k); out.push(n); } return out; }
+function gmAgg(rows) { const m = new Map(); for (const r of rows || []) { const n = gmOne(r.name); if (n == null) continue; m.set(n, (m.get(n) || 0) + (r.n || 0)); } return [...m.entries()].map(([name, n]) => ({ name, n })).sort((a, b) => b.n - a.n || a.name.localeCompare(b.name)); }
+loadGenreMap();   // carga inicial del mapa (ya existen db y la tabla)
 function genre(name) {
-  const albums = Q.genreAlbums.all(name);
+  const raws = db.prepare('SELECT DISTINCT g.name FROM genre g JOIN release_group_genre rgg ON rgg.genre_id=g.id').all().map(r => r.name).filter(g => gmOne(g) === name);
+  if (!raws.length) return null;
+  const seen = new Set(), albums = [];
+  for (const raw of raws) for (const a of Q.genreAlbums.all(raw)) if (!seen.has(a.id)) { seen.add(a.id); albums.push(a); }
   if (!albums.length) return null;
-  return { name, albums, related: Q.genreRelated.all(name) };
+  albums.sort((x, y) => String(y.year || '').localeCompare(String(x.year || '')) || String(x.title).localeCompare(String(y.title)));
+  const related = gmAgg([].concat(...raws.map(r => Q.genreRelated.all(r)))).filter(g => g.name !== name).slice(0, 10);
+  return { name, albums, related };
 }
 function discover(opts) {
-  let tg = Q.topGenres.all();
+  let tg = gmAgg(Q.allGenres.all());
   let sel = tg.filter(g => g.n >= 2);
   if (!sel.length) sel = tg.slice(0, 3);
   const byGenre = sel.slice(0, 4).map(g => ({ name: g.name, n: g.n, albums: Q.genreAlbums.all(g.name).slice(0, 12) }));
@@ -2108,7 +2136,8 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/artist/discography') { artistDiscography(parseInt(u.searchParams.get('id'), 10)).then(r => sendJSON(res, r)).catch(e => sendJSON(res, { ok: false, error: String(e.message) })); return; }
     if (u.pathname === '/api/work') { const w = work(parseInt(u.searchParams.get('id'), 10)); return w ? sendJSON(res, w) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/genre') { const g = genre(u.searchParams.get('name')); return g ? sendJSON(res, g) : (res.writeHead(404), res.end('{}')); }
-    if (u.pathname === '/api/genres') return sendJSON(res, Q.allGenres.all());
+    if (u.pathname === '/api/genres') return sendJSON(res, gmAgg(Q.allGenres.all()));
+    if (u.pathname === '/api/genremap') return void handleGenreMap(req, res, u);
     if (u.pathname === '/api/bookmarks') return sendJSON(res, { items: Q.bmList.all().map(b => ({ id: b.id, name: b.name, state: (() => { try { return JSON.parse(b.state || '{}'); } catch (e) { return {}; } })() })) });
     if (u.pathname === '/api/tags') return sendJSON(res, Q.allTags.all());
     if (u.pathname === '/api/tag') { const name = u.searchParams.get('name'); const albums = Q.tagAlbums.all(name); return albums.length ? sendJSON(res, { name, albums }) : (res.writeHead(404), res.end('{}')); }
