@@ -362,3 +362,39 @@ Bonus barato (pendiente): **presets de visualizador** (espectro/osciloscopio/par
 `AnalyserNode` que ya existe. Diferido pesado: **mezcla armónica (key/BPM/Camelot)** y **similitud
 sónica espectral** completas — requieren análisis de audio sobre 255k ficheros que hoy no tenemos
 (solo 337 Chromaprint). **#1 DJ con voz**: descartada por el usuario.
+
+---
+
+## RE pasada 3 (Nov 3 2026) — listas inteligentes / cola / atajos / vistas → próximas 5
+
+Tercer byte-mining (Roon 44.366 runs, Plexamp 77.038). Enfoque: listas/colecciones, cola, clásica,
+ajustes/atajos, vistas de biblioteca.
+
+**Roon:** `playlist` 1127, `SmartPlaylistType`, `rules`, `G_check_playlist_duplicates`,
+`Gplaylist_improver_alert` (mejorador de listas), carpetas de listas, `Gplaylistsync_{tidal,qobuz,kkbox}`;
+clásica fuerte (`Composition`/`CompositionDate`/`Conductor`/`Ensemble`/`Period`/`Orchestra`/
+`PerformanceCount`/`ArtistCompositions`); búsqueda (`category` 31, `autocomplete` 42, `G_search_page_filter`);
+`Shortcuts`/`Keyboard`/`gesture` 23; cola (`move` 298, `reorder` 11, `add_next` 15); `device_setup` 51.
+**Plexamp:** `list` 1211, `collection` 336, `smart playlist` 26, `filter` 422, `view` 387, `grid` 109,
+`sort` 108; `theme` 150/`skin` 24/`blur` 86/`backdrop` 13; salida `output` 535/`device` 471/`buffer` 294/
+`preamp` 102/`headroom` 26/`sample rate` 74; `cast`/`group` 204/163; `artist radio` 98; `play next` 26.
+
+**Cotejo (ya existe):** listas básicas (`playlists.html`), tags, bookmarks (= Focus guardado),
+radio/mix, zonas, overview, historial, Inspector, búsqueda FTS, cola (`queue.html`). Faltan: reglas,
+densidad/orden unificados, atajos, clásica a fondo, ajustes de salida finos.
+
+### Las próximas 5 (propuesta priorizada)
+1. **Listas inteligentes (reglas que se autoactualizan)** — género/década/tier/valoración/año/añadido/
+   "sin sonar en N"/loudness, reutilizando las facetas de Focus que ya existen; se guardan como lista
+   viva. Roon `SmartPlaylistType`/`rules`, Plexamp `smart playlist`. **P2**.
+2. **Cola avanzada** — reordenar arrastrando, **"reproducir a continuación"**, y **guardar la cola como
+   lista**. Roon `move`/`reorder`/`add_next`, Plexamp `play next`/`up next`. **P2**.
+3. **Atajos de teclado + overlay de ayuda** — espacio=play/pausa, flechas=seek/pista, etc.; estándar que
+   el usuario espera. Roon `Shortcuts`/`Keyboard`. **P2/P3**.
+4. **Vistas de biblioteca: densidad (rejilla/lista) + orden + filtros rápidos** en todos los
+   navegadores (álbumes/pistas/artistas), Plexamp `view`/`grid`/`sort`/`filter`. **P3**.
+5. **Ajustes de salida finos** — prebuffer, preamp/headroom, máx. sample-rate, exclusivo por dispositivo;
+   Plexamp `buffer`/`preamp`/`headroom`/`sample rate`. Bonus barato: **presets de visualizador**. **P3**.
+
+Diferido: **clásica/obras a fondo** (la biblioteca tiene ~5 obras; bajo ROI hoy), **temas/skins**
+avanzados, **sync de listas** a Tidal/Qobuz (sin cuentas), **mezcla armónica** (key/BPM).
