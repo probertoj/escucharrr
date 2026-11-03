@@ -24,6 +24,7 @@
     { href: 'works.html', label: 'Obras', ico: 'lyrics' },
     { href: 'inspector.html', label: 'Inspector', ico: 'inspect' },
     { href: 'playlists.html', label: 'Listas', ico: 'lists' },
+    { href: 'smartlists.html', label: 'Inteligentes', ico: 'filter' },
     { href: 'radio.html', label: 'Radio', ico: 'radio' },
     { href: 'retos.html', label: 'Retos', ico: 'challenge' },
     { href: 'lanzamientos.html', label: 'Lanzamientos', ico: 'calendar' },

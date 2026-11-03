@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escucharrr — listas inteligentes</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.slcard{display:flex;gap:12px;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;cursor:pointer;text-decoration:none;color:inherit}
+.slcard:hover{border-color:var(--accent)}
+.crow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0;background:var(--surface-2);border-radius:9px;padding:8px 10px}
+.crow select,.crow input{font-size:13px}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}
+.grid2{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px;margin-top:8px}
+.note{background:var(--surface-2);border-radius:12px;padding:16px;color:var(--text-2);font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><h1 style="font-size:26px;margin:0">Listas inteligentes</h1><span id="sub" style="color:var(--text-2);font-size:14px"></span></div>
+  <div id="app">cargando…</div>
+</div>
+<script src="player.js" defer></script>
+<script src="icons.js" defer></script>
+<script src="nav.js" defer></script>
+<script>
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const app=document.getElementById('app'), sub=document.getElementById('sub');
+const TC={excel:['#0F6E56','#E1F5EE'],si:['#639922','#EAF3DE'],ok:['#BA7517','#FAEEDA'],meh:['#5F5E5A','#F1EFE8'],no:['#A32D2D','#FCEBEB']},TN={excel:'Excel',si:'Sí',ok:'Ok',meh:'Meh',no:'No'};
+const TIERS=[['excel','Excel'],['si','Sí'],['ok','Ok'],['meh','Meh'],['no','No']];
+const TYPES=['Album','EP','Single','Live','Compilation'];
+const FIELDS=[['genre','Género es'],['decade','Década'],['year','Año entre'],['tier','Tier es'],['stars','Estrellas ≥'],['favorite','Favorito'],['type','Tipo es'],['added','Añadido últimos N días'],['plays','Reproducciones'],['notplayed','Sin sonar N días']];
+const SORTS=[['title','Título'],['year','Año'],['tier','Tier'],['rating','Valoración'],['random','Aleatorio']];
+function cover(id){return `<img src="/api/cover?rg=${id}" alt="" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block">`;}
+function albumCard(a){return `<a class="card" href="album.html?id=${a.id}"><div class="cov" style="position:relative;border-radius:10px;overflow:hidden;aspect-ratio:1">${cover(a.id)}${a.tier_key?`<span class="badge" style="background:${TC[a.tier_key][0]};color:${TC[a.tier_key][1]}">${TN[a.tier_key]}</span>`:''}</div><div class="t">${esc(a.title)}</div><div class="s">${esc(a.artist)} · ${a.year||'—'}</div></a>`;}
+
+// ── LISTA de smart lists ──
+async function loadList(){
+  sub.textContent='';
+  let d; try{ d=await fetch('/api/smartlists').then(r=>r.json()); }catch(e){ app.innerHTML='<div class="note">No se pudo cargar.</div>'; return; }
+  let h=`<div class="bar"><button class="btn-accent" id="new">${window.icon('plus',14)} Nueva lista inteligente</button></div>`;
+  h+= (d.items&&d.items.length) ? '<div style="display:grid;gap:10px">'+d.items.map(s=>`<a class="slcard" href="#${s.id}"><span style="color:var(--accent);display:inline-flex">${window.icon('filter',18)}</span><span style="flex:1;font-weight:600">${esc(s.name)}</span><span style="color:var(--text-2);font-size:12px">se autoactualiza</span></a>`).join('')+'</div>'
+     : '<div class="note">Aún no tienes listas inteligentes. Una lista inteligente es un conjunto de reglas (género, década, tier, estrellas, reproducciones…) que se mantiene al día sola según tu biblioteca.</div>';
+  app.innerHTML=h;
+  document.getElementById('new').onclick=()=>openBuilder(null);
+}
+
+// ── DETALLE (evalúa en vivo) ──
+async function loadDetail(id){
+  app.innerHTML='evaluando…';
+  let d; try{ d=await fetch('/api/smartlist?id='+id).then(r=>r.json()); }catch(e){ d=null; }
+  if(!d||!d.ok){ app.innerHTML='<div class="note">Lista no encontrada.</div>'; return; }
+  sub.textContent='· '+d.albums.length+' álbumes';
+  let h=`<a href="#" style="color:var(--text-2);font-size:13px;display:inline-flex;align-items:center;gap:5px;margin-bottom:8px">${window.icon('arrow-left',14)}Todas</a>`;
+  h+=`<div class="bar"><span style="font-family:var(--serif);font-size:22px;font-weight:600;flex:1">${esc(d.playlist.name)}</span>
+     <button class="btn-accent" id="playall">${window.icon('play',14)} Reproducir todo</button>
+     <button id="edit">Editar reglas</button><button id="del">Borrar</button></div>`;
+  h+= d.albums.length ? `<div class="grid2">${d.albums.map(albumCard).join('')}</div>` : '<div class="note">Ningún álbum cumple estas reglas ahora mismo.</div>';
+  app.innerHTML=h;
+  document.getElementById('edit').onclick=()=>openBuilder(d.playlist);
+  document.getElementById('del').onclick=async()=>{ if(!confirm('¿Borrar «'+d.playlist.name+'»?'))return; await fetch('/api/smartlist/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})}); location.hash=''; };
+  document.getElementById('playall').onclick=async()=>{ const b=document.getElementById('playall'); b.disabled=true; b.textContent='Cargando…';
+    try{ const r=await fetch('/api/smartlist?id='+id+'&play=1').then(x=>x.json()); if(r.tracks&&r.tracks.length&&window.player){ player.playTracks(r.tracks,0); b.textContent='▶ Sonando'; } else { b.disabled=false; b.innerHTML=window.icon('play',14)+' Reproducir todo'; alert('No hay pistas reproducibles.'); } }catch(e){ b.disabled=false; alert('Error.'); } };
+}
+
+// ── CONSTRUCTOR de reglas ──
+let B=null;
+function openBuilder(pl){
+  B = pl ? { id:pl.id, name:pl.name, match:pl.rules.match||'all', rules:(pl.rules.rules||[]).map(x=>({...x})), sort:pl.rules.sort||'title', limit:pl.rules.limit||0 }
+         : { id:null, name:'', match:'all', rules:[{field:'genre',value:''}], sort:'title', limit:0 };
+  renderBuilder();
+}
+function valInput(c){
+  switch(c.field){
+    case 'tier': return `<select class="cval">${TIERS.map(t=>`<option value="${t[0]}" ${c.value===t[0]?'selected':''}>${t[1]}</option>`).join('')}</select>`;
+    case 'type': return `<select class="cval">${TYPES.map(t=>`<option ${c.value===t?'selected':''}>${t}</option>`).join('')}</select>`;
+    case 'favorite': return '<span style="color:var(--text-2);font-size:13px">sí</span>';
+    case 'year': return `<input class="cval cmin" type="number" placeholder="desde" value="${(c.value&&c.value[0])||''}" style="width:80px"> – <input class="cval cmax" type="number" placeholder="hasta" value="${(c.value&&c.value[1])||''}" style="width:80px">`;
+    case 'plays': return `<select class="cop"><option value="gte" ${c.op!=='lte'?'selected':''}>≥</option><option value="lte" ${c.op==='lte'?'selected':''}>≤</option></select> <input class="cval" type="number" value="${c.value!=null?c.value:''}" style="width:70px">`;
+    case 'genre': return `<input class="cval" placeholder="p. ej. indie rock" value="${esc(c.value||'')}" style="min-width:150px">`;
+    default: return `<input class="cval" type="number" value="${c.value!=null?c.value:''}" style="width:90px">`;
+  }
+}
+function crowHTML(c,i){
+  return `<div class="crow" data-i="${i}"><select class="cfield">${FIELDS.map(f=>`<option value="${f[0]}" ${c.field===f[0]?'selected':''}>${f[1]}</option>`).join('')}</select><span class="cvalwrap">${valInput(c)}</span><span class="crm" data-i="${i}" title="Quitar" style="cursor:pointer;color:var(--text-2);display:inline-flex;margin-left:auto">${window.icon('close',14)}</span></div>`;
+}
+function renderBuilder(){
+  sub.textContent='';
+  let h=`<a href="${B.id?'#'+B.id:'#'}" style="color:var(--text-2);font-size:13px;display:inline-flex;align-items:center;gap:5px;margin-bottom:8px">${window.icon('arrow-left',14)}Volver</a>`;
+  h+=`<input id="bname" placeholder="Nombre de la lista" value="${esc(B.name)}" style="width:100%;font-size:16px;margin-bottom:10px">`;
+  h+=`<div class="bar"><span style="color:var(--text-2);font-size:13px">Cumplen</span><select id="bmatch"><option value="all" ${B.match==='all'?'selected':''}>todas</option><option value="any" ${B.match==='any'?'selected':''}>cualquiera</option></select><span style="color:var(--text-2);font-size:13px">de estas reglas:</span></div>`;
+  h+=`<div id="rules">${B.rules.map(crowHTML).join('')}</div>`;
+  h+=`<div class="bar"><button id="addrule">${window.icon('plus',13)} Añadir regla</button></div>`;
+  h+=`<div class="bar"><span style="color:var(--text-2);font-size:13px">Ordenar</span><select id="bsort">${SORTS.map(s=>`<option value="${s[0]}" ${B.sort===s[0]?'selected':''}>${s[1]}</option>`).join('')}</select><span style="color:var(--text-2);font-size:13px">Límite</span><input id="blimit" type="number" min="0" value="${B.limit||0}" style="width:80px" title="0 = sin límite"></div>`;
+  h+=`<div class="bar"><button id="preview">Vista previa</button><span id="pvcount" style="color:var(--text-2);font-size:13px"></span><button class="btn-accent" id="save" style="margin-left:auto">${B.id?'Guardar cambios':'Crear lista'}</button></div>`;
+  app.innerHTML=h;
+  // eventos
+  document.getElementById('addrule').onclick=()=>{ collect(); B.rules.push({field:'genre',value:''}); renderBuilder(); };
+  app.querySelectorAll('.cfield').forEach(sel=>sel.onchange=()=>{ collect(); const i=+sel.closest('.crow').dataset.i; B.rules[i]={field:sel.value,value: sel.value==='year'?['','']:''}; renderBuilder(); });
+  app.querySelectorAll('.crm').forEach(x=>x.onclick=()=>{ collect(); B.rules.splice(+x.dataset.i,1); renderBuilder(); });
+  document.getElementById('preview').onclick=async()=>{ collect(); const pc=document.getElementById('pvcount'); pc.textContent='…'; try{ const r=await fetch('/api/smartlist/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rules:toRules()})}).then(x=>x.json()); pc.textContent=(r.albums?r.albums.length:0)+' álbumes'; }catch(e){ pc.textContent='error'; } };
+  document.getElementById('save').onclick=save;
+}
+function collect(){   // vuelca los inputs del DOM a B (antes de re-render o guardar)
+  const nm=document.getElementById('bname'); if(nm)B.name=nm.value;
+  const mt=document.getElementById('bmatch'); if(mt)B.match=mt.value;
+  const st=document.getElementById('bsort'); if(st)B.sort=st.value;
+  const lm=document.getElementById('blimit'); if(lm)B.limit=parseInt(lm.value,10)||0;
+  app.querySelectorAll('.crow').forEach(row=>{ const i=+row.dataset.i; const field=row.querySelector('.cfield').value; const c={field};
+    if(field==='year'){ c.value=[row.querySelector('.cmin')?.value||'', row.querySelector('.cmax')?.value||'']; }
+    else if(field==='favorite'){ c.value=true; }
+    else if(field==='plays'){ c.op=row.querySelector('.cop')?.value||'gte'; c.value=row.querySelector('.cval')?.value||''; }
+    else { const el=row.querySelector('.cval'); c.value=el?el.value:''; }
+    B.rules[i]=c;
+  });
+}
+function toRules(){ return { match:B.match, rules:B.rules, sort:B.sort, limit:B.limit }; }
+async function save(){
+  collect(); if(!B.name.trim()){ alert('Pon un nombre.'); return; }
+  const b=document.getElementById('save'); b.disabled=true; b.textContent='Guardando…';
+  try{
+    if(B.id){ await fetch('/api/smartlist/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:B.id,name:B.name,rules:toRules()})}); location.hash='#'+B.id; }
+    else { const r=await fetch('/api/smartlists',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:B.name,rules:toRules()})}).then(x=>x.json()); if(r.id)location.hash='#'+r.id; else { b.disabled=false; b.textContent='Crear lista'; alert(r.error||'Error'); } }
+  }catch(e){ b.disabled=false; alert('Error de red.'); }
+}
+function route(){ const id=location.hash.replace(/^#/,''); if(id&&/^\d+$/.test(id))loadDetail(id); else loadList(); }
+window.addEventListener('hashchange',route);
+route();
+</script>
+</body>
+</html>

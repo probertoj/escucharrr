@@ -52,7 +52,8 @@ function initAppSchema(d) {
   CREATE TABLE IF NOT EXISTS bookmark (id INTEGER PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS dsp_preset (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, state TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS radio_station (id INTEGER PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, homepage TEXT, favicon TEXT, created_at TEXT DEFAULT (datetime('now')));
-  CREATE TABLE IF NOT EXISTS skipped_file (path TEXT, reason TEXT, at TEXT DEFAULT (datetime('now')));`);
+  CREATE TABLE IF NOT EXISTS skipped_file (path TEXT, reason TEXT, at TEXT DEFAULT (datetime('now')));
+  CREATE TABLE IF NOT EXISTS smart_playlist (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, rules TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));`);
   // Índices sobre las claves foráneas del grafo: sin ellos, recorrer release_group -> release -> medium -> track -> local_file
   // hace scans anidados por álbum (inviable con decenas de miles de discos). Cada uno en su try por si el grafo aún no existe.
   for (const ix of [
@@ -844,6 +845,85 @@ async function artistDiscography(artistId) {
   }).sort((x, y) => (y.year || 0) - (x.year || 0) || x.title.localeCompare(y.title));
   _discogCache.set(artistId, { at: Date.now(), items });
   return { ok: true, name: a.name, items };
+}
+// ── listas inteligentes: reglas → SQL sobre v_album (+ agregado de plays) que se autoactualiza ──
+function albumPlaysMap() {
+  const m = new Map();
+  for (const r of db.prepare(`SELECT rel.release_group_id rgid, COUNT(*) n, MAX(p.played_at) last
+     FROM play p JOIN track tr ON (p.track_id=tr.id OR p.recording_id=tr.recording_id)
+     JOIN medium md ON md.id=tr.medium_id JOIN "release" rel ON rel.id=md.release_id
+     GROUP BY rel.release_group_id`).all()) m.set(r.rgid, { n: r.n, last: r.last });
+  return m;
+}
+const SMART_TR = { excel: 5, si: 4, ok: 3, meh: 2, no: 1 };
+function evalSmart(rules) {
+  rules = rules || {}; const conds = Array.isArray(rules.rules) ? rules.rules : [];
+  const frags = [], params = [];
+  for (const c of conds) {
+    const f = c.field, v = c.value;
+    if (f === 'genre') { frags.push(`EXISTS(SELECT 1 FROM release_group_genre g JOIN genre gn ON gn.id=g.genre_id WHERE g.release_group_id=a.id AND gn.name=?)`); params.push(String(v)); }
+    else if (f === 'decade') { const d = parseInt(v, 10) || 0; frags.push(`CAST(a.year AS INT) BETWEEN ? AND ?`); params.push(d, d + 9); }
+    else if (f === 'year') { frags.push(`CAST(a.year AS INT) BETWEEN ? AND ?`); params.push(parseInt((v && v[0]) || 0, 10), parseInt((v && v[1]) || 9999, 10)); }
+    else if (f === 'tier') { frags.push(`a.tier_key=?`); params.push(String(v)); }
+    else if (f === 'stars') { frags.push(`a.album_stars>=?`); params.push(parseFloat(v) || 0); }
+    else if (f === 'favorite') { frags.push(`a.is_favorite=1`); }
+    else if (f === 'type') { frags.push(`a.primary_type=?`); params.push(String(v)); }
+    else if (f === 'added') { frags.push(`EXISTS(SELECT 1 FROM release_group rg WHERE rg.id=a.id AND rg.created_at>=datetime('now','-'||?||' days'))`); params.push(parseInt(v, 10) || 30); }
+  }
+  const where = frags.length ? ('WHERE ' + frags.join(rules.match === 'any' ? ' OR ' : ' AND ')) : '';
+  let rows = db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.tier_key,a.album_stars,a.is_favorite,a.primary_type FROM v_album a ${where}`).all(...params);
+  const playRules = conds.filter(c => c.field === 'plays' || c.field === 'notplayed');   // se aplican en JS (AND), sobre el agregado
+  if (playRules.length) {
+    const pm = albumPlaysMap();
+    rows = rows.filter(a => { const p = pm.get(a.id) || { n: 0, last: null };
+      return playRules.every(c => {
+        if (c.field === 'plays') { const n = parseInt(c.value, 10) || 0; return c.op === 'lte' ? p.n <= n : p.n >= n; }
+        const days = parseInt(c.value, 10) || 90; if (!p.last) return true; return Date.parse(p.last.replace(' ', 'T') + 'Z') < (Date.now() - days * 864e5);
+      }); });
+  }
+  const s = rules.sort || 'title';
+  rows.sort((a, b) => s === 'year' ? (b.year || 0) - (a.year || 0) : s === 'tier' ? ((SMART_TR[b.tier_key] || 0) - (SMART_TR[a.tier_key] || 0)) : s === 'rating' ? ((b.album_stars || 0) - (a.album_stars || 0)) : s === 'random' ? (Math.random() - 0.5) : String(a.title || '').localeCompare(String(b.title || '')));
+  const lim = parseInt(rules.limit, 10) || 0;
+  return lim > 0 ? rows.slice(0, lim) : rows;
+}
+// pistas reproducibles de un conjunto de álbumes (para «reproducir todo» de una lista inteligente)
+function tracksForAlbums(ids, cap) {
+  ids = (ids || []).slice(0, 200); if (!ids.length) return [];
+  const ph = ids.map(() => '?').join(',');
+  const rows = db.prepare(`SELECT tr.id trackId, tr.recording_id, COALESCE(tr.title,r.title) title,
+       (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id,r.artist_credit_id) ORDER BY acn.position LIMIT 1) artist,
+       rg.id albumId, COALESCE(tr.length_ms,r.length_ms) length_ms,
+       (SELECT lf.gain_db FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) gain_db,
+       (SELECT lf.album_gain_db FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) album_gain_db
+     FROM track tr JOIN recording r ON r.id=tr.recording_id JOIN medium m ON m.id=tr.medium_id
+     JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id
+     WHERE rg.id IN (${ph}) AND EXISTS(SELECT 1 FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id)
+     ORDER BY rg.id, m.position, tr.position LIMIT ?`).all(...ids, parseInt(cap, 10) || 800);
+  return rows.map(t => ({ trackId: t.trackId, recording_id: t.recording_id, title: t.title, artist: t.artist, albumId: t.albumId, length_ms: t.length_ms, playable: true, gain_db: t.gain_db, album_gain_db: t.album_gain_db }));
+}
+async function handleSmart(req, res, u) {
+  try {
+    if (u.pathname === '/api/smartlists') {
+      if (req.method === 'GET') return sendJSON(res, { ok: true, items: db.prepare('SELECT id, name, created_at FROM smart_playlist ORDER BY created_at DESC, id DESC').all() });
+      const b = await readBody(req); const name = String(b.name || '').trim(); if (!name) return sendJSON(res, { ok: false, error: 'falta nombre' });
+      const r = db.prepare('INSERT INTO smart_playlist(name, rules) VALUES(?,?)').run(name, JSON.stringify(b.rules || {}));
+      return sendJSON(res, { ok: true, id: Number(r.lastInsertRowid) });
+    }
+    if (u.pathname === '/api/smartlist/preview') { const b = await readBody(req); return sendJSON(res, { ok: true, albums: evalSmart(b.rules || {}) }); }
+    if (u.pathname === '/api/smartlist') {
+      const id = parseInt(u.searchParams.get('id'), 10); const p = db.prepare('SELECT id,name,rules FROM smart_playlist WHERE id=?').get(id);
+      if (!p) { res.writeHead(404); return res.end('{}'); }
+      let rules = {}; try { rules = JSON.parse(p.rules); } catch (e) {}
+      const albums = evalSmart(rules);
+      const resp = { ok: true, playlist: { id: p.id, name: p.name, rules }, albums };
+      if (u.searchParams.get('play') === '1') resp.tracks = tracksForAlbums(albums.map(a => a.id));
+      return sendJSON(res, resp);
+    }
+    const sub = u.pathname.slice('/api/smartlist/'.length); const b = await readBody(req);
+    if (sub === 'update') { const id = parseInt(b.id, 10); db.prepare('UPDATE smart_playlist SET name=COALESCE(?,name), rules=COALESCE(?,rules) WHERE id=?').run(b.name || null, b.rules ? JSON.stringify(b.rules) : null, id); return sendJSON(res, { ok: true }); }
+    if (sub === 'delete') { db.prepare('DELETE FROM smart_playlist WHERE id=?').run(parseInt(b.id, 10)); return sendJSON(res, { ok: true }); }
+    res.writeHead(404); res.end('{}');
+  } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 function genre(name) {
   const albums = Q.genreAlbums.all(name);
@@ -2003,6 +2083,7 @@ http.createServer((req, res) => {
   if (u.pathname === '/api/identify' && req.method === 'GET') return void handleIdentifySuggest(req, res, u);
   if (u.pathname === '/api/identify/apply' && req.method === 'POST') return void handleIdentifyApply(req, res);
   if (u.pathname === '/api/playlists' || u.pathname === '/api/playlist' || u.pathname.startsWith('/api/playlist/')) return void handlePlaylists(req, res, u);
+  if (u.pathname === '/api/smartlists' || u.pathname === '/api/smartlist' || u.pathname.startsWith('/api/smartlist/')) return void handleSmart(req, res, u);
   try {
     if (u.pathname === '/api/stream') return streamAudio(req, res, parseInt(u.searchParams.get('track'), 10));
     if (u.pathname === '/api/cover') return serveCover(res, parseInt(u.searchParams.get('rg'), 10));
