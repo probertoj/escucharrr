@@ -294,3 +294,63 @@ análisis de audio (loudness+espectral+tempo/clave) sobre 255k ficheros; hoy sol
 
 _Documento vivo: el RE del cuerpo compilado de las `.broo` y del modelo de datos del Core
 sigue abierto; esto recoge la capa de UI (99 pantallas) a un nivel mucho más fino que antes._
+
+---
+
+## RE pasada 2 (Nov 3 2026) — descubrimiento / cola / radio / zonas / DJ → próximas 5
+
+Segundo byte-mining enfocado en lo que las pasadas previas NO tocaron. Roon `ui.brooxgz`
+(20,3 MB, 44.366 runs) y Plexamp `app.asar` (77.038 runs). Método: tabla de cadenas + léxico.
+
+**Roon — identificadores nuevos (área : evidencia):**
+- **Overview/home editorial**: `Goverview_nrfy_box_promise` (`NewReleasesForYou`), `Goverview_recents_box`,
+  `ForYou`, `Discover`, `GMS_go_discover_viewall`, `new_release` (53), `recent` (156), `for_you` (24).
+- **Roon Radio (continuación + feedback)**: `Gradiobar`, `Gshowradiobar`, `Gradiothumbdowntrack`,
+  `Gshowthumbsdown`, `Gradiotrackid`, `start_radio` (8), `seed` (40), `bad_for_radio` (2), `thumbs` (52).
+- **Tags / Bookmarks**: `GMS_go_tag_browser`/`_details`, `Gcreate_tag`/`Gaddtag_tag`/`Gremove_tag`,
+  `GMS_save_bookmark`/`GMS_restore_bookmark`, `Gbookmarks`, `TagsAndFavorites` (tag 439, bookmark 81).
+- **Historial**: `Ghistorybrowser`, `PlayedInTheLastDays`, `LastPlayed`, `MostPlayed`, `PlayedTracks`.
+- **Búsqueda unificada**: `GMS_go_search`, `Gsearch_home_input`, `search_results`, `autocomplete` (42).
+- **Clásica/obras**: `Gworkbrowser_focus_data`, `Gcomposerbrowser_focus_data`, `Ensemble`/`conductor`,
+  `InterestingWorkCount`, `Gtotal_work_count` (work 523, composer 252, composition 173).
+- **Zonas**: `group_zone` (14), `transfer_zone` (6), `Ungroup`, `Transferring`, `standby` (23).
+- **Perfiles / sync**: `Profiles` (multi-usuario), `Gplaylistsync_{tidal,qobuz,kkbox}_timer`, `Backups`.
+
+**Plexamp — léxico nuevo (nº runs):** **dj 564** (+ `narrat` 39, `tts` 10, `announce` 1, personas
+"Sonic Sage"/"Sonic Adventure") = **DJ con voz** que presenta las pistas; **sonic/sonically 410/116**
++ **similar 211** + **mix 411** (análisis sónico → similares/mezclas); **preset 148** + **visuali 67**
+(presets de visualizador); **mood 180**; **preamp 102**; **key/tempo/bpm 274/81/6** (mezcla armónica);
+download/offline/cache/sync 1206/103/685/372 (sync offline — N/A local-first).
+
+**Cotejo con escucharrr (ya existe, NO re-hacer):** auto-radio local ya está (modelo "Swim":
+`maybeRadio()` extiende la cola desde el grafo vía `/api/radio?seed=&exclude=`); **tags de usuario**
+(`/api/tag*`, `tag.html`) y **bookmarks** (`/api/bookmarks`) ya están; home con "Añadido
+recientemente"; Historial, Buscar, Obras (mínimo), zonas native/UPnP/Chromecast.
+
+### Las próximas 5 (propuesta priorizada)
+1. **DJ con voz (Web Speech API, dependency-free)** — joya de Plexamp, nada equivalente en la app.
+   Entre pistas (durante el hueco del crossfade) `speechSynthesis` del navegador anuncia la siguiente
+   con una frase de contexto tomada de bio/reseña/créditos/año que YA almacenamos ("A continuación,
+   X de Y, de su disco Z de 1975…"). Toggle + selección de voz/volumen/frecuencia en el panel de
+   audio. 100% local, sin dependencias ni nube. Modelo Roon/Plexamp `dj`/`narrat`/`tts`. **P1/P2**.
+2. **Roon Radio: thumbs-down + sembrar desde aquí** — la continuación automática ya existe, pero sin
+   bucle de feedback. Añadir **pulgar abajo** (salta + marca `bad_for_radio` → `/api/radio` lo excluye
+   de esa semilla y del futuro), barra/indicador de radio en el now-playing, y "empezar radio desde
+   aquí" en pista/álbum/artista. Modelo `Gradiothumbdowntrack`/`bad_for_radio`/`start_radio`. **P2**.
+3. **"Instant Mix / Más como esto"** — acción explícita en álbum/artista/pista que crea una cola-mezcla
+   por afinidad (géneros/era/sello/banda de loudness + vecinos Chromaprint donde los haya), reutilizando
+   el mismo motor de similitud que alimenta la Radio, pero como lista nombrada y guardable. Es la versión
+   factible hoy de la "similitud sónica" diferida (sin pipeline espectral completo). Modelo `instant mix`/
+   `sonically`/`similar`. **P2**.
+4. **Transferir reproducción entre zonas** — mover cola+pista+posición entre salidas (nativa/UPnP/
+   Chromecast) sin cortar, y una etiqueta de grupo básica. El sync muestra-a-muestra multi-room (RAAT/
+   reloj) queda fuera, pero "transferir" es factible con el motor actual. Modelo `transfer_zone`/
+   `Transferring`/`standby`. **P2/P3**.
+5. **Overview curado ("Sigue escuchando" · "Redescubre" · "Porque escuchaste…")** — subir el home más
+   allá de "Añadido recientemente": reanudar discos a medias, redescubrir lo no tocado hace mucho,
+   y filas "porque escuchaste X / novedades para ti" a partir de historial + valoraciones + grafo de
+   géneros/artistas. Modelo `Goverview_*`/`NewReleasesForYou`/`for_you`. **P2**.
+
+Bonus barato: **presets de visualizador** (espectro/osciloscopio/partículas) sobre el `AnalyserNode`
+que ya existe. Diferido pesado: **mezcla armónica (key/BPM/Camelot)** y **similitud sónica espectral**
+completas — requieren análisis de audio sobre 255k ficheros que hoy no tenemos (solo 337 Chromaprint).
