@@ -383,18 +383,20 @@ clásica fuerte (`Composition`/`CompositionDate`/`Conductor`/`Ensemble`/`Period`
 radio/mix, zonas, overview, historial, Inspector, búsqueda FTS, cola (`queue.html`). Faltan: reglas,
 densidad/orden unificados, atajos, clásica a fondo, ajustes de salida finos.
 
-### Las próximas 5 (propuesta priorizada)
-1. **Listas inteligentes (reglas que se autoactualizan)** — género/década/tier/valoración/año/añadido/
-   "sin sonar en N"/loudness, reutilizando las facetas de Focus que ya existen; se guardan como lista
-   viva. Roon `SmartPlaylistType`/`rules`, Plexamp `smart playlist`. **P2**.
-2. **Cola avanzada** — reordenar arrastrando, **"reproducir a continuación"**, y **guardar la cola como
-   lista**. Roon `move`/`reorder`/`add_next`, Plexamp `play next`/`up next`. **P2**.
-3. **Atajos de teclado + overlay de ayuda** — espacio=play/pausa, flechas=seek/pista, etc.; estándar que
-   el usuario espera. Roon `Shortcuts`/`Keyboard`. **P2/P3**.
-4. **Vistas de biblioteca: densidad (rejilla/lista) + orden + filtros rápidos** en todos los
-   navegadores (álbumes/pistas/artistas), Plexamp `view`/`grid`/`sort`/`filter`. **P3**.
-5. **Ajustes de salida finos** — prebuffer, preamp/headroom, máx. sample-rate, exclusivo por dispositivo;
-   Plexamp `buffer`/`preamp`/`headroom`/`sample rate`. Bonus barato: **presets de visualizador**. **P3**.
+### Las próximas 5 — TODAS HECHAS (Nov 3 2026)
+1. ✅ **Listas inteligentes (reglas que se autoactualizan)** — `smart_playlist` + `evalSmart` (SQL sobre
+   v_album: género/década/año/tier/estrellas/favorito/tipo/añadido + post-filtro de reproducciones y
+   "sin sonar en N días"; match todas/cualquiera, orden, límite), página `smartlists.html` con
+   constructor de reglas + vista previa + «Reproducir todo» (`tracksForAlbums`). Commit 11763bc.
+2. ✅ **Cola avanzada** — `moveInQueue` (reordenar arrastrando), `addNext`/`enqueue` («A continuación»/
+   «A la cola» en la ficha de álbum), «Guardar como lista» en la cola. Commit 0ce9b4d.
+3. ✅ **Atajos de teclado + overlay de ayuda** — espacio/flechas/Shift+flechas/↑↓/M/F/L/R//? en
+   player.js, con guard de "no al escribir". Commit 59f880e.
+4. ✅ **Vistas: densidad rejilla/lista** en la Biblioteca (toggle persistido, integrado con la
+   virtualización). Orden/filtro/Focus ya existían. Commit 9153060.
+5. ✅ **Ajustes de salida finos (parcial) + presets de visualizador** — preamp/headroom (nodo dedicado
+   + slider en el panel DSP) y presets de visualizador (barras/espectro/osciloscopio). Prebuffer/máx
+   sample-rate/exclusivo-por-dispositivo quedan para el motor nativo (diferidos). Commit 30b1290.
 
 Diferido: **clásica/obras a fondo** (la biblioteca tiene ~5 obras; bajo ROI hoy), **temas/skins**
 avanzados, **sync de listas** a Tidal/Qobuz (sin cuentas), **mezcla armónica** (key/BPM).
