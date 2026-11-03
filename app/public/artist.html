@@ -40,6 +40,7 @@ let rawBio='';   // markdown crudo de la bio (para el editor; el mostrado va ren
 const mdRender=s=>window.mdToHtml?window.mdToHtml(s):esc(s);
 function renderArtist(a){
   if(!a||!a.id){app.innerHTML='No encontrado';return;}
+  window.__artist=a; idealLoaded=false;
   document.title='escucharrr — '+a.name;
   const ava=AVA[a.id%AVA.length];
   const sub=[a.type,a.country,a.founded&&('desde '+a.founded)].filter(Boolean).join(' · ');
@@ -74,13 +75,42 @@ function renderArtist(a){
         ${a.disambiguation?`<div style="color:var(--text-2);font-size:14px">${esc(a.disambiguation)}</div>`:''}
         <div style="margin-top:8px">${genres}</div>
         <div style="margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)">Tier</span> ${tier}</div>
-        <div style="margin-top:12px"><button id="mixartist" title="Mezcla afín a este artista" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('music',15)}Mezcla</button></div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button id="mixartist" title="Mezcla afín a este artista" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('music',15)}Mezcla</button><button id="idealdisco" title="Discografía completa de MusicBrainz, con lo que te falta" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('library',15)}Discografía completa</button></div>
       </div>
     </div>
     ${bio}
+    <div id="idealsec" style="margin-top:4px"></div>
     ${tabsHtml}`;
   applyBioCollapse();
 }
+// ── discografía ideal (MusicBrainz): poseídos + HUECOS con «Quiero» (como Roon) ──
+const _nnA=s=>String(s||'').normalize('NFD').toLowerCase().replace(/[^a-z0-9]+/g,'');
+const _EDA=/(deluxe|expanded|remaster|anniversary|edition|reissue|re-?master|mono|stereo|bonus|special|version|explicit|flac|mp3|vinyl|\d{2,3}\s*bit|\d{2,3}(\.\d)?\s*khz|hi-?res|24-?96|16-?44)/i;
+function _ctA(t){t=String(t||'').trim();for(;;){const m=t.match(/[\[(]([^\])]*)[)\]]\s*$/);if(!m||(!/\d{4}/.test(m[1])&&!_EDA.test(m[1])))break;t=t.slice(0,m.index).trim();}return _nnA(t.replace(/\s+[-–—]\s*\d{4}\s*$/,''));}
+const _mkA=(a,t)=>_nnA(a)+'::'+_ctA(t);
+let idealLoaded=false;
+async function loadIdeal(aName){
+  const sec=document.getElementById('idealsec'); if(!sec) return; idealLoaded=true;
+  sec.innerHTML='<div class="sec" style="margin-top:22px">Discografía completa</div><div style="color:var(--text-2);font-size:13px">Consultando MusicBrainz…</div>';
+  let d; try{ d=await fetch('/api/artist/discography?id='+id).then(r=>r.json()); }catch(e){ d={ok:false,error:'red'}; }
+  if(!d.ok){ sec.innerHTML='<div class="sec" style="margin-top:22px">Discografía completa</div><div class="note" style="background:var(--surface-2);border-radius:12px;padding:14px;color:var(--text-2);font-size:14px">'+esc(d.needsMbid?'Este artista no está identificado en MusicBrainz, así que no hay discografía completa.':(d.error||'No se pudo cargar.'))+'</div>'; return; }
+  // estado de deseos (si hay Liderarrr)
+  let keys={}, lider=false; try{ const s=await fetch('/api/config/services').then(r=>r.json()); lider=!!(s.liderarrr&&s.liderarrr.connected); if(lider){ keys=await fetch('/api/liderarrr/wanted/keys').then(r=>r.json()); if(keys&&keys.ok===false)keys={}; } }catch(e){}
+  const own=d.items.filter(x=>x.owned), miss=d.items.filter(x=>!x.owned);
+  const card=x=>{ const sc=(x.secondary||[]).length?' · '+esc(x.secondary.join(', ')):'';
+    if(x.owned) return `<a class="idalb" href="album.html?id=${x.rg_id}" style="display:flex;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);text-decoration:none;color:inherit"><div style="width:44px;height:44px;border-radius:7px;overflow:hidden;flex:none"><img src="/api/cover?rg=${x.rg_id}" alt="" loading="lazy" style="width:100%;height:100%;object-fit:cover"></div><div style="flex:1"><div style="font-size:14px">${esc(x.title)}</div><div style="font-size:12.5px;color:var(--text-2)">${x.year||'—'}${sc}</div></div><span class="badge" style="background:var(--accent-bg);color:var(--accent)">la tienes</span></a>`;
+    const mk=_mkA(aName,x.title), w=keys[mk];
+    const act = w?`<span class="badge" style="background:var(--accent-bg);color:var(--accent)">${w.status==='owned'?'conseguido':w.status==='grabbed'?'pedido':'vigilando'}</span>` : (lider?`<span class="idwant" data-title="${esc(x.title)}" data-year="${x.year||''}" data-mbid="${esc(x.mbid)}" title="Quiero — Liderarrr lo buscará" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:5px 11px;font-size:13px;display:inline-flex;align-items:center;gap:5px">${window.icon('want',15)}Quiero</span>`:'');
+    return `<div class="idalb" style="display:flex;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);opacity:.62"><div style="width:44px;height:44px;border-radius:7px;background:var(--surface-2);flex:none"></div><div style="flex:1"><div style="font-size:14px">${esc(x.title)}</div><div style="font-size:12.5px;color:var(--text-2)">${x.year||'—'}${sc} · no la tienes</div></div>${act}</div>`;
+  };
+  sec.innerHTML=`<div class="sec" style="margin-top:22px">Discografía completa <span style="font-size:12px;color:var(--muted);font-weight:400">· ${own.length}/${d.items.length} en tu biblioteca</span></div>`
+    + d.items.map(card).join('');
+  sec.querySelectorAll('.idwant').forEach(el=>el.onclick=async()=>{ el.style.pointerEvents='none';
+    try{ const r=await fetch('/api/liderarrr/wanted',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist:aName,title:el.dataset.title,year:el.dataset.year||null,rg_mbid:el.dataset.mbid||null,origin:'artista'})}).then(x=>x.json());
+      if(r&&(r.ok||r.match_key)) el.outerHTML='<span class="badge" style="background:var(--accent-bg);color:var(--accent)">vigilando</span>'; else el.style.pointerEvents='auto';
+    }catch(e){ el.style.pointerEvents='auto'; } });
+}
+document.addEventListener('click',e=>{ if(e.target.closest('#idealdisco')){ const a=window.__artist; loadIdeal(a?a.name:''); } });
 // plega las bios largas (estilo Roon toggle_review)
 function applyBioCollapse(){const box=document.getElementById('biobox');if(!box)return;const bt=box.querySelector('.biotext'),tog=box.querySelector('.revtoggle');if(!bt||!tog)return;box.classList.remove('collapsed');tog.hidden=true;if(bt.scrollHeight>280){box.classList.add('collapsed');tog.hidden=false;tog.textContent='Ver más';}}
 document.addEventListener('click',e=>{const rt=e.target.closest('#app .revtoggle');if(!rt)return;const box=document.getElementById('biobox');const col=box.classList.toggle('collapsed');rt.textContent=col?'Ver más':'Ver menos';});

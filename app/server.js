@@ -807,6 +807,44 @@ function artist(id) {
     .map(x => ({ id: x.id, title: x.title, year: x.year, artist: x.artist, roles: (x.roles || '').split(',').filter(Boolean) }));
   return a;
 }
+// ── discografía "ideal" del artista (MusicBrainz) con huecos (lo que NO tienes) → para «Quiero» ──
+// Modelo de Roon (Ideal discography): se lista TODO lo que editó el artista y se marcan los huecos.
+let _mbLastReq = 0;
+async function mbFetch(q) {
+  const wait = 1100 - (Date.now() - _mbLastReq); if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  _mbLastReq = Date.now();
+  const res = await fetch('https://musicbrainz.org/ws/2/' + q, { headers: { 'User-Agent': 'escucharrr/0.1 ( https://github.com/probertoj/escucharrr )', 'Accept': 'application/json' } });
+  if (!res.ok) throw new Error('MB ' + res.status);
+  return res.json();
+}
+const _discogCache = new Map();   // artistId → { at, items }
+async function artistDiscography(artistId) {
+  const a = db.prepare('SELECT mbid, name FROM artist WHERE id=?').get(artistId);
+  if (!a) return { ok: false, error: 'artista no encontrado' };
+  if (!a.mbid) return { ok: false, needsMbid: true, error: 'El artista no está identificado en MusicBrainz.' };
+  const c = _discogCache.get(artistId);
+  if (c && Date.now() - c.at < 6 * 3600e3) return { ok: true, name: a.name, items: c.items };
+  let rgs = [];
+  try {
+    for (let off = 0; off < 200; off += 100) {   // hasta 200 release-groups (álbum/EP), paginado
+      const j = await mbFetch('release-group?artist=' + encodeURIComponent(a.mbid) + '&type=album|ep&limit=100&offset=' + off + '&fmt=json');
+      const page = j['release-groups'] || [];
+      rgs = rgs.concat(page);
+      if (page.length < 100) break;
+    }
+  } catch (e) { return { ok: false, error: 'No se pudo consultar MusicBrainz: ' + e.message }; }
+  const ownByMbid = db.prepare('SELECT id FROM release_group WHERE mbid=?');
+  const idx = lidOwnedIndex();   // matchKey(artista,título) → rg_id local
+  const items = rgs.map(rg => {
+    const sec = rg['secondary-types'] || [];
+    const title = rg.title, date = rg['first-release-date'] || '', year = date ? parseInt(date.slice(0, 4), 10) || null : null;
+    let rid = (ownByMbid.get(rg.id) || {}).id || null;
+    if (!rid) rid = idx.get(lidMatchKey(a.name, title)) || null;
+    return { title, year, mbid: rg.id, primary: rg['primary-type'] || 'Album', secondary: sec, owned: !!rid, rg_id: rid };
+  }).sort((x, y) => (y.year || 0) - (x.year || 0) || x.title.localeCompare(y.title));
+  _discogCache.set(artistId, { at: Date.now(), items });
+  return { ok: true, name: a.name, items };
+}
 function genre(name) {
   const albums = Q.genreAlbums.all(name);
   if (!albums.length) return null;
@@ -1986,6 +2024,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/album') { const a = album(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/search') return sendJSON(res, search(u.searchParams.get('q'), Math.min(parseInt(u.searchParams.get('n') || '20', 10) || 20, 100)));
     if (u.pathname === '/api/artist') { const a = artist(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
+    if (u.pathname === '/api/artist/discography') { artistDiscography(parseInt(u.searchParams.get('id'), 10)).then(r => sendJSON(res, r)).catch(e => sendJSON(res, { ok: false, error: String(e.message) })); return; }
     if (u.pathname === '/api/work') { const w = work(parseInt(u.searchParams.get('id'), 10)); return w ? sendJSON(res, w) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/genre') { const g = genre(u.searchParams.get('name')); return g ? sendJSON(res, g) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/genres') return sendJSON(res, Q.allGenres.all());
