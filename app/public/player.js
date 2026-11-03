@@ -1121,6 +1121,33 @@ window.player = (function () {
   // biblioteca en vivo: el servidor avisa por SSE cuando reescanea; las vistas se refrescan
   try { const es = new EventSource('/api/events'); es.onmessage = e => { try { const d = JSON.parse(e.data); if (d.type === 'library') document.dispatchEvent(new CustomEvent('escucharrr:changed')); else if (d.type === 'radio' && irStation) fetchRadioNow(); } catch (x) {} }; } catch (e) {}
 
+  // ── atajos de teclado (persistentes; no interfieren mientras escribes) ──
+  function kbTyping(t) { return !!(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)); }
+  const KBHELP = [['Espacio', 'Play / Pausa'], ['← / →', 'Retroceder / Avanzar 10 s'], ['Shift + ← / →', 'Pista anterior / siguiente'], ['↑ / ↓', 'Volumen'], ['M', 'Silenciar'], ['F', 'Pantalla completa'], ['L', 'Letra'], ['R', 'Radio (autoplay)'], ['/', 'Buscar'], ['?', 'Esta ayuda']];
+  function toggleKbHelp() {
+    var p = document.getElementById('kbhelp'); if (p) { p.remove(); return; }
+    p = document.createElement('div'); p.id = 'kbhelp'; p.setAttribute('style', 'position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;padding:20px');
+    p.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 22px;max-width:380px;width:100%"><div style="font-weight:600;font-size:16px;margin-bottom:12px">Atajos de teclado</div>' + KBHELP.map(function (x) { return '<div style="display:flex;justify-content:space-between;gap:16px;padding:5px 0;font-size:14px"><span style="color:var(--text-2)">' + x[1] + '</span><kbd style="font-family:ui-monospace,monospace;font-size:12px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:2px 7px">' + x[0] + '</kbd></div>'; }).join('') + '</div>';
+    p.onclick = function (e) { if (e.target === p) p.remove(); }; document.body.appendChild(p);
+  }
+  document.addEventListener('keydown', function (e) {
+    if (kbTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
+    var k = e.key, len;
+    if (k === ' ' || k === 'Spacebar') { e.preventDefault(); toggle(); }
+    else if (k === 'ArrowRight' && e.shiftKey) { e.preventDefault(); next(); }
+    else if (k === 'ArrowLeft' && e.shiftKey) { e.preventDefault(); prev(); }
+    else if (k === 'ArrowRight') { e.preventDefault(); len = lenMs(); if (len) seekFrac(Math.min(1, (posMs() + 10000) / len)); }
+    else if (k === 'ArrowLeft') { e.preventDefault(); len = lenMs(); if (len) seekFrac(Math.max(0, (posMs() - 10000) / len)); }
+    else if (k === 'ArrowUp') { e.preventDefault(); setVol(Math.min(1, vol + 0.05)); }
+    else if (k === 'ArrowDown') { e.preventDefault(); setVol(Math.max(0, vol - 0.05)); }
+    else if (k === 'm' || k === 'M') { setVol(vol === 0 ? (parseFloat(localStorage.getItem(VKEY + '.last')) || 0.8) : (localStorage.setItem(VKEY + '.last', vol), 0)); }
+    else if (k === 'f' || k === 'F') { if (cur()) toggleNpFs(); }
+    else if (k === 'l' || k === 'L') { toggleLyPanel(); }
+    else if (k === 'r' || k === 'R') { setRadio(!radioOn); }
+    else if (k === '/') { e.preventDefault(); var a = document.createElement('a'); a.href = '/search.html'; document.body.appendChild(a); a.click(); a.remove(); }
+    else if (k === '?') { toggleKbHelp(); }
+  });
+
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { render(); markEqBtn(); }); else { render(); setTimeout(markEqBtn, 0); }
   const getGain = () => (ctx ? masterGain.gain.value * (active().gain ? active().gain.gain.value : 1) : active().el.volume);  // ganancia efectiva (vol × ReplayGain)
   const getZone = () => ({ name: zone.name, deviceId: zone.deviceId, label: zone.label });
