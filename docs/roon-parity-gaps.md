@@ -279,9 +279,15 @@ volumen y waveform están GATEADOS por una pasada de `analyze.js` (horas sobre S
    de color por banda — arrastrar = freq+ganancia, rueda = Q, doble clic = añadir — con sincronía en
    vivo de curva/punto/inputs y ajuste del nodo biquad sin reconstruir el subgrafo. Probado:
    la curva hunde -6 dB justo en 2 kHz para una banda peaking 2 kHz/-6 dB.
-5. **Pack reproducción tipo Plexamp (web, dependency-free)**: **crossfade/Sweet Fades** + **sleep
-   timer** + **visualizador audio-reactivo** (AnalyserNode→canvas) + **paleta dinámica de la
-   portada**. **P2/P3**.
+5. ✅ **HECHO (Nov 3 2026)** — **Pack reproducción tipo Plexamp (web, dependency-free)**. El
+   **crossfade** ya existía (slider 0–12 s). Esto añadió los otros tres: **sleep timer**
+   (15/30/45/60 min o fin de pista, cuenta atrás en vivo + desvanecido suave de ~4 s antes de
+   pausar, en el panel de audio); **visualizador audio-reactivo** (`AnalyserNode` tras la maestra,
+   fftSize 2048 → canvas de 56 barras log bajo la portada del fullscreen, toggle persistido, rAF
+   solo en la página Carátula); **paleta dinámica de la portada** (color dominante + acento
+   vibrante en HSL legible, tiñe SOLO `#npfs` — gradiente + `--accent` acotado — el chrome intacto,
+   respetando la regla de diseño). Iconos de línea nuevos: `sleep`, `visualizer`. Probado:
+   acento rgb(228,58,58) de la portada, toggle persistido, sleep "30:00" y fin de pista "2:03".
 
 Diferido (joya pero caro): **similitud sónica / Instant Mix** de Plexamp — necesita pipeline de
 análisis de audio (loudness+espectral+tempo/clave) sobre 255k ficheros; hoy solo 337 con Chromaprint.
