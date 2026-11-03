@@ -1757,6 +1757,13 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/stream') return streamAudio(req, res, parseInt(u.searchParams.get('track'), 10));
     if (u.pathname === '/api/cover') return serveCover(res, parseInt(u.searchParams.get('rg'), 10));
     if (u.pathname === '/api/peaks') { const pk = peaksOf(parseInt(u.searchParams.get('track'), 10)); return pk ? sendJSON(res, { peaks: pk }) : (res.writeHead(404), res.end('{}')); }
+    if (u.pathname === '/api/trackinfo') {   // espec técnico + loudness de la pista (ruta de señal / nerd stats)
+      const t = parseInt(u.searchParams.get('track'), 10);
+      const cols = 'format, bit_depth, sample_rate, channels, loudness_lufs, gain_db, peak_dbfs, album_gain_db, album_peak_dbfs, size_bytes, duration_ms';
+      let r = t ? db.prepare(`SELECT ${cols} FROM local_file WHERE track_id=? LIMIT 1`).get(t) : null;
+      if (!r && t) r = db.prepare(`SELECT ${cols} FROM local_file WHERE recording_id=(SELECT recording_id FROM track WHERE id=?) LIMIT 1`).get(t);
+      return sendJSON(res, r || {});
+    }
     if (u.pathname === '/api/settings') return sendJSON(res, settingsInfo());
     if (u.pathname === '/api/library') return sendJSON(res, libraryList());
     if (u.pathname === '/api/tracks') return sendJSON(res, tracksList({ q: u.searchParams.get('q'), sort: u.searchParams.get('sort'), dir: u.searchParams.get('dir'), offset: u.searchParams.get('offset'), limit: u.searchParams.get('limit'), format: u.searchParams.get('format'), bitdepth: u.searchParams.get('bitdepth'), samplerate: u.searchParams.get('samplerate'), channels: u.searchParams.get('channels') }));

@@ -152,7 +152,7 @@ window.player = (function () {
   function cover(id, s) { return `<img src="/api/cover?rg=${id || 0}" alt="" draggable="false" style="width:${s}px;height:${s}px;object-fit:cover;border-radius:7px;display:block">`; }
   function logPlay() { const c = cur(); if (c && c.trackId && loggedIdx !== idx) { loggedIdx = idx; fetch('/api/play', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ track_id: c.trackId, zone: zone.name }) }).catch(() => {}); } }
   const spost = (p, b) => fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).catch(() => {});
-  function trackStarted() { trackStartEpoch = Math.floor(Date.now() / 1000); const c = cur(); if (c && c.trackId) spost('/api/scrobble/nowplaying', { track_id: c.trackId }); fetchPeaks(); if (lypanel && lypanel.style.display === 'block') loadLyrics(); if (npfs && npfs.style.display === 'flex') { npLyActive = -1; loadNpMeta(); renderNpFs(); } }   // "sonando ahora" + recargar letra/metadatos si el panel/fullscreen está abierto
+  function trackStarted() { trackStartEpoch = Math.floor(Date.now() / 1000); const c = cur(); if (c && c.trackId) spost('/api/scrobble/nowplaying', { track_id: c.trackId }); fetchPeaks(); if (lypanel && lypanel.style.display === 'block') loadLyrics(); if (npfs && npfs.style.display === 'flex') { npLyActive = -1; npInfoTrack = -1; loadNpMeta(); renderNpFs(); } }   // "sonando ahora" + recargar letra/metadatos/espec si el panel/fullscreen está abierto
   // scrobble al superar el umbral (mitad de la pista o 4 min; pistas ≥ 30 s), una sola vez
   function maybeScrobble() {
     const c = cur(); if (!c || !c.trackId || scrobbledIdx === idx) return;
@@ -189,7 +189,7 @@ window.player = (function () {
   }
   // ── pantalla "ahora suena" a pantalla completa, por PÁGINAS (estilo Roon component_fullscreen_nowplaying:
   //    atom_nowplaying_{image,lyrics,credits,review,bio}). Carátula · Letra (LRC sincronizada) · Créditos · Reseña · Artista. ──
-  let npfs = null, npPage = 'cover', npMeta = null, npMetaId = -1, npBio = null, npBioId = -1, npLyActive = -1;
+  let npfs = null, npPage = 'cover', npMeta = null, npMetaId = -1, npBio = null, npBioId = -1, npLyActive = -1, npInfo = null, npInfoTrack = -1;
   function ensureNpFs() { if (npfs) return; npfs = document.createElement('div'); npfs.id = 'npfs'; npfs.setAttribute('style', 'position:fixed;inset:0;z-index:75;background:var(--bg);display:none;flex-direction:column;overflow:hidden'); document.body.appendChild(npfs); }
   function toggleNpFs() { ensureNpFs(); if (npfs.style.display === 'flex') { npfs.style.display = 'none'; return; } npPage = 'cover'; npLyActive = -1; loadNpMeta(); renderNpFs(); npfs.style.display = 'flex'; }
   // Metadatos del álbum/artista para las páginas (créditos/reseña/bio); cacheados por álbum.
@@ -200,6 +200,8 @@ window.player = (function () {
     fetch('/api/album?id=' + c.albumId).then(r => r.json()).then(a => { const cc = cur(); if (!cc || cc.albumId !== npMetaId) return; npMeta = a; if (a.artist_id) fetchNpBio(a.artist_id); if (npfs && npfs.style.display === 'flex' && (npPage === 'credits' || npPage === 'review')) renderNpFs(); }).catch(() => {});
   }
   function fetchNpBio(aid) { if (!aid) return; if (npBioId === aid && npBio) return; npBioId = aid; npBio = null; fetch('/api/artist?id=' + aid).then(r => r.json()).then(a => { npBio = a; if (npfs && npfs.style.display === 'flex' && npPage === 'bio') renderNpFs(); }).catch(() => {}); }
+  // Espec técnico + loudness de la pista para la página "Señal" (ruta de señal / nerd stats).
+  function loadNpInfo() { const c = cur(); if (!c || !c.trackId) { npInfo = null; npInfoTrack = -1; return; } if (npInfoTrack === c.trackId && npInfo) return; npInfoTrack = c.trackId; npInfo = null; fetch('/api/trackinfo?track=' + c.trackId).then(r => r.json()).then(j => { const cc = cur(); if (cc && cc.trackId === npInfoTrack) { npInfo = j; if (npfs && npfs.style.display === 'flex' && npPage === 'signal') renderNpFs(); } }).catch(() => {}); }
   // Letra con sincronía: comparte lyCache/parseLRC con el panel de esquina.
   function npEnsureLyrics(cb) { const c = cur(); if (!c || !c.trackId) { cb && cb(null); return; } if (lyCache[c.trackId]) { cb && cb(lyCache[c.trackId]); return; } fetch('/api/lyrics?track=' + c.trackId).then(r => r.json()).then(j => { j.syncedArr = j.synced ? parseLRC(j.synced) : null; lyCache[c.trackId] = j; const cc = cur(); if (cc && cc.trackId === c.trackId) cb && cb(j); }).catch(() => cb && cb(null)); }
   const npMd = s => window.mdToHtml ? window.mdToHtml(s) : esc(s).replace(/\n/g, '<br>');
@@ -222,6 +224,43 @@ window.player = (function () {
       if (!npBio) return `<div style="color:var(--text-2);margin-top:30px">Cargando biografía…</div>`;
       if (!npBio.bio) return `<div style="color:var(--text-2);margin-top:30px;text-align:center">Sin biografía${npBio.name ? ' de ' + esc(npBio.name) : ''}.</div>`;
       return `<div style="width:100%;max-width:560px;margin-top:4px"><div style="font-weight:600;font-size:18px;margin-bottom:8px">${esc(npBio.name || '')}</div><div style="line-height:1.7;font-size:15px">${npMd(npBio.bio)}</div></div>`;
+    }
+    if (npPage === 'signal') {
+      const s = npInfo || {};
+      const khz = s.sample_rate ? s.sample_rate / 1000 : null;
+      const srcLine = [s.format || c.format || '?', s.bit_depth ? s.bit_depth + ' bit' : '', khz ? (khz % 1 ? khz.toFixed(1) : khz) + ' kHz' : '', s.channels ? (s.channels === 2 ? 'estéreo' : s.channels + ' can.') : ''].filter(Boolean).join(' · ');
+      const lin = rgLinear(c), applied = lin === 1 ? 0 : +(20 * Math.log10(lin)).toFixed(1);   // ganancia ReplayGain realmente aplicada (limitada por pico)
+      const exclusive = nativeMode && nativeExclusive, net = upnpMode;
+      const procs = [];
+      if (!exclusive && !net) {
+        if (rgMode !== 'off' && applied !== 0) procs.push('ReplayGain ' + (applied > 0 ? '+' : '') + applied + ' dB');
+        if (eqOn) procs.push('EQ gráfico');
+        if (peqOn && peqBands.length) procs.push('EQ paramétrico');
+        if (convOn && convFile) procs.push('Convolución');
+        if (vol < 1) procs.push('Volumen ' + Math.round(vol * 100) + '%');
+      }
+      const bitperfect = exclusive || (!net && procs.length === 0);
+      const outName = exclusive ? (zone.name || 'Este equipo') + ' · WASAPI exclusivo' : net ? (upnpDevName || 'Red') + ' · DLNA' : nativeMode ? (zone.name || 'Este equipo') + ' · WASAPI' : (zone.label || 'Navegador');
+      const chain = (label, val, on) => `<div style="display:flex;align-items:center;gap:11px;padding:7px 0"><span style="width:9px;height:9px;border-radius:50%;background:${on ? 'var(--accent)' : 'var(--muted)'};flex:none"></span><span style="width:130px;color:var(--text-2);font-size:13px">${label}</span><span style="flex:1;font-size:14px">${val}</span></div>`;
+      const kv = (k, v) => `<div style="display:flex;justify-content:space-between;gap:14px;padding:6px 0;border-bottom:1px solid var(--border)"><span style="color:var(--text-2);font-size:13px">${k}</span><span style="font-size:13px;text-align:right">${v}</span></div>`;
+      const dbv = v => v == null ? '—' : ((v >= 0 ? '+' : '') + (+v).toFixed(1) + ' dB');
+      const hasLoud = s.loudness_lufs != null || s.gain_db != null;
+      return `<div style="width:100%;max-width:520px;margin-top:4px">
+        <div style="display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;padding:4px 12px;border-radius:999px;background:${bitperfect ? 'color-mix(in srgb,var(--ok,#0F6E56) 15%,transparent)' : 'color-mix(in srgb,var(--accent) 13%,transparent)'};color:${bitperfect ? 'var(--ok,#0F6E56)' : 'var(--accent)'};margin-bottom:14px">${bitperfect ? '● Bit-perfect' : '◐ Procesado'}</div>
+        <div style="font-size:12px;color:var(--text-2);margin-bottom:2px">Ruta de señal</div>
+        ${chain('Fuente', esc(srcLine), true)}
+        ${chain('ReplayGain', exclusive || net ? 'omitido en esta salida' : (rgMode === 'off' ? 'desactivado' : (rgMode === 'album' ? 'álbum' : 'pista') + ' · ' + (applied === 0 ? 'sin cambio' : (applied > 0 ? '+' : '') + applied + ' dB')), !exclusive && !net && rgMode !== 'off' && applied !== 0)}
+        ${chain('Ecualizador', exclusive || net ? 'omitido' : (eqOn ? 'gráfico' : 'plano') + (peqOn && peqBands.length ? ' · paramétrico (' + peqBands.length + ')' : '') + (convOn && convFile ? ' · convolución' : ''), !exclusive && !net && (eqOn || (peqOn && peqBands.length) || (convOn && convFile)))}
+        ${chain('Volumen', exclusive || net ? 'en el aparato' : Math.round(vol * 100) + '%', !exclusive && !net && vol < 1)}
+        ${chain('Salida', esc(outName), false)}
+        <div style="font-size:12px;color:var(--text-2);margin:16px 0 2px">Datos técnicos</div>
+        ${kv('Formato', esc(srcLine || '?'))}
+        ${hasLoud
+          ? kv('Loudness (pista)', s.loudness_lufs != null ? (+s.loudness_lufs).toFixed(1) + ' LUFS' : '—') + kv('Ganancia pista / álbum', dbv(s.gain_db) + ' / ' + dbv(s.album_gain_db)) + kv('Pico pista / álbum', (s.peak_dbfs != null ? s.peak_dbfs + ' dBFS' : '—') + ' / ' + (s.album_peak_dbfs != null ? s.album_peak_dbfs + ' dBFS' : '—'))
+          : kv('Loudness', '<span style="color:var(--text-2)">sin analizar aún</span>')}
+        ${s.duration_ms ? kv('Duración', mmss(s.duration_ms)) : ''}
+        ${s.size_bytes ? kv('Tamaño', (s.size_bytes / 1048576).toFixed(1) + ' MB') : ''}
+      </div>`;
     }
     // 'cover' (por defecto): carátula grande + título/artista + "a continuación"
     const up = q.slice(idx + 1, idx + 6);
@@ -249,7 +288,7 @@ window.player = (function () {
     lines.forEach((el, i) => { const on = i === a; el.style.color = on ? 'var(--accent)' : 'var(--text-2)'; el.style.fontWeight = on ? '700' : '400'; el.style.fontSize = on ? '22px' : '19px'; });
     if (a >= 0 && lines[a]) lines[a].scrollIntoView({ block: 'center', behavior: 'smooth' });
   }
-  const NP_PAGES = [['cover', 'Carátula'], ['lyrics', 'Letra'], ['credits', 'Créditos'], ['review', 'Reseña'], ['bio', 'Artista']];
+  const NP_PAGES = [['cover', 'Carátula'], ['lyrics', 'Letra'], ['credits', 'Créditos'], ['review', 'Reseña'], ['bio', 'Artista'], ['signal', 'Señal']];
   function renderNpFs() {
     if (!npfs) return; const c = cur(); if (!c) { npfs.style.display = 'none'; return; }
     const len = lenMs(), p = posMs(), frac = len ? Math.min(100, p / len * 100) : 0, wf = curPeaks && curPeaksTrack === c.trackId;
@@ -283,6 +322,7 @@ window.player = (function () {
       </div>`;
     if (npPage === 'lyrics') npEnsureLyrics(renderNpLyInto);
     if ((npPage === 'credits' || npPage === 'review') && !npMeta) loadNpMeta();
+    if (npPage === 'signal') loadNpInfo();
   }
   function ensureBar() { if (bar) return; bar = document.createElement('div'); bar.id = 'nowbar'; bar.setAttribute('style', 'position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);border-top:1px solid var(--border);padding:8px 16px;display:none;align-items:center;gap:14px'); document.body.appendChild(bar); }
   const ic = (n, s) => window.icon ? window.icon(n, s || 18) : '';           // icono de línea monocromo
