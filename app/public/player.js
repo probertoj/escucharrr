@@ -640,6 +640,15 @@ window.player = (function () {
     if (z.name) { zone.name = z.name; persistZone(); updateZoneBtn(); }
     if (zpanel && zpanel.style.display === 'block') renderZPanel();
   }
+  // ¿este dispositivo (cualquier salida descubierta) ya está guardado como zona?
+  function zoneSavedId(kind, deviceId, exclusive) { const z = zones.find(x => x.kind === kind && (x.deviceId || '') === (deviceId || '') && (kind !== 'native' || !!x.exclusive === !!exclusive)); return z ? z.id : null; }
+  // guarda/quita CUALQUIER dispositivo descubierto como zona con nombre, sin tener que seleccionarlo antes
+  function toggleSaveZone(kind, deviceId, deviceName, exclusive) {
+    const existing = zoneSavedId(kind, deviceId, exclusive);
+    if (existing) { zones = zones.filter(z => z.id !== existing); persistZones(); renderZPanel(); return; }
+    const name = (prompt('Nombre de la zona:', deviceName || zone.name || 'Zona') || '').trim(); if (!name) return;
+    zones.push({ id: Date.now(), name, kind, deviceId: deviceId || '', deviceName: deviceName || '', exclusive: !!exclusive }); persistZones(); renderZPanel();
+  }
 
   function start(i, atSec) {
     if (irStation) stopRadio(true);   // reproducir una pista para la radio
@@ -769,7 +778,7 @@ window.player = (function () {
       } else {
         h += '<div style="font-size:11px;color:var(--text-2);margin-bottom:4px">Dispositivo</div>';
         const rows = [{ id: '', name: 'Predeterminado del sistema' }].concat((nr.items || []).map(d => ({ id: d.id, name: d.name + (d.default ? ' (predeterminado)' : '') })));
-        h += rows.map(r => { const on = (nativeDeviceId || '') === (r.id || ''); return `<div class="ndev" data-id="${esc(r.id)}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer;${on ? 'background:var(--accent-bg);color:var(--accent)' : ''}"><span style="width:16px;display:inline-flex;justify-content:center">${on ? ic('check', 15) : ''}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(r.name)}</span></div>`; }).join('');
+        h += rows.map(r => { const on = (nativeDeviceId || '') === (r.id || ''); const saved = zoneSavedId('native', r.id, nativeExclusive); return `<div class="ndev" data-id="${esc(r.id)}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer;${on ? 'background:var(--accent-bg);color:var(--accent)' : ''}"><span style="width:16px;display:inline-flex;justify-content:center">${on ? ic('check', 15) : ''}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(r.name)}</span><span class="zsave" data-kind="native" data-id="${esc(r.id)}" data-name="${esc(r.name)}" data-excl="${nativeExclusive ? 1 : 0}" title="${saved ? 'Quitar de zonas guardadas' : 'Guardar como zona'}" style="cursor:pointer;color:${saved ? 'var(--accent)' : 'var(--text-2)'};display:inline-flex">${ic(saved ? 'pin-fill' : 'pin', 15)}</span></div>`; }).join('');
         h += `<label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer"><input type="checkbox" data-act="nexcl" ${nativeExclusive ? 'checked' : ''}><span>Exclusivo (bit-perfect)</span></label>`;
         h += '<div style="font-size:11px;color:var(--text-2);margin-top:4px">En bit-perfect la muestra sale intacta: el volumen y el EQ no se aplican.</div>';
       }
@@ -781,8 +790,8 @@ window.player = (function () {
       const rows = [{ deviceId: '', label: 'Predeterminado del sistema' }]
         .concat(list.filter(d => d.deviceId && d.deviceId !== 'default').map((d, i) => ({ deviceId: d.deviceId, label: d.label || ('Dispositivo ' + (i + 1)) })));
       h += rows.map(r => {
-        const on = (zone.deviceId || '') === (r.deviceId || '');
-        return `<div class="zdev" data-id="${esc(r.deviceId)}" data-label="${esc(r.label)}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer;${on ? 'background:var(--accent-bg);color:var(--accent)' : ''}"><span style="width:16px;display:inline-flex;justify-content:center">${on ? ic('check', 15) : ''}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(r.label)}</span></div>`;
+        const on = (zone.deviceId || '') === (r.deviceId || ''); const saved = zoneSavedId('local', r.deviceId);
+        return `<div class="zdev" data-id="${esc(r.deviceId)}" data-label="${esc(r.label)}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer;${on ? 'background:var(--accent-bg);color:var(--accent)' : ''}"><span style="width:16px;display:inline-flex;justify-content:center">${on ? ic('check', 15) : ''}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(r.label)}</span><span class="zsave" data-kind="local" data-id="${esc(r.deviceId)}" data-name="${esc(r.label)}" title="${saved ? 'Quitar de zonas guardadas' : 'Guardar como zona'}" style="cursor:pointer;color:${saved ? 'var(--accent)' : 'var(--text-2)'};display:inline-flex">${ic(saved ? 'pin-fill' : 'pin', 15)}</span></div>`;
       }).join('');
       if (!labeled && list.length) h += '<div data-act="unlock" style="margin-top:6px;color:var(--accent);cursor:pointer">Mostrar nombres de los dispositivos…</div>';
       if (!list.length) h += '<div style="color:var(--text-2)">No se detectaron dispositivos de salida.</div>';
@@ -805,7 +814,9 @@ window.player = (function () {
     box.style.color = 'var(--text)';
     box.innerHTML = urs.map(d => { const on = upnpMode && (upnpDeviceId === d.id); const cast = d.castable !== false;
       const tag = d.kind === 'chromecast' ? 'Chromecast' : d.kind === 'airplay' ? 'AirPlay' : (d.model || 'DLNA');
-      return `<div class="udev" data-id="${esc(d.id)}" data-name="${esc(d.name)}" data-cast="${cast ? 1 : 0}" title="${cast ? '' : 'Detectado en la red. Reproducir en AirPlay usa un protocolo propietario, aún no soportado.'}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:${cast ? 'pointer' : 'default'};${cast ? '' : 'opacity:.6;'}${on ? 'background:var(--accent-bg);color:var(--accent)' : ''}"><span style="width:16px;display:inline-flex;justify-content:center">${on ? ic('check', 15) : ''}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(d.name)} <span style="color:var(--muted);font-size:11px">· ${esc(tag)}${cast ? '' : ' (detectado)'}</span></span></div>`; }).join('');
+      const saved = zoneSavedId('upnp', d.id);
+      const pin = cast ? `<span class="zsave" data-kind="upnp" data-id="${esc(d.id)}" data-name="${esc(d.name)}" title="${saved ? 'Quitar de zonas guardadas' : 'Guardar como zona'}" style="cursor:pointer;color:${saved ? 'var(--accent)' : 'var(--text-2)'};display:inline-flex">${ic(saved ? 'pin-fill' : 'pin', 15)}</span>` : '';
+      return `<div class="udev" data-id="${esc(d.id)}" data-name="${esc(d.name)}" data-cast="${cast ? 1 : 0}" title="${cast ? '' : 'Detectado en la red. Reproducir en AirPlay usa un protocolo propietario, aún no soportado.'}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:${cast ? 'pointer' : 'default'};${cast ? '' : 'opacity:.6;'}${on ? 'background:var(--accent-bg);color:var(--accent)' : ''}"><span style="width:16px;display:inline-flex;justify-content:center">${on ? ic('check', 15) : ''}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(d.name)} <span style="color:var(--muted);font-size:11px">· ${esc(tag)}${cast ? '' : ' (detectado)'}</span></span>${pin}</div>`; }).join('');
   }
 
   // ── letra de la pista (LRCLIB, con resaltado sincronizado tipo karaoke) ──
@@ -984,6 +995,7 @@ window.player = (function () {
 
   // interacción de la barra y los popovers (delegada)
   document.addEventListener('click', e => {
+    const zsv = e.target.closest('#zonepanel .zsave'); if (zsv) { e.stopPropagation(); toggleSaveZone(zsv.dataset.kind, zsv.dataset.id, zsv.dataset.name, zsv.dataset.excl === '1'); return; }
     const zdel = e.target.closest('#zonepanel .zpresetdel'); if (zdel) { e.stopPropagation(); deleteZone(zdel.dataset.zone); return; }
     const zp = e.target.closest('#zonepanel .zpreset'); if (zp) { const z = zones.find(x => String(x.id) === String(zp.dataset.zone)); if (z) applyZone(z); return; }
     if (e.target.closest('#zonepanel [data-act="zonesave"]')) { const nm = (prompt('Nombre de la zona:', zone.name || 'Zona') || '').trim(); if (nm) saveCurrentZone(nm); return; }
