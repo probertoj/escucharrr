@@ -39,6 +39,7 @@ function applyCollapse(){const box=document.getElementById('aboutbox');if(!box)r
   if(at.scrollHeight>280){box.classList.add('collapsed');tog.hidden=false;tog.textContent='Ver más';}}
 function renderAlbum(a){
   if(!a||!a.id){app.innerHTML='No encontrado';return;}
+  window.ALB=a;
   const tier=`<span class="tiered" style="display:inline-flex;gap:4px;flex-wrap:wrap;align-items:center">${TORD.map(k=>`<span class="tchip" data-tier="${k}" title="${TN[k]}" style="cursor:pointer;font-size:11px;font-weight:600;padding:2px 9px;border-radius:999px;background:${a.tier_key===k?TC[k][0]:'var(--surface-2)'};color:${a.tier_key===k?TC[k][1]:'var(--text-2)'}">${TN[k]}</span>`).join('')}${a.tier_key?`<span class="tchip" data-tier="" title="Quitar tier" style="cursor:pointer;color:var(--text-2);padding:2px 6px">${window.icon('close',13)}</span>`:''}</span>`;
   const sv=a.album_stars?Math.round(+a.album_stars):0;
   const stars=`<span class="starsed" style="display:inline-flex;align-items:center;gap:1px">${[1,2,3,4,5].map(n=>`<span class="st" data-stars="${n}" title="Valorar ${n}" style="cursor:pointer;color:${n<=sv?'var(--accent)':'var(--muted)'};font-size:17px;line-height:1">★</span>`).join('')}${sv?`<span class="st" data-stars="0" title="Quitar valoración" style="cursor:pointer;color:var(--text-2);font-size:12px;margin-left:4px;display:inline-flex">${window.icon('close',12)}</span>`:''}</span>`;
@@ -77,7 +78,7 @@ function renderAlbum(a){
         <div style="color:var(--text-2);font-size:13px">${esc(a.primary_type||'álbum')} · ${a.year||'—'}</div>
         <h1>${esc(a.title)}</h1>
         <div style="font-size:15px">${artistLink}</div>
-        ${(a.tracks||[]).length?`<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn-accent" id="playalbum" style="display:inline-flex;align-items:center;gap:6px">${window.icon('play',15)}Reproducir</button><button id="radioalbum" title="Radio: reproduce y extiende con pistas afines de tu biblioteca" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('radio',15)}Radio</button><button id="mixalbum" title="Mezcla: una lista afín a este álbum" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('music',15)}Mezcla</button><button id="addalbum" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('plus',15)}Añadir a lista</button><button id="identifyalbum" title="${a.mbid?'Ya identificado con MusicBrainz — reidentificar':'Emparejar con MusicBrainz por nº de pistas y duraciones'}" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon(a.mbid?'check':'search',15)}${a.mbid?'Reidentificar':'Identificar'}</button></div>`:''}
+        ${(a.tracks||[]).length?`<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn-accent" id="playalbum" style="display:inline-flex;align-items:center;gap:6px">${window.icon('play',15)}Reproducir</button><button id="radioalbum" title="Radio: reproduce y extiende con pistas afines de tu biblioteca" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('radio',15)}Radio</button><button id="mixalbum" title="Mezcla: una lista afín a este álbum" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('music',15)}Mezcla</button><button id="addalbum" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('plus',15)}Añadir a lista</button><button id="identifyalbum" title="${a.mbid?'Ya identificado con MusicBrainz — reidentificar':'Emparejar con MusicBrainz por nº de pistas y duraciones'}" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon(a.mbid?'check':'search',15)}${a.mbid?'Reidentificar':'Identificar'}</button><span id="retoslot"></span></div>`:''}
         <div class="meta">
           <span><span class="k">Tier</span> ${tier}</span>
           <span><span class="k">Valoración</span> ${stars}</span>
@@ -101,8 +102,60 @@ function renderAlbum(a){
     ${credits}`;
   renderTags(a.tags||[]);
   applyCollapse();
+  maybeRetoBtn();
 }
 function load(){fetch('/api/album?id='+id).then(r=>r.json()).then(renderAlbum).catch(e=>app.innerHTML='error: '+e.message);}
+
+// ── «Añadir a reto» (solo si Liderarrr está conectado) — tira de su API de retos ──
+let LIDOK=null;   // null=sin comprobar, true/false=estado de conexión (cacheado)
+// matchKey de Liderarrr (compacto) para marcar los retos que ya contienen este disco
+const _nn=s=>String(s||'').normalize('NFD').toLowerCase().replace(/[^a-z0-9]+/g,'');
+const _EDIT=/(deluxe|expanded|remaster|anniversary|edition|reissue|re-?master|mono|stereo|bonus|special|version|explicit|flac|mp3|vinyl|\d{2,3}\s*bit|\d{2,3}(\.\d)?\s*khz|hi-?res|24-?96|16-?44)/i;
+function _ct(t){ t=String(t||'').trim(); for(;;){ const m=t.match(/[\[(]([^\])]*)[)\]]\s*$/); if(!m||(!/\d{4}/.test(m[1])&&!_EDIT.test(m[1]))) break; t=t.slice(0,m.index).trim(); } return _nn(t.replace(/\s+[-–—]\s*\d{4}\s*$/,'')); }
+const _mk=(a,t)=>_nn(a)+'::'+_ct(t);
+async function maybeRetoBtn(){
+  const slot=document.getElementById('retoslot'); if(!slot) return;
+  if(LIDOK===null){ try{ const s=await fetch('/api/config/services').then(r=>r.json()); LIDOK=!!(s.liderarrr&&s.liderarrr.connected); }catch(e){ LIDOK=false; } }
+  if(!LIDOK){ slot.innerHTML=''; return; }
+  slot.innerHTML=`<button id="retoalbum" title="Añadir este disco a un reto de escucha (Liderarrr)" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('challenge',15)}Añadir a reto</button>`;
+}
+async function openReto(){
+  const a=window.ALB; if(!a) return;
+  let wrap=document.getElementById('retowiz');
+  if(!wrap){ wrap=document.createElement('div'); wrap.id='retowiz'; wrap.setAttribute('style','position:fixed;inset:0;z-index:80;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:18px'); document.body.appendChild(wrap); }
+  wrap.innerHTML=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;max-width:440px;width:100%;max-height:80vh;overflow:auto;padding:16px 18px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:600;font-size:16px">Añadir a un reto</span><span id="retoclose" style="cursor:pointer;color:var(--text-2);display:inline-flex">${window.icon('close',18)}</span></div>
+    <div style="font-size:13px;color:var(--text-2);margin-bottom:12px">${esc(a.artist||'')} — ${esc(a.title||'')}</div>
+    <div id="retolist" style="font-size:14px">cargando retos…</div>
+    <div id="retomsg" style="font-size:12.5px;margin-top:8px;display:none"></div></div>`;
+  document.getElementById('retoclose').onclick=()=>wrap.remove();
+  wrap.onclick=e=>{ if(e.target===wrap) wrap.remove(); };
+  const mk=_mk(a.artist,a.title);
+  let list=[],mem={};
+  try{ [list,mem]=await Promise.all([fetch('/api/liderarrr/challenges').then(r=>r.json()), fetch('/api/liderarrr/challenges/membership').then(r=>r.json())]); }catch(e){}
+  const box=document.getElementById('retolist');
+  if(!Array.isArray(list)){ box.innerHTML='No se pudieron cargar los retos de Liderarrr.'; return; }
+  const inIt=(mem&&mem[mk])||[];
+  box.innerHTML=list.map(c=>{ const has=inIt.some(x=>x.id===c.id);
+    return `<div class="retopick" data-id="${c.id}" data-has="${has?1:0}" style="display:flex;align-items:center;gap:10px;padding:9px 6px;border-bottom:1px solid var(--border);cursor:${has?'default':'pointer'}">
+      <span style="width:18px;display:inline-flex;color:var(--accent)">${has?window.icon('check',16):''}</span>
+      <span style="flex:1">${esc(c.name)} <span style="color:var(--muted);font-size:12px">· ${c.owned}/${c.item_count}</span></span>
+      ${has?'<span style="font-size:11px;color:var(--accent)">ya está</span>':`<span style="font-size:12px;color:var(--text-2)">añadir</span>`}</div>`;
+  }).join('') + `<div style="margin-top:10px"><input id="retonew" placeholder="…o crea un reto nuevo con este disco" style="width:100%"><div style="display:flex;justify-content:flex-end;margin-top:6px"><button id="retocreate" style="padding:6px 12px">Crear y añadir</button></div></div>`;
+  const addTo=async (cid,el)=>{ const msg=document.getElementById('retomsg');
+    try{ const r=await fetch('/api/liderarrr/challenges/'+cid+'/items',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:(a.artist||'')+' - '+(a.title||'')})}).then(x=>x.json());
+      if(r&&r.added!=null){ if(el){ el.dataset.has='1'; el.style.cursor='default'; el.querySelector('span').innerHTML=window.icon('check',16); el.lastElementChild.outerHTML='<span style="font-size:11px;color:var(--accent)">añadido</span>'; } msg.style.display='block'; msg.style.color='var(--accent)'; msg.textContent='Añadido al reto.'; }
+      else { msg.style.display='block'; msg.style.color='#c0392b'; msg.textContent=(r&&r.error)||'No se pudo añadir.'; }
+    }catch(e){ msg.style.display='block'; msg.style.color='#c0392b'; msg.textContent='Error de red.'; } };
+  box.querySelectorAll('.retopick').forEach(el=>{ if(el.dataset.has==='1') return; el.onclick=()=>addTo(el.dataset.id,el); });
+  document.getElementById('retocreate').onclick=async ()=>{ const nm=(document.getElementById('retonew').value||'').trim(); if(!nm) return;
+    const msg=document.getElementById('retomsg');
+    try{ const r=await fetch('/api/liderarrr/challenges',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nm,text:(a.artist||'')+' - '+(a.title||'')})}).then(x=>x.json());
+      if(r&&r.id){ msg.style.display='block'; msg.style.color='var(--accent)'; msg.textContent='Reto «'+nm+'» creado con este disco.'; setTimeout(openReto,700); }
+      else { msg.style.display='block'; msg.style.color='#c0392b'; msg.textContent=(r&&r.error)||'No se pudo crear.'; }
+    }catch(e){ msg.style.display='block'; msg.style.color='#c0392b'; msg.textContent='Error de red.'; } };
+}
+document.addEventListener('click',e=>{ if(e.target.closest('#retoalbum')){ openReto(); } });
 load();
 document.addEventListener('escucharrr:changed',load);   // biblioteca en vivo
 
