@@ -721,6 +721,17 @@ window.player = (function () {
   function jumpTo(i) { if (i >= 0 && i < q.length) start(i); }
   function removeAt(i) { snapshot(); const wasCur = i === idx; q.splice(i, 1); if (i < idx) idx--; if (idx >= q.length) idx = q.length - 1; save(); if (wasCur) { if (q.length) start(idx); else { idx = -1; cancelFade(); active().el.pause(); active().el.removeAttribute('src'); active().trackIdx = -1; render(); } } else render(); }
   function clearUpcoming() { snapshot(); q = q.slice(0, idx + 1); save(); render(); }
+  // reordenar la cola (arrastrar); mantiene bien el puntero de la pista en curso
+  function moveInQueue(from, to) {
+    if (from === to || from < 0 || to < 0 || from >= q.length || to >= q.length) return;
+    snapshot(); const item = q.splice(from, 1)[0]; q.splice(to, 0, item);
+    let cur = idx; if (cur === from) cur = to; else { if (from < cur) cur--; if (to <= cur) cur++; } idx = cur;
+    save(); render();
+  }
+  // «reproducir a continuación»: inserta justo después de la pista en curso
+  function addNext(tracks) { if (!tracks || !tracks.length) return; const wasEmpty = idx < 0 || !q.length; snapshot(); q.splice(Math.max(idx + 1, 0), 0, ...tracks); save(); render(); if (wasEmpty) start(0); }
+  // «añadir a la cola»: al final
+  function enqueue(tracks) { if (!tracks || !tracks.length) return; const wasEmpty = idx < 0 || !q.length; snapshot(); q = q.concat(tracks); save(); render(); if (wasEmpty) start(0); }
   const getState = () => ({ q: q.slice(), idx, playing, radioOn, canUndo: undoStack.length > 0 });
 
   // eventos de audio -> estado real (ambos decks; sólo cuenta el activo)
@@ -1158,5 +1169,5 @@ window.player = (function () {
 
   return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain, getZone, getAudio, getNative, setNativeMode, setRadio, undo,
     getSettings, setXfade, setRgMode, setEqEnabled, setEqBand, setPreset, openOutput: toggleZPanel, openEq: toggleEqPanel, openDsp: toggleDspPanel,
-    playRadio, stopRadio, getRadio, radioFrom, thumbDown, playMix };
+    playRadio, stopRadio, getRadio, radioFrom, thumbDown, playMix, moveInQueue, addNext, enqueue };
 })();

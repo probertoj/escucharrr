@@ -11,6 +11,7 @@
   <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
     <h1 style="font-size:26px;margin:0">Cola</h1><span id="count" style="font-size:13px;color:var(--text-2)"></span>
     <span id="radio" title="Radio: cuando se acabe la cola, la extiende con pistas afines de tu biblioteca" style="margin-left:auto;cursor:pointer;font-size:13px;padding:5px 12px;border-radius:999px;border:1px solid var(--border);display:inline-flex;align-items:center;gap:6px"><span data-icon="radio" data-s="15"></span>Radio</span>
+    <button id="saveList">Guardar como lista</button>
     <button id="undo">⤺ Deshacer</button>
     <button id="clear">Vaciar lo próximo</button>
   </div>
@@ -38,7 +39,7 @@ function render(){
     if(idx>0 && i===0) h+='<div style="font-size:11px;color:var(--text-2);margin:0 0 4px;letter-spacing:.04em">REPRODUCIDO</div>';
     if(idx>=0 && i===idx+1) h+='<div style="font-size:11px;color:var(--text-2);margin:14px 0 4px;letter-spacing:.04em">PRÓXIMAMENTE</div>';
     const cur=i===idx;
-    h+=`<div class="track" style="${cur?'background:var(--accent-bg);border-radius:8px;':''}${i<idx?'opacity:.55;':''}padding:9px 10px">
+    h+=`<div class="track" draggable="true" data-i="${i}" style="${cur?'background:var(--accent-bg);border-radius:8px;':''}${i<idx?'opacity:.55;':''}padding:9px 10px;cursor:grab">
       <span data-jump="${i}" title="Reproducir" style="cursor:pointer;color:var(--accent);display:inline-flex;align-items:center">${window.icon('play',14)}</span>
       ${mini(t.albumId)}
       <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:14px;${cur?'color:var(--accent)':''}">${esc(t.title)}</div><div style="font-size:12px;color:var(--text-2)">${esc(t.artist)}</div></div>
@@ -53,7 +54,25 @@ document.addEventListener('click',e=>{
   if(e.target.closest('#clear')){player.clearUpcoming();return;}
   if(e.target.closest('#radio')){player.setRadio(!player.getState().radioOn);return;}
   if(e.target.closest('#undo')){player.undo();return;}
+  if(e.target.closest('#saveList')){ saveAsList(); return; }
 });
+// ── reordenar arrastrando ──
+let dragFrom=-1;
+list.addEventListener('dragstart',e=>{ const t=e.target.closest('.track[data-i]'); if(!t)return; dragFrom=+t.dataset.i; t.style.opacity='.4'; try{e.dataTransfer.effectAllowed='move';}catch(x){} });
+list.addEventListener('dragend',e=>{ const t=e.target.closest('.track[data-i]'); if(t)t.style.opacity=''; dragFrom=-1; });
+list.addEventListener('dragover',e=>{ if(dragFrom>=0){ e.preventDefault(); try{e.dataTransfer.dropEffect='move';}catch(x){} } });
+list.addEventListener('drop',e=>{ const t=e.target.closest('.track[data-i]'); if(!t||dragFrom<0)return; e.preventDefault(); const to=+t.dataset.i; if(to!==dragFrom && player.moveInQueue) player.moveInQueue(dragFrom,to); dragFrom=-1; });
+async function saveAsList(){
+  const st=player.getState(); const ids=(st.q||[]).map(t=>t.trackId).filter(Boolean);
+  if(!ids.length){ alert('La cola está vacía.'); return; }
+  const name=(prompt('Nombre de la lista:', 'Cola '+new Date().toLocaleDateString())||'').trim(); if(!name) return;
+  const b=document.getElementById('saveList'); b.disabled=true; b.textContent='Guardando…';
+  try{ const cr=await fetch('/api/playlists',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}).then(r=>r.json());
+    if(cr.ok&&cr.id){ await fetch('/api/playlist/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:cr.id,track_ids:ids})});
+      b.textContent='¡Guardada!'; setTimeout(()=>{b.disabled=false;b.textContent='Guardar como lista';},1400); }
+    else { b.disabled=false; b.textContent='Guardar como lista'; alert(cr.error||'No se pudo crear la lista.'); }
+  }catch(e){ b.disabled=false; b.textContent='Guardar como lista'; alert('Error de red.'); }
+}
 document.addEventListener('player:change',render);
 window.addEventListener('DOMContentLoaded',render);
 </script>
