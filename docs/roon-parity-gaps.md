@@ -262,8 +262,14 @@ volumen y waveform están GATEADOS por una pasada de `analyze.js` (horas sobre S
 2. **Nivelado de volumen (ReplayGain/R128)**: correr/ampliar `analyze.js` para poblar gain/peak y
    aplicar ganancia por pista/álbum en el reproductor (web + nativo) con toggle. Roon `volume
    leveling`, Plexamp `loudness leveling`. Alto valor; coste = pasada de análisis (incremental). **P1/P2**.
-3. **Barra de onda (waveform) para buscar**: poblar `peaks` en la misma pasada y pintar el scrubber
-   (Roon `atom_waveform_bar`; ya existe `/api/peaks`). **P2**.
+3. ✅ **HECHO (Nov 3 2026)** — **Barra de onda (waveform) para buscar**: la pasada de análisis
+   de la #2 pobló `peaks` (4485/4485 en los identificados) y el scrubber ya pintaba los picos
+   (`wfSvg`) con relleno de progreso y seek al clic, en el reproductor compacto (`#npwf`) y en la
+   pantalla completa (`#npfswf`). Esto le añadió la parte Roon que faltaba (`atom_waveform_slider_fg`):
+   **arrastrar para buscar** (pointerdown/move/up delegados; el relleno sigue al cursor y el seek se
+   aplica al soltar) + **burbuja de tiempo** flotante en hover (solo tiempo) y en arrastre;
+   `progress()` se inhibe mientras se arrastra. Probado con PointerEvent reales (hover 1:02,
+   arrastre 25%→75%, seek real al soltar).
 4. **EQ paramétrico + Signal Path (WebAudio)**: editor de bandas (BiquadFilter) sobre `dsp_preset`
    ya guardado + panel de ruta de señal (formato/profundidad/frecuencia/ganancia/bit-perfect).
    Roon `component_dsp`/`parametric`/`signal_path`. **P2**.
