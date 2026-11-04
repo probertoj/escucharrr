@@ -48,8 +48,8 @@ function id3TextPair(buf) {
   return [id3Text(Buffer.concat([Buffer.from([enc]), body.subarray(0, i)])), id3Text(Buffer.concat([Buffer.from([enc]), body.subarray(i + 1)]))];
 }
 
-const ID3_TEXT = { TIT2: 'TITLE', TPE1: 'ARTIST', TPE2: 'ALBUMARTIST', TALB: 'ALBUM', TRCK: 'TRACKNUMBER', TPOS: 'DISCNUMBER', TCON: 'GENRE', TSRC: 'ISRC', TDRC: 'DATE', TYER: 'DATE', TDRL: 'DATE', TDAT: '_DATE2' };
-const TXXX_MAP = { 'MUSICBRAINZ ALBUM ID': 'MUSICBRAINZ_ALBUMID', 'MUSICBRAINZ RELEASE GROUP ID': 'MUSICBRAINZ_RELEASEGROUPID', 'MUSICBRAINZ RELEASE TRACK ID': 'MUSICBRAINZ_TRACKID', 'ACOUSTID ID': 'ACOUSTID_ID', 'ACOUSTID FINGERPRINT': 'ACOUSTID_FINGERPRINT' };
+const ID3_TEXT = { TIT2: 'TITLE', TPE1: 'ARTIST', TPE2: 'ALBUMARTIST', TALB: 'ALBUM', TRCK: 'TRACKNUMBER', TPOS: 'DISCNUMBER', TCON: 'GENRE', TSRC: 'ISRC', TDRC: 'DATE', TYER: 'DATE', TDRL: 'DATE', TDAT: '_DATE2', TCMP: 'COMPILATION', TCP: 'COMPILATION' };
+const TXXX_MAP = { 'MUSICBRAINZ ALBUM ID': 'MUSICBRAINZ_ALBUMID', 'MUSICBRAINZ RELEASE GROUP ID': 'MUSICBRAINZ_RELEASEGROUPID', 'MUSICBRAINZ RELEASE TRACK ID': 'MUSICBRAINZ_TRACKID', 'ACOUSTID ID': 'ACOUSTID_ID', 'ACOUSTID FINGERPRINT': 'ACOUSTID_FINGERPRINT', 'TCMP': 'COMPILATION', 'COMPILATION': 'COMPILATION' };
 
 // Analiza el CUERPO de un ID3v2 (bytes tras la cabecera de 10) → { tags, apic }. Compartido por MP3
 // (cabecera al principio del fichero) y AIFF (chunk 'ID3 ').
@@ -225,6 +225,7 @@ function readMp4(file) {
         if (type === 'trkn') { if (dv.buf.length >= 4) tags.TRACKNUMBER = String(dv.buf.readUInt16BE(2)); return; }
         if (type === 'disk') { if (dv.buf.length >= 4) tags.DISCNUMBER = String(dv.buf.readUInt16BE(2)); return; }
         if (type === 'gnre') { if (dv.buf.length >= 2) { const g = ID3V1_GENRES[dv.buf.readUInt16BE(0) - 1]; if (g) tags.GENRE = g; } return; }
+        if (type === 'cpil') { tags.COMPILATION = (dv.buf.length && dv.buf[dv.buf.length - 1]) ? '1' : '0'; return; }   // flag de recopilación (iTunes)
         const key = MP4_TEXT[type]; if (!key || key[0] === '_') return;
         let v = dv.buf.toString('utf8').replace(/\u0000+$/, ''); if (key === 'GENRE') v = mapGenre(v); if (v) tags[key] = v;
       } catch (e) {}
@@ -244,7 +245,7 @@ function sniffMime(b) { if (b[0] === 0xff && b[1] === 0xd8) return 'image/jpeg';
 function mimeExt(m) { return ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' })[m] || 'jpg'; }
 
 // ── Vorbis comments (OGG Vorbis / Opus; mismo formato que el bloque VORBIS_COMMENT de FLAC) ──
-const VORBIS_KEYS = new Set(['TITLE', 'ALBUM', 'ARTIST', 'ALBUMARTIST', 'TRACKNUMBER', 'DISCNUMBER', 'DATE', 'GENRE', 'ISRC', 'MUSICBRAINZ_TRACKID', 'MUSICBRAINZ_ALBUMID', 'MUSICBRAINZ_RELEASEGROUPID', 'ACOUSTID_ID', 'ACOUSTID_FINGERPRINT']);
+const VORBIS_KEYS = new Set(['TITLE', 'ALBUM', 'ARTIST', 'ALBUMARTIST', 'TRACKNUMBER', 'DISCNUMBER', 'DATE', 'GENRE', 'ISRC', 'COMPILATION', 'MUSICBRAINZ_TRACKID', 'MUSICBRAINZ_ALBUMID', 'MUSICBRAINZ_RELEASEGROUPID', 'ACOUSTID_ID', 'ACOUSTID_FINGERPRINT']);
 function parseVorbisComments(b, start) {
   const tags = {}; let pic = null; let p = start;
   const u32 = () => { const v = b.readUInt32LE(p); p += 4; return v; };

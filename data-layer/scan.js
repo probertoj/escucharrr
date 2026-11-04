@@ -224,7 +224,11 @@ try {
     const fmtLabel = (ext === 'dsf' || ext === 'dff') ? dsdLabel(parsed.info.sampleRate) : ext.toUpperCase();
     const st = fs.statSync(file), t = parsed.tags, inf = parsed.info;
     const album = t.ALBUM || path.basename(path.dirname(file));
-    const artistName = t.ALBUMARTIST || t.ARTIST || 'Artista desconocido';
+    // Recopilación (Various Artists): flag COMPILATION/cpil/TCMP, o ALBUMARTIST = «Various Artists».
+    // Se agrupa TODO el álbum bajo «Various Artists» (si no, cada pista con distinto ARTIST crearía su
+    // propio release_group). El crédito de cada PISTA conserva su artista real (abajo, tcid).
+    const isComp = /^\s*(1|true|yes|y)\s*$/i.test(String(t.COMPILATION || '')) || /^\s*(various\s*artists|varios\s*artistas|v\.?\s*a\.?|varios|verschiedene(\s*interpreten)?|multi[\s-]?artist)\s*$/i.test(String(t.ALBUMARTIST || '').trim());
+    const artistName = isComp ? 'Various Artists' : (t.ALBUMARTIST || t.ARTIST || 'Artista desconocido');
     const title = t.TITLE || path.basename(file).replace(/\.[^.]+$/, '');
     const trackNo = parseInt(t.TRACKNUMBER, 10) || (ok + 1);
     const discNo = parseInt(t.DISCNUMBER, 10) || 1;
