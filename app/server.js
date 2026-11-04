@@ -32,6 +32,7 @@ const PUB = path.join(__dirname, 'public');
 if (!fs.existsSync(DB_PATH)) { console.error('No existe', DB_PATH, '\nGenera la BD con las herramientas de ../data-layer.'); process.exit(1); }
 // Scrobbling local-first (Last.fm + ListenBrainz): cola en SQLite + drenador con reintentos.
 const scrobble = require('../data-layer/scrobble');
+const TAGS = require('../data-layer/tags');   // carátula embebida en MP3 (APIC) y M4A (covr)
 // Wizard de IDENTIFICACIÓN de álbum (modelo Roon: empareja por nº de pistas + perfil de duraciones
 // contra MusicBrainz). Ver data-layer/identify-album.js y docs/roon-parity-gaps.md.
 const identifyAlbum = require('../data-layer/identify-album');
@@ -1519,7 +1520,11 @@ function tryEmbeddedCover(res, id) {   // arte embebido en los FLAC (cacheado en
     if (!fs.existsSync(path.join(ART_DIR, id + '.none'))) {   // marcador: ya buscamos y no había, no reintentar
       try { fs.mkdirSync(ART_DIR, { recursive: true }); } catch (e) {}
       let pic = null;
-      for (const f of Q.filesForAlbum.all(id)) { try { pic = flacPicture(f.path); } catch (e) { pic = null; } if (pic) break; }
+      for (const f of Q.filesForAlbum.all(id)) {   // arte embebido según el formato del fichero
+        const fx = path.extname(f.path).slice(1).toLowerCase();
+        try { pic = fx === 'flac' ? flacPicture(f.path) : fx === 'mp3' ? TAGS.mp3Picture(f.path) : (fx === 'm4a' || fx === 'aac') ? TAGS.mp4Picture(f.path) : null; } catch (e) { pic = null; }
+        if (pic) break;
+      }
       if (pic) {
         try { fs.writeFileSync(path.join(ART_DIR, id + '.' + pic.ext), pic.data); } catch (e) {}
         res.writeHead(200, { 'Content-Type': pic.mime, 'Cache-Control': 'public, max-age=86400' });

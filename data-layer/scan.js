@@ -7,6 +7,7 @@
 const { DatabaseSync } = require('node:sqlite');
 const fs = require('fs');
 const path = require('path');
+const TAGS = require('./tags');   // MP3 (ID3v2) y M4A/MP4 (átomos): etiquetas + info, sin dependencias
 
 function arg(n, d) { const i = process.argv.indexOf('--' + n); return i >= 0 ? (process.argv[i + 1] || true) : d; }
 const DB_PATH = arg('db', 'escucharrr.db');
@@ -179,7 +180,7 @@ function walk(dir, out) {
     const f = path.join(dir, e.name);
     let isDir = false; try { isDir = e.isDirectory(); } catch (x) {}
     if (isDir) walk(f, out);
-    else if (/\.(flac|wav|dsf|dff)$/i.test(e.name)) { out.push(f); seenPaths.add(nrm(f)); }
+    else if (/\.(flac|wav|dsf|dff|mp3|m4a|aac)$/i.test(e.name)) { out.push(f); seenPaths.add(nrm(f)); }   // sin pérdida + MP3/M4A/AAC
   }
 }
 const files = []; walk(path.resolve(ROOT), files);
@@ -213,7 +214,8 @@ db.exec('BEGIN');
 try {
   for (const file of files) {
     const ext = path.extname(file).slice(1).toLowerCase();
-    const parseOne = () => ext === 'flac' ? readFlac(file) : ext === 'dsf' ? readDsf(file) : ext === 'dff' ? readDff(file) : readWav(file);
+    const parseOne = () => ext === 'flac' ? readFlac(file) : ext === 'dsf' ? readDsf(file) : ext === 'dff' ? readDff(file)
+      : ext === 'mp3' ? TAGS.readMp3(file) : (ext === 'm4a' || ext === 'aac') ? TAGS.readMp4(file) : readWav(file);
     let parsed = null, perr = null;
     for (let i = 0; i < 2 && !parsed; i++) { try { parsed = parseOne(); } catch (e) { perr = e; if (i === 0) sleepSync(200); } }   // un reintento (SMB transitorio)
     if (!parsed && perr) { console.warn('  error leyendo', path.basename(file), perr.message); try { insSkip.run(file, 'error al leer: ' + (perr.code || perr.message)); } catch (x) {} }
