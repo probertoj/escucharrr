@@ -195,7 +195,11 @@ window.addEventListener('DOMContentLoaded', async () => {
         <div class="d" style="margin-bottom:8px">Liderarrr ya empareja tu biblioteca contra <b>MusicBrainz</b>. Importa esa identificación para que escucharrr marque tus discos como identificados <b>sin re-hacer el trabajo</b>: adopta el MBID donde aún no lo tengas (nunca pisa el tuyo).</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="ldsync">Importar identificación de Liderarrr</button><button id="lddiag" title="Comprueba qué responde tu Liderarrr (para depurar). Copia el resultado y pásaselo a Roberto.">Diagnóstico</button></div>
         <div id="ldsyncmsg" style="font-size:12.5px;margin-top:8px;display:none"></div>
-        <pre id="lddiagout" style="display:none;margin-top:8px;font-size:11.5px;line-height:1.45;background:var(--surface-2);border:1px solid var(--border);border-radius:9px;padding:10px 12px;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word;user-select:all"></pre></div>` : ''}</div>
+        <pre id="lddiagout" style="display:none;margin-top:8px;font-size:11.5px;line-height:1.45;background:var(--surface-2);border:1px solid var(--border);border-radius:9px;padding:10px 12px;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word;user-select:all"></pre>
+        <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+          <div class="d" style="margin-bottom:8px">¿Faltan portadas en discos ya identificados? Descárgalas de <b>Cover Art Archive</b> (en segundo plano, con cortesía). <span id="covpending" style="color:var(--text-2)"></span></div>
+          <button id="covbackfill">Descargar portadas que falten</button>
+          <div id="covmsg" style="font-size:12.5px;margin-top:8px;display:none"></div></div></div>` : ''}</div>
     <div class="row"><div class="lbl"><div class="k">Tidal / Qobuz</div><div class="d soon">próximamente</div></div></div>`;
     wireServices(s);
   }
@@ -245,6 +249,18 @@ window.addEventListener('DOMContentLoaded', async () => {
       } catch (e) { out.style.display = 'block'; out.textContent = 'Error: ' + e.message; }
       b.disabled = false; b.textContent = 'Diagnóstico';
     };
+    if ($('covbackfill')) {
+      const refreshCov = async () => { try { const r = await fetch('/api/covers/backfill').then(x => x.json()); if (r.ok) $('covpending').textContent = r.running ? '(descargando ahora…)' : (r.pending ? `Faltan ~${r.pending}.` : 'No falta ninguna.'); } catch (e) {} };
+      refreshCov();
+      $('covbackfill').onclick = async () => {
+        const b = $('covbackfill'); b.disabled = true;
+        try {
+          const r = await fetch('/api/covers/backfill', { method: 'POST' }).then(x => x.json());
+          srvMsg('covmsg', r.started ? 'Descargando portadas en segundo plano. Irán apareciendo según navegues; tardará un rato.' : 'Ya había una descarga en marcha.', true);
+        } catch (e) { srvMsg('covmsg', 'Error: ' + e.message, false); }
+        b.disabled = false; refreshCov();
+      };
+    }
   }
   loadServices();
   const qp = new URLSearchParams(location.search);

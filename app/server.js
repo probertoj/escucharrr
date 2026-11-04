@@ -2593,6 +2593,12 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/stream') return streamAudio(req, res, parseInt(u.searchParams.get('track'), 10));
     if (u.pathname === '/api/cover') return serveCover(res, parseInt(u.searchParams.get('rg'), 10));
     if (u.pathname === '/api/album/similar') return void handleAlbumSimilar(req, res, u);
+    if (u.pathname === '/api/covers/backfill') {   // descarga de CAA todas las portadas que falten (una sola instancia)
+      if (req.method === 'POST') { const started = spawnCoversBackfill('manual'); return sendJSON(res, { ok: true, started, running: _coversBackfillRunning }); }
+      const pending = db.prepare(`SELECT COUNT(*) n FROM release_group rg WHERE rg.mbid IS NOT NULL AND rg.cover_path IS NULL AND NOT EXISTS(SELECT 1 FROM provenance p WHERE p.subject_type='release_group' AND p.subject_id=rg.id AND p.field='cover')`).get().n;
+      const cached = db.prepare('SELECT COUNT(*) n FROM release_group WHERE cover_path IS NOT NULL').get().n;
+      return sendJSON(res, { ok: true, running: _coversBackfillRunning, pending, cached });
+    }
     if (u.pathname === '/api/peaks') { const pk = peaksOf(parseInt(u.searchParams.get('track'), 10)); return pk ? sendJSON(res, { peaks: pk }) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/trackinfo') {   // espec técnico + loudness de la pista (ruta de señal / nerd stats)
       const t = parseInt(u.searchParams.get('track'), 10);
