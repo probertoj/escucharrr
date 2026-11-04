@@ -190,7 +190,11 @@ window.addEventListener('DOMContentLoaded', async () => {
         <input id="ldurl" placeholder="http://192.168.1.50:3861" value="${esc((s.liderarrr && s.liderarrr.url) || '')}" style="flex:1;min-width:200px">
         <button id="ldsave">${(s.liderarrr && s.liderarrr.connected) ? 'Actualizar' : 'Conectar'}</button>
         ${(s.liderarrr && s.liderarrr.connected) ? '<button id="lddisc">Desconectar</button>' : ''}
-      </div><div id="ldmsg" style="font-size:12.5px;margin-top:6px;display:none"></div></div>
+      </div><div id="ldmsg" style="font-size:12.5px;margin-top:6px;display:none"></div>
+      ${(s.liderarrr && s.liderarrr.connected) ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+        <div class="d" style="margin-bottom:8px">Liderarrr ya empareja tu biblioteca contra <b>MusicBrainz</b>. Importa esa identificación para que escucharrr marque tus discos como identificados <b>sin re-hacer el trabajo</b>: adopta el MBID donde aún no lo tengas (nunca pisa el tuyo).</div>
+        <button id="ldsync">Importar identificación de Liderarrr</button>
+        <div id="ldsyncmsg" style="font-size:12.5px;margin-top:8px;display:none"></div></div>` : ''}</div>
     <div class="row"><div class="lbl"><div class="k">Tidal / Qobuz</div><div class="d soon">próximamente</div></div></div>`;
     wireServices(s);
   }
@@ -208,6 +212,18 @@ window.addEventListener('DOMContentLoaded', async () => {
     if ($('spotsync')) $('spotsync').onclick = async () => { const b = $('spotsync'); b.disabled = true; b.textContent = 'Sincronizando…'; const r = await fetch('/api/spotify/sync', { method: 'POST' }).then(x => x.json()).catch(() => ({})); if (r.ok) srvMsg('spmsg', 'Sincronizado: ' + r.matched + ' de ' + r.saved + ' guardados.', true); else srvMsg('spmsg', r.error || 'Error.', false); b.disabled = false; b.textContent = 'Sincronizar'; };
     if ($('ldsave')) $('ldsave').onclick = async () => { const b = $('ldsave'); b.disabled = true; b.textContent = 'Conectando…'; const r = await fetch('/api/config/liderarrr', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: ($('ldurl').value || '').trim() }) }).then(x => x.json()).catch(() => ({})); if (r.ok) { srvMsg('ldmsg', '¡Liderarrr conectado! Ya tienes Retos y «Quiero».', true); loadServices(); } else { srvMsg('ldmsg', r.error || 'No se pudo conectar.', false); b.disabled = false; b.textContent = 'Conectar'; } };
     if ($('lddisc')) $('lddisc').onclick = async () => { await fetch('/api/config/liderarrr', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clear: true }) }); loadServices(); };
+    if ($('ldsync')) $('ldsync').onclick = async () => {
+      const b = $('ldsync'); b.disabled = true; b.textContent = 'Importando… (puede tardar)';
+      try {
+        const r = await fetch('/api/liderarrr/sync-identify', { method: 'POST' }).then(x => x.json());
+        if (r.ok) {
+          const p = r.report;
+          const txt = `Listo. Álbumes: ${p.albums_adopted} identificados ahora · ${p.albums_already} ya lo estaban · ${p.albums_no_local} no están en tu biblioteca · ${p.albums_conflict} en conflicto. Artistas: ${p.artists_adopted} identificados.`;
+          srvMsg('ldsyncmsg', txt, true);
+        } else srvMsg('ldsyncmsg', r.error || 'No se pudo importar.', false);
+      } catch (e) { srvMsg('ldsyncmsg', 'Error: ' + e.message, false); }
+      b.disabled = false; b.textContent = 'Importar identificación de Liderarrr';
+    };
   }
   loadServices();
   const qp = new URLSearchParams(location.search);

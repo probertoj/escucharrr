@@ -164,11 +164,81 @@ function lidMatchKey(artist, title) { return lidNormName(artist) + '::' + lidCle
 let _lidOwned = { at: 0, map: null };
 function lidOwnedIndex() { if (_lidOwned.map && Date.now() - _lidOwned.at < 15000) return _lidOwned.map; const map = new Map(); for (const a of db.prepare('SELECT id, artist, title FROM v_album').all()) map.set(lidMatchKey(a.artist, a.title), a.id); _lidOwned = { at: Date.now(), map }; return map; }
 function resolveOwnedPairs(pairs) { const idx = lidOwnedIndex(); return (pairs || []).map(p => ({ artist: p.artist, album: p.album, rg_id: idx.get(lidMatchKey(p.artist, p.album)) ?? null })); }
+
+// ── Importar la identificación de MusicBrainz ya hecha en Liderarrr (para no re-identificar aquí) ──
+// Liderarrr ya empareja su biblioteca contra MusicBrainz y expone rg_mbid por álbum (/api/library) y mbid
+// por artista (/api/artists). Adoptamos esos MBID en los álbumes/artistas locales que aún NO los tienen:
+// "tus datos mandan" (nunca pisamos un MBID tuyo) y respetamos el UNIQUE (si otro registro ya usa ese MBID,
+// no lo duplicamos). Procedencia source='liderarrr' para el distintivo "identificado vía Liderarrr" en la app.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+async function syncLiderarrrIdentify() {
+  if (!liderarrrUrl()) throw new Error('Liderarrr no está configurado');
+  const rep = { albums_scanned: 0, albums_adopted: 0, albums_already: 0, albums_no_local: 0, albums_conflict: 0,
+                artists_scanned: 0, artists_adopted: 0, artists_already: 0, artists_no_local: 0, artists_conflict: 0, total: 0 };
+  const idx = lidOwnedIndex();   // matchKey(artista,título) → rg_id local (cacheado)
+  const getRgMbid = db.prepare('SELECT mbid FROM release_group WHERE id=?');
+  const rgByMbid = db.prepare('SELECT id FROM release_group WHERE mbid=?');
+  const setRgMbid = db.prepare("UPDATE release_group SET mbid=?, updated_at=datetime('now') WHERE id=?");
+  const provUp = db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at)
+      VALUES(?,?,'mbid','liderarrr',?,datetime('now'))
+      ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source='liderarrr', source_ref=excluded.source_ref, fetched_at=datetime('now')`);
+  // 1) Álbumes — pagina /api/library y adopta rg_mbid donde el álbum local no tenga MBID.
+  const LIMIT = 500; let offset = 0, total = Infinity, guard = 0;
+  while (offset < total && guard++ < 400) {
+    const r = await liderarrrFetch('GET', '/api/library?limit=' + LIMIT + '&offset=' + offset);
+    if (!r || !r.body || !Array.isArray(r.body.albums)) break;
+    total = (r.body.total != null) ? r.body.total : (offset + r.body.albums.length);
+    rep.total = total;
+    for (const al of r.body.albums) {
+      rep.albums_scanned++;
+      const mb = String(al.rg_mbid || '').trim().toLowerCase();
+      if (!UUID_RE.test(mb)) continue;
+      const rgId = idx.get(lidMatchKey(al.album_artist, al.title));
+      if (!rgId) { rep.albums_no_local++; continue; }
+      const cur = getRgMbid.get(rgId);
+      if (cur && cur.mbid) { rep.albums_already++; continue; }          // ya identificado (tuyo o previo) → no tocar
+      const owner = rgByMbid.get(mb);
+      if (owner && owner.id !== rgId) { rep.albums_conflict++; continue; }   // ese MBID ya está en otro álbum local → UNIQUE
+      try { setRgMbid.run(mb, rgId); provUp.run('release_group', rgId, mb); rep.albums_adopted++; } catch (e) { rep.albums_conflict++; }
+    }
+    if (r.body.albums.length < LIMIT) break;
+    offset += LIMIT;
+  }
+  // 2) Artistas — /api/artists (nombre → mbid). Solo match por nombre normalizado y ÚNICO (evita falsos positivos).
+  try {
+    const r = await liderarrrFetch('GET', '/api/artists');
+    const arr = Array.isArray(r.body) ? r.body : ((r.body && (r.body.artists || r.body.items)) || []);
+    if (arr.length) {
+      const localByName = new Map();   // normName → [id,…] (solo artistas locales SIN mbid)
+      for (const a of db.prepare('SELECT id, name, mbid FROM artist').all()) {
+        if (a.mbid) continue; const k = lidNormName(a.name); if (!k) continue;
+        if (!localByName.has(k)) localByName.set(k, []); localByName.get(k).push(a.id);
+      }
+      const usedMbid = db.prepare('SELECT id FROM artist WHERE mbid=?');
+      const setArtMbid = db.prepare('UPDATE artist SET mbid=? WHERE id=?');
+      for (const a of arr) {
+        const mb = String(a.mbid || '').trim().toLowerCase(); if (!UUID_RE.test(mb)) continue;
+        rep.artists_scanned++;
+        const ids = localByName.get(lidNormName(a.name));
+        if (!ids || ids.length !== 1) { rep.artists_no_local++; continue; }   // sin match local o ambiguo
+        if (usedMbid.get(mb)) { rep.artists_conflict++; continue; }
+        try { setArtMbid.run(mb, ids[0]); provUp.run('artist', ids[0], mb); rep.artists_adopted++; localByName.delete(lidNormName(a.name)); } catch (e) { rep.artists_conflict++; }
+      }
+    }
+  } catch (e) { rep.artists_error = String(e.message); }
+  _lidOwned = { at: 0, map: null };   // invalida el índice (los MBID no cambian el matchKey, pero por higiene)
+  sseBroadcast('library');
+  return rep;
+}
 // Proxy fino de escucharrr → Liderarrr (evita CORS; 'resolve' lo resuelve escucharrr localmente).
 async function handleLiderarrr(req, res, u) {
   const sub = u.pathname.slice('/api/liderarrr/'.length);
   if (sub === 'resolve' && req.method === 'POST') { const b = await readBody(req); return sendJSON(res, { ok: true, owned: resolveOwnedPairs(b.pairs || []) }); }
   if (!liderarrrUrl()) return sendJSON(res, { ok: false, error: 'Liderarrr no está configurado (ponlo en Ajustes → Servicios).' });
+  if (sub === 'sync-identify' && req.method === 'POST') {   // adopta la identificación MusicBrainz ya hecha en Liderarrr
+    try { const report = await syncLiderarrrIdentify(); return sendJSON(res, { ok: true, report }); }
+    catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+  }
   try {
     const body = (req.method === 'POST' || req.method === 'DELETE' || req.method === 'PUT') ? await readBody(req) : null;
     const r = await liderarrrFetch(req.method, '/api/' + sub + (u.search || ''), body);
@@ -645,6 +715,7 @@ function album(id) {
   else { a.about = null; a.about_source = null; }
   a.editions = Q.editions.all(id);
   a.mbid = (db.prepare('SELECT mbid FROM release_group WHERE id=?').get(id) || {}).mbid || null;   // ¿identificado? (para el wizard)
+  a.mbid_source = a.mbid ? ((prov.find(x => x.field === 'mbid') || {}).source || null) : null;   // 'liderarrr' | 'user-identify' | … (para el distintivo de procedencia)
   a.cover_pref = (Q.coverPref.get(id) || {}).value || 'auto';   // fuente de portada elegida (auto/file/download/none)
   a.hidden = Q.flagGet.get('release_group', id, 'hidden') ? 1 : 0;
   a.versions = versionsOf(id, a.title);   // otras ediciones del mismo álbum en tu biblioteca
