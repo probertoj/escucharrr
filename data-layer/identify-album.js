@@ -136,13 +136,30 @@ async function applyMbid(db, rgId, releaseMbid, opts = {}) {
   const mb = opts.mb || makeMb();
   const rel = await mb('release/' + releaseMbid + '?inc=release-groups');
   const rgMbid = rel['release-group'] && rel['release-group'].id;
+  // UNIQUE de release_group.mbid: ese release-group ya está en OTRO álbum de la biblioteca. Pasa cuando el
+  // mismo lanzamiento está partido en varios discos locales (recopilación de 2 CD = un solo release-group en
+  // MusicBrainz). En vez de reventar con el error SQL, avisamos de cuál es y proponemos unirlos.
+  if (rgMbid) {
+    const other = db.prepare('SELECT id, title FROM release_group WHERE mbid=? AND id!=?').get(rgMbid, rgId);
+    if (other) {
+      // De momento no se puede asignar el mismo MBID a dos álbumes (falta el modelo de «versiones» de Roon).
+      // Red de seguridad para no reventar con el error SQL crudo; el agrupado por versiones está en el roadmap.
+      const e = new Error('Esta edición ya está en tu biblioteca como «' + other.title + '» (el mismo lanzamiento de MusicBrainz). Aún no agrupamos copias como versiones (estilo Roon), así que de momento no puedo asignar el mismo MBID a dos álbumes.');
+      e.code = 'MBID_IN_USE'; e.other = other; throw e;
+    }
+  }
+  // UNIQUE de release.mbid: no pisar si esa edición ya está en otra release local.
+  const relClash = db.prepare('SELECT id FROM "release" WHERE mbid=? AND release_group_id!=?').get(releaseMbid, rgId);
   const tx = db;
   tx.exec('BEGIN');
   try {
     const our = tx.prepare('SELECT id FROM "release" WHERE release_group_id=? ORDER BY id LIMIT 1').get(rgId);
-    if (our) tx.prepare('UPDATE "release" SET mbid=COALESCE(mbid,?) WHERE id=?').run(releaseMbid, our.id);
-    if (rgMbid) tx.prepare('UPDATE release_group SET mbid=COALESCE(mbid,?), updated_at=datetime(\'now\') WHERE id=?').run(rgMbid, rgId);
-    try { tx.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at) VALUES('release_group',?,'mbid','user-identify',?,datetime('now'))`).run(rgId, releaseMbid); } catch (e) {}
+    if (our && !relClash) tx.prepare('UPDATE "release" SET mbid=? WHERE id=?').run(releaseMbid, our.id);
+    // SET (no COALESCE): reidentificar puede CAMBIAR un mbid ya puesto; el conflicto ya se comprobó arriba.
+    if (rgMbid) tx.prepare('UPDATE release_group SET mbid=?, updated_at=datetime(\'now\') WHERE id=?').run(rgMbid, rgId);
+    tx.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at)
+       VALUES('release_group',?,'mbid','user-identify',?,datetime('now'))
+       ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source='user-identify', source_ref=excluded.source_ref, fetched_at=datetime('now')`).run(rgId, releaseMbid);
     tx.exec('COMMIT');
   } catch (e) { tx.exec('ROLLBACK'); throw e; }
   return { releaseMbid, rgMbid };
