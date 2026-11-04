@@ -88,7 +88,7 @@ function renderAlbum(a){
         <h1 style="display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap">${esc(a.title)}<button class="titleedit" title="Editar el título del álbum" aria-label="Editar título" style="flex:none;background:none;border:none;color:var(--text-2);cursor:pointer;padding:3px;display:inline-flex;align-items:center">${window.icon('edit',17)}</button></h1>
         ${(a.orig_title&&a.orig_title!==a.title)?`<div style="font-size:12px;color:var(--text-2);margin-top:-4px;margin-bottom:2px">Original: ${esc(a.orig_title)} · <a href="#" class="titlerevert" style="color:var(--accent)">revertir</a></div>`:''}
         <div style="font-size:15px">${artistLink}</div>
-        ${(a.tracks||[]).length?`<div class="actions"><button class="btn-accent" id="playalbum" style="display:inline-flex;align-items:center;gap:6px">${window.icon('play',15)}Reproducir</button><button class="iconbtn" id="radioalbum" title="Radio: reproduce y extiende con pistas afines de tu biblioteca">${window.icon('radio',17)}</button><button class="iconbtn" id="mixalbum" title="Mezcla: una lista afín a este álbum">${window.icon('music',17)}</button><button class="iconbtn" id="queuealbum" title="Añadir a la cola">${window.icon('queue',17)}</button><button class="iconbtn" id="nextalbum" title="Reproducir a continuación">${window.icon('next',17)}</button><button class="iconbtn" id="addalbum" title="Añadir a una lista">${window.icon('plus',17)}</button><button class="iconbtn" id="identifyalbum" title="${a.mbid?'Ya identificado con MusicBrainz — reidentificar':'Identificar con MusicBrainz (por nº de pistas y duraciones)'}">${window.icon(a.mbid?'check':'search',17)}</button>${a.has_audio?`<button class="iconbtn" id="reanalyzealbum" ${a.reanalyzing?'disabled':''} title="Recalcula el loudness/ReplayGain y la barra de onda de este álbum">${window.icon('refresh',17)}</button>`:''}<span id="retoslot"></span></div>`:''}
+        ${(a.tracks||[]).length?`<div class="actions"><button class="btn-accent" id="playalbum" style="display:inline-flex;align-items:center;gap:6px">${window.icon('play',15)}Reproducir</button><button class="iconbtn" id="radioalbum" title="Radio: reproduce y extiende con pistas afines de tu biblioteca">${window.icon('radio',17)}</button><button class="iconbtn" id="mixalbum" title="Mezcla: una lista afín a este álbum">${window.icon('music',17)}</button><button class="iconbtn" id="queuealbum" title="Añadir a la cola">${window.icon('queue',17)}</button><button class="iconbtn" id="nextalbum" title="Reproducir a continuación">${window.icon('next',17)}</button><button class="iconbtn" id="addalbum" title="Añadir a una lista">${window.icon('plus',17)}</button><button class="iconbtn" id="identifyalbum" title="${a.mbid?'Ya identificado con MusicBrainz — reidentificar':'Identificar con MusicBrainz (por nº de pistas y duraciones)'}">${window.icon(a.mbid?'check':'search',17)}</button>${a.has_audio?`<button class="iconbtn" id="acoustidalbum" title="Identificar por huella de audio (AcoustID) — reconoce el disco aunque las etiquetas estén mal">${window.icon('visualizer',17)}</button>`:''}${a.has_audio?`<button class="iconbtn" id="reanalyzealbum" ${a.reanalyzing?'disabled':''} title="Recalcula el loudness/ReplayGain y la barra de onda de este álbum">${window.icon('refresh',17)}</button>`:''}<span id="retoslot"></span></div>`:''}
         <div class="meta">
           <span><span class="k">Tier</span> ${tier}</span>
           <span><span class="k">Valoración</span> ${stars}</span>
@@ -256,6 +256,20 @@ function openAboutEditor(){
 // ── Wizard de IDENTIFICACIÓN (estilo Roon): empareja el álbum con MusicBrainz por nº de pistas
 // + perfil de duraciones (no por búsqueda de texto). GET /api/identify, luego /api/identify/apply. ──
 document.addEventListener('click',e=>{ if(e.target.closest('#identifyalbum')){ openIdentify(); } });
+// Identificar por HUELLA de audio (AcoustID): reconoce el disco aunque las etiquetas estén mal.
+document.addEventListener('click',e=>{ if(e.target.closest('#acoustidalbum')){ runAcoustid(); } });
+async function runAcoustid(){
+  const a=window.ALB; if(!a) return;
+  const btn=document.getElementById('acoustidalbum'); if(btn){ btn.disabled=true; btn.style.opacity='.6'; }
+  if(window.toast) toast('Identificando por huella… (lee el audio, puede tardar)');
+  try{
+    const r=await fetch('/api/album/acoustid',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rg:a.id})}).then(x=>x.json());
+    if(r.ok){ toast('Identificado por huella ('+r.votes+'/'+r.scanned+' pistas de acuerdo). Trayendo datos y portada…'); setTimeout(load,1800); }
+    else if(r.reason==='fpcalc'||r.reason==='key'){ toast(r.error); }
+    else { toast(r.error||'AcoustID no lo reconoció.'); }
+  }catch(err){ toast('Error: '+err.message); }
+  if(btn){ btn.disabled=false; btn.style.opacity=''; }
+}
 
 // ── Reanalizar: recalcula loudness/ReplayGain + waveform SOLO de este álbum (Roon edit_album_reanalyze) ──
 document.addEventListener('click',e=>{

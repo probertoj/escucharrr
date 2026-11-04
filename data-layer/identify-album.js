@@ -155,7 +155,7 @@ async function applyMbid(db, rgId, releaseMbid, opts = {}) {
   return { releaseMbid, rgMbid };
 }
 
-module.exports = { buildProfile, durScore, tokenOverlap, scoreCandidate, suggest, applyMbid, mbReleaseDurations, DUR_TOL_MS };
+module.exports = { buildProfile, durScore, tokenOverlap, scoreCandidate, suggest, applyMbid, mbReleaseDurations, DUR_TOL_MS, makeMb };
 
 // ── CLI ──────────────────────────────────────────────────────────────────────────
 if (require.main === module) {

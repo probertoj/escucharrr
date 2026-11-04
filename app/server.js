@@ -128,6 +128,20 @@ async function lfmAuthCall(method, extra) {
 }
 
 const coverfetch = require('../data-layer/coverfetch');   // descarga perezosa de portadas (Cover Art Archive)
+const acoustidLib = require('../data-layer/acoustid');     // identificación automática por huella (AcoustID)
+// Config de AcoustID (clave gratuita de acoustid.org + ruta opcional de fpcalc/Chromaprint). Fichero en app/.
+const ACOUSTID_PATH = path.join(__dirname, 'acoustid.json');
+let acoustidCfg = null;
+function loadAcoustid() { try { acoustidCfg = fs.existsSync(ACOUSTID_PATH) ? JSON.parse(fs.readFileSync(ACOUSTID_PATH, 'utf8')) : null; } catch (e) { acoustidCfg = null; } return acoustidCfg; }
+loadAcoustid();
+function acoustidKey() { return (acoustidCfg && acoustidCfg.key) || ''; }
+function acoustidFpcalc() { return (acoustidCfg && acoustidCfg.fpcalcPath) || ''; }
+function saveAcoustid(key, fpcalcPath) {
+  const k = String(key || '').trim(), fp = String(fpcalcPath || '').trim();
+  if (k || fp) fs.writeFileSync(ACOUSTID_PATH, JSON.stringify({ key: k, fpcalcPath: fp }, null, 2) + '\n', 'utf8');
+  else { try { if (fs.existsSync(ACOUSTID_PATH)) fs.unlinkSync(ACOUSTID_PATH); } catch (e) {} }
+  loadAcoustid();
+}
 // Spotify (SOLO comparar biblioteca local ↔ álbumes guardados del usuario; no reproduce).
 const spotify = require('../data-layer/spotify');
 const SPOTIFY_TOKEN_PATH = path.join(__dirname, '.spotify-token');
@@ -352,6 +366,10 @@ function buildQ(db) { return {
   formatOf: db.prepare(`SELECT rel.format f FROM "release" rel WHERE rel.release_group_id=? LIMIT 1`),
   rgsByMbid: db.prepare(`SELECT id, title, substr(first_release,1,4) year FROM release_group WHERE mbid=?`),   // versiones: mismo release-group
   trackCountOf: db.prepare(`SELECT COUNT(*) n FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE rel.release_group_id=?`),
+  albumFilePaths: db.prepare(`SELECT lf.path, COALESCE(tr.title, r.title) title FROM local_file lf
+     JOIN track tr ON tr.id=lf.track_id JOIN recording r ON r.id=tr.recording_id
+     JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
+     WHERE rel.release_group_id=? AND lf.path IS NOT NULL ORDER BY m.position, tr.position`),
   // Lista de biblioteca: columnas base baratas. listen_later/has_audio/played/géneros/formato/tags
   // se resuelven en conjunto (ver libraryList), no con subconsultas correladas por fila.
   library: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.tier_rank,
@@ -869,6 +887,28 @@ async function handleAlbumSimilar(req, res, u) {
     const out = sim.map(s => { const id = idx.get(lidNormName(s.name)); return { name: s.name, id: id || null, owned: !!id }; });
     out.sort((a, b) => (b.owned - a.owned));   // primero los que tienes
     return sendJSON(res, { ok: true, configured: true, artists: out.slice(0, 16) });
+  } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+}
+// Identificación automática por HUELLA (AcoustID) de UN álbum: huella de sus pistas → recording → release-group
+// por consenso → fija el mbid (modelo de versiones; provenance 'acoustid') y encadena enrich + portada.
+async function handleAlbumAcoustid(req, res, u) {
+  try {
+    const b = (req.method === 'POST') ? await readBody(req) : {};
+    const rg = parseInt(b.rg || u.searchParams.get('rg'), 10);
+    if (!rg) return sendJSON(res, { ok: false, error: 'falta rg' });
+    if (!(await acoustidLib.fpcalcAvailable(acoustidFpcalc()))) return sendJSON(res, { ok: false, reason: 'fpcalc', error: 'Falta fpcalc (Chromaprint). Instálalo y, si hace falta, pon su ruta en Ajustes → Servicios.' });
+    if (!acoustidKey()) return sendJSON(res, { ok: false, reason: 'key', error: 'Falta la API key de AcoustID (gratis en acoustid.org) — ponla en Ajustes → Servicios.' });
+    const tracks = Q.albumFilePaths.all(rg);
+    if (!tracks.length) return sendJSON(res, { ok: false, error: 'El álbum no tiene ficheros locales que analizar.' });
+    const r = await acoustidLib.identifyAlbumByFingerprint(db, tracks, acoustidKey(), { mb: identifyAlbum.makeMb(), fpcalcPath: acoustidFpcalc() });
+    if (!r.ok) return sendJSON(res, { ok: false, reason: r.reason, scanned: r.scanned || 0, error: r.reason === 'nomatch' ? 'AcoustID no reconoció el álbum (' + (r.scanned || 0) + ' pistas con huella válida).' : 'No se pudo identificar por huella.' });
+    db.prepare("UPDATE release_group SET mbid=?, updated_at=datetime('now') WHERE id=?").run(r.rg_mbid, rg);
+    db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at) VALUES('release_group',?,'mbid','acoustid',?,datetime('now'))
+       ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source='acoustid', source_ref=excluded.source_ref, fetched_at=datetime('now')`).run(rg, r.rg_mbid);
+    sseBroadcast('library');
+    _spawnIngest([path.join(_DL, 'enrich.js'), '--db', DB_PATH, '--rg', String(rg)]).then(() => sseBroadcast('library')).catch(() => {});
+    _spawnIngest([path.join(_DL, 'covers.js'), '--db', DB_PATH, '--rg', String(rg)]).then(() => sseBroadcast('library')).catch(() => {});
+    return sendJSON(res, { ok: true, rg_mbid: r.rg_mbid, title: r.title, votes: r.votes, scanned: r.scanned, score: r.score, candidates: r.candidates });
   } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 function libraryList() {
@@ -2156,6 +2196,7 @@ async function handleConfig(req, res, u) {
         lastfm: { apiKey: lf.apiKey || '', hasSecret: !!lf.apiSecret, connected: !!lf.sessionKey, callbackUri: LASTFM_CALLBACK },
         spotify: { configured: spotifyConfigured(), authorized: !!spotifyTok, clientId: (spotifyCfg && spotifyCfg.clientId) || '', redirectUri: SPOTIFY_REDIRECT, matched: Q.spotifyCount.get().n },
         liderarrr: { url: liderarrrUrl(), connected: !!liderarrrUrl(), hasAuth: !!(liderarrrCfg && liderarrrCfg.pass), user: (liderarrrCfg && liderarrrCfg.user) || '' },
+        acoustid: { hasKey: !!acoustidKey(), fpcalcPath: acoustidFpcalc(), fpcalc: await acoustidLib.fpcalcAvailable(acoustidFpcalc()) },
         enabled: scrobble.enabledServices(scrobCfg || {}), pending: scrobble.pendingCount(db, scrobCfg || {}) });
     }
     const body = await readBody(req);
@@ -2194,6 +2235,13 @@ async function handleConfig(req, res, u) {
         if (r.status === 401 || r.status === 403) return sendJSON(res, { ok: false, error: 'Liderarrr responde ' + r.status + ': requiere autenticación. Tu Liderarrr tiene LIDERARRR_AUTH activado — pon la contraseña (y el usuario si no es «liderarrr»).' });
         return sendJSON(res, { ok: false, error: 'Responde con HTTP ' + r.status + ' (¿es la URL correcta?).' });
       } catch (e) { saveLiderarrr(''); return sendJSON(res, { ok: false, error: 'No responde: ' + e.message }); }
+    }
+    if (sub === 'acoustid') {   // identificación por huella: clave de acoustid.org + ruta opcional de fpcalc
+      if (body.clear) { saveAcoustid('', ''); return sendJSON(res, { ok: true, hasKey: false }); }
+      saveAcoustid(String(body.key || '').trim(), String(body.fpcalcPath || '').trim());
+      const fpcalc = await acoustidLib.fpcalcAvailable(acoustidFpcalc());
+      return sendJSON(res, { ok: true, hasKey: !!acoustidKey(), fpcalc, fpcalcPath: acoustidFpcalc(),
+        warn: fpcalc ? '' : 'No encuentro fpcalc (Chromaprint). Instálalo o indica su ruta para poder identificar por huella.' });
     }
     if (sub === 'folders') { writeWatchFolders(Array.isArray(body.folders) ? body.folders : []); startWatching(); if (watchConfig() && watchConfig().music.length) _ingSchedule('music'); return sendJSON(res, { ok: true, ...configInfo() }); }
     if (sub === 'obsidian') { writeObsidian(String(body.vault || '').trim(), String(body.albumsFolder || '').trim()); startWatching(); _ingSchedule('vault'); return sendJSON(res, { ok: true, ...configInfo() }); }
@@ -2633,6 +2681,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/stream') return streamAudio(req, res, parseInt(u.searchParams.get('track'), 10));
     if (u.pathname === '/api/cover') return serveCover(res, parseInt(u.searchParams.get('rg'), 10));
     if (u.pathname === '/api/album/similar') return void handleAlbumSimilar(req, res, u);
+    if (u.pathname === '/api/album/acoustid') return void handleAlbumAcoustid(req, res, u);
     if (u.pathname === '/api/covers/backfill') {   // descarga de CAA todas las portadas que falten (una sola instancia)
       if (req.method === 'POST') { const started = spawnCoversBackfill('manual'); return sendJSON(res, { ok: true, started, running: _coversBackfillRunning }); }
       const pending = db.prepare(`SELECT COUNT(*) n FROM release_group rg WHERE rg.mbid IS NOT NULL AND rg.cover_path IS NULL AND NOT EXISTS(SELECT 1 FROM provenance p WHERE p.subject_type='release_group' AND p.subject_id=rg.id AND p.field='cover')`).get().n;

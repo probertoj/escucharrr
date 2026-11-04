@@ -204,6 +204,13 @@ window.addEventListener('DOMContentLoaded', async () => {
           <div class="d" style="margin-bottom:8px">¿Faltan portadas en discos ya identificados? Descárgalas de <b>Cover Art Archive</b> (en segundo plano, con cortesía). <span id="covpending" style="color:var(--text-2)"></span></div>
           <button id="covbackfill">Descargar portadas que falten</button>
           <div id="covmsg" style="font-size:12.5px;margin-top:8px;display:none"></div></div></div>` : ''}</div>
+    <div class="row" style="display:block"><div class="k" style="display:flex;align-items:center;gap:8px">Identificación por huella (AcoustID) ${(s.acoustid && s.acoustid.hasKey && s.acoustid.fpcalc) ? badge(true, 'listo') : ''}</div>
+      <div class="d" style="margin:3px 0 8px">Identifica discos por la <b>huella del audio</b> (como Roon), aunque las etiquetas estén mal. Necesita una <b>API key gratuita</b> de <a href="https://acoustid.org/new-application" target="_blank" rel="noopener" style="color:var(--accent)">acoustid.org</a> y el binario <code>fpcalc</code> (Chromaprint) en el PATH o indicando su ruta. Estado: ${(s.acoustid && s.acoustid.fpcalc) ? '<b style="color:var(--accent)">fpcalc detectado</b>' : '<b style="color:#c0392b">fpcalc no encontrado</b>'}.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input id="aidkey" type="password" placeholder="${(s.acoustid && s.acoustid.hasKey) ? 'API key guardada — deja en blanco para no cambiar' : 'API key de AcoustID'}" style="flex:1;min-width:180px">
+        <input id="aidfp" placeholder="ruta a fpcalc (opcional, si no está en PATH)" value="${esc((s.acoustid && s.acoustid.fpcalcPath) || '')}" style="flex:1;min-width:180px">
+        <button id="aidsave">Guardar</button>
+      </div><div id="aidmsg" style="font-size:12.5px;margin-top:6px;display:none"></div></div>
     <div class="row"><div class="lbl"><div class="k">Tidal / Qobuz</div><div class="d soon">próximamente</div></div></div>`;
     wireServices(s);
   }
@@ -252,6 +259,15 @@ window.addEventListener('DOMContentLoaded', async () => {
         out.textContent = r.ok ? ('Diagnóstico de Liderarrr (cópialo y pásaselo a Roberto):\n\n' + JSON.stringify(r.diag, null, 2)) : ('Error: ' + (r.error || 'no se pudo'));
       } catch (e) { out.style.display = 'block'; out.textContent = 'Error: ' + e.message; }
       b.disabled = false; b.textContent = 'Diagnóstico';
+    };
+    if ($('aidsave')) $('aidsave').onclick = async () => {
+      const b = $('aidsave'); b.disabled = true; b.textContent = 'Guardando…';
+      try {
+        const r = await fetch('/api/config/acoustid', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: ($('aidkey').value || '').trim(), fpcalcPath: ($('aidfp').value || '').trim() }) }).then(x => x.json());
+        if (r.ok) { srvMsg('aidmsg', r.fpcalc ? '¡Listo! Ya puedes identificar por huella desde la ficha de un disco.' : (r.warn || 'Guardado, pero falta fpcalc.'), !!r.fpcalc); loadServices(); }
+        else srvMsg('aidmsg', r.error || 'Error.', false);
+      } catch (e) { srvMsg('aidmsg', 'Error: ' + e.message, false); }
+      b.disabled = false; b.textContent = 'Guardar';
     };
     if ($('covbackfill')) {
       const refreshCov = async () => { try { const r = await fetch('/api/covers/backfill').then(x => x.json()); if (r.ok) $('covpending').textContent = r.running ? '(descargando ahora…)' : (r.pending ? `Faltan ~${r.pending}.` : 'No falta ninguna.'); } catch (e) {} };
