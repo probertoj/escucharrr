@@ -81,7 +81,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     </div></div>
     <div class="row" style="display:block"><div class="k" style="margin-bottom:8px">Carpetas de música vigiladas <span id="watchlive"></span></div>
       <div id="cfgfolders" class="d">cargando…</div>
-      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><input id="newfolder" placeholder="C:\\Users\\tú\\Music" style="flex:1;min-width:200px"><button id="browsefolder">Explorar…</button><button id="addfolder">Añadir carpeta</button></div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><input id="newfolder" placeholder="Escribe la ruta (p. ej. /music) o pulsa Explorar…" style="flex:1;min-width:220px"><button id="browsefolder">Explorar…</button><button id="addfolder">Añadir carpeta</button></div>
+      <div class="d" style="margin-top:5px;font-size:12px">En Docker/NAS suele ser <span class="mono">/music</span>; en Windows, <span class="mono">C:\\Users\\tú\\Music</span>. Puedes <b>escribir la ruta</b> y pulsar «Añadir carpeta», o navegar con «Explorar…».</div>
       <div id="cfgmsg" style="margin-top:8px;font-size:12.5px;display:none"></div>
       <div class="d" style="margin-top:6px">Se vigilan en vivo (añadir/quitar ficheros reescanea solo; las carpetas de red se sondean cada ~30 s). Metadatos, carátulas, letras y análisis se amplían con las herramientas de <span class="mono">data-layer/</span>.</div></div>
     <div class="row" style="display:block"><div class="k" style="margin-bottom:8px">Fuente Obsidian <span class="d" style="font-weight:400">(opcional; tus notas mandan)</span></div>
@@ -246,9 +247,43 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('addfolder').addEventListener('click', () => { const inp = document.getElementById('newfolder'); const p = (inp.value || '').trim(); if (!p) return; CFG.folders.push(p); inp.value = ''; saveFolders(); });
   document.getElementById('newfolder').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('addfolder').click(); });
   // selector NATIVO de carpeta de Windows (el servidor abre el diálogo del Explorador)
-  async function browse(opts, btn) { const lbl = btn.textContent; btn.disabled = true; btn.textContent = 'Abriendo…'; try { const r = await fetch('/api/config/browse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(opts) }).then(x => x.json()); if (!r.ok) { alert(r.error || 'No se pudo abrir el selector.'); return null; } return r.cancelled ? null : (r.path || null); } catch (e) { alert('No se pudo abrir el selector de carpeta.'); return null; } finally { btn.disabled = false; btn.textContent = lbl; } }
-  document.getElementById('browsefolder').addEventListener('click', async e => { const p = await browse({ desc: 'Elige una carpeta de música para vigilar', init: CFG.folders[CFG.folders.length - 1] || '' }, e.currentTarget); if (p && !CFG.folders.includes(p)) { CFG.folders.push(p); saveFolders(); } });
-  document.getElementById('browseobs').addEventListener('click', async e => { const inp = document.getElementById('obsvault'); const p = await browse({ desc: 'Elige la carpeta del vault de Obsidian', init: inp.value || '' }, e.currentTarget); if (p) inp.value = p; });
+  // Explorador de carpetas DENTRO de la web (cross-platform; funciona en Docker/NAS/Linux, no solo Windows).
+  const esc2 = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  function pickFolderWeb(init, title) {
+    return new Promise(resolve => {
+      let wrap = document.getElementById('fpick'); if (wrap) wrap.remove();
+      wrap = document.createElement('div'); wrap.id = 'fpick';
+      wrap.setAttribute('style', 'position:fixed;inset:0;z-index:95;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:6vh 16px 16px;overflow:auto');
+      wrap.innerHTML = `<div style="width:100%;max-width:560px;background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.3);overflow:hidden">
+        <div style="display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--border)"><span style="font-weight:600;flex:1">${esc2(title || 'Elegir carpeta')}</span><span id="fpx" style="cursor:pointer;color:var(--text-2);display:inline-flex">${window.icon('close', 17)}</span></div>
+        <div style="padding:12px 16px"><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><button id="fpup" type="button" style="padding:6px 10px">↑ Subir</button><button id="fproot" type="button" style="padding:6px 10px">Discos / raíz</button><input id="fppath" style="flex:1;min-width:120px" placeholder="/music"></div>
+        <div id="fplist" style="max-height:46vh;overflow:auto;border:1px solid var(--border);border-radius:9px"></div>
+        <div id="fpmsg" style="font-size:12px;color:var(--text-2);margin-top:6px"></div></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid var(--border)"><span style="font-size:12px;color:var(--text-2)">En Docker/NAS suele ser <span class="mono">/music</span></span><div style="display:flex;gap:8px"><button id="fpcancel" type="button" style="padding:7px 12px">Cancelar</button><button id="fpok" type="button" class="btn-accent" style="padding:7px 14px">Elegir esta carpeta</button></div></div></div>`;
+      document.body.appendChild(wrap);
+      let cur = init || '';
+      const close = v => { wrap.remove(); resolve(v); };
+      wrap.addEventListener('click', e => { if (e.target === wrap || e.target.closest('#fpx') || e.target.closest('#fpcancel')) close(null); });
+      async function load(p) {
+        cur = p || ''; document.getElementById('fppath').value = cur;
+        const msg = document.getElementById('fpmsg'), list = document.getElementById('fplist'); msg.textContent = 'cargando…';
+        let r; try { r = await fetch('/api/config/listdirs?path=' + encodeURIComponent(p || '')).then(x => x.json()); } catch (e) { msg.textContent = 'error de red'; return; }
+        if (!r.ok) { msg.textContent = r.error || 'No se pudo leer.'; list.innerHTML = ''; document.getElementById('fpup').onclick = () => load(r.parent || ''); return; }
+        msg.textContent = r.roots ? 'Elige un disco/raíz o escribe la ruta arriba.' : (r.dirs.length ? r.dirs.length + ' subcarpeta(s)' : '(sin subcarpetas; puedes elegir esta)');
+        const CAP = 300, shown = r.dirs.slice(0, CAP);   // tope: carpetas con miles de hijos no cuelgan la UI
+        list.innerHTML = (shown.map(d => `<div class="fpd" data-p="${esc2(d.path)}" style="padding:9px 12px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:9px">${window.icon(r.roots ? 'zone' : 'folder', 15)}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc2(d.name)}</span></div>`).join('')
+          + (r.dirs.length > CAP ? `<div style="padding:10px 12px;color:var(--text-2);font-size:12px">…y ${r.dirs.length - CAP} más. Entra en una subcarpeta o escribe la ruta arriba.</div>` : '')) || '<div style="padding:12px;color:var(--text-2)">(vacío)</div>';
+        list.querySelectorAll('.fpd').forEach(el => el.onclick = () => load(el.dataset.p));
+        document.getElementById('fpup').onclick = () => load(r.parent != null ? r.parent : '');
+      }
+      document.getElementById('fproot').onclick = () => load('');
+      document.getElementById('fppath').addEventListener('keydown', e => { if (e.key === 'Enter') load(e.target.value.trim()); });
+      document.getElementById('fpok').onclick = () => { const p = (document.getElementById('fppath').value || '').trim() || cur; if (p) close(p); };
+      load(init || '');
+    });
+  }
+  document.getElementById('browsefolder').addEventListener('click', async () => { const p = await pickFolderWeb(CFG.folders[CFG.folders.length - 1] || '', 'Elegir carpeta de música'); if (p && !CFG.folders.includes(p)) { CFG.folders.push(p); saveFolders(); } });
+  document.getElementById('browseobs').addEventListener('click', async () => { const inp = document.getElementById('obsvault'); const p = await pickFolderWeb(inp.value || '', 'Elegir el vault de Obsidian'); if (p) inp.value = p; });
   document.getElementById('saveobs').addEventListener('click', async () => { const vault = (document.getElementById('obsvault').value || '').trim(); const albumsFolder = (document.getElementById('obsfolder').value || '').trim(); const b = document.getElementById('saveobs'); b.disabled = true; b.textContent = 'Guardando…'; try { const r = await fetch('/api/config/obsidian', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vault, albumsFolder }) }).then(x => x.json()); if (r.ok) { CFG.obsidian = r.obsidian; cfgMsg('Fuente Obsidian guardada.', true); } else cfgMsg('No se pudo guardar Obsidian: ' + (r.error || 'error'), false); } catch (e) { cfgMsg('No se pudo contactar con el servidor. No se guardó.', false); } b.disabled = false; b.textContent = 'Guardar'; });
   document.getElementById('rescanbtn').addEventListener('click', async () => { const b = document.getElementById('rescanbtn'), st = document.getElementById('rescanstatus'); b.disabled = true; b.textContent = 'Reescaneando…'; st.textContent = 'reescaneando… (puede tardar)'; try { const r = await fetch('/api/config/rescan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ what: ['music', 'vault'] }) }).then(x => x.json()); if (r.ok) { const m = (r.music || []).map(x => x.result).filter(Boolean).join(' · '); st.textContent = 'Listo. ' + (m || '') + (r.vault ? ' · ' + r.vault : ''); } else st.textContent = 'Error: ' + (r.error || ''); } catch (e) { st.textContent = 'Error de red.'; } b.disabled = false; b.textContent = 'Reescanear ahora'; });
 

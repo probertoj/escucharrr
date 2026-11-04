@@ -1780,11 +1780,37 @@ async function handleBrowse(req, res) {
   const r = await pickFolder({ desc: body.desc, init: body.init });
   return sendJSON(res, r);
 }
+// Explorador de carpetas CROSS-PLATFORM para la web (el selector nativo solo va en Windows). Sin ruta
+// devuelve raíces/atajos (discos en Windows; /music /mnt /media /data… en Linux/Docker); con ruta, las
+// subcarpetas. Solo lectura. Así un usuario headless (Docker/NAS) puede dar de alta su carpeta de música.
+function listDirs(p) {
+  p = String(p || '').trim();
+  if (!p) {
+    const roots = [];
+    if (process.platform === 'win32') {
+      for (let c = 65; c <= 90; c++) { const d = String.fromCharCode(c) + ':\\'; try { if (fs.existsSync(d)) roots.push({ name: String.fromCharCode(c) + ':', path: d }); } catch (e) {} }
+    } else {
+      for (const d of ['/music', '/media', '/mnt', '/data', '/Volumes', '/home', '/']) { try { if (fs.existsSync(d) && fs.statSync(d).isDirectory()) roots.push({ name: d, path: d }); } catch (e) {} }
+    }
+    return { ok: true, path: '', parent: null, roots: true, dirs: roots };
+  }
+  let abs; try { abs = path.resolve(p); } catch (e) { return { ok: false, error: 'ruta inválida' }; }
+  let ents; try { ents = fs.readdirSync(abs, { withFileTypes: true }); } catch (e) { const par = path.dirname(abs); return { ok: false, error: 'No se puede leer (' + (e.code || e.message) + ')', path: abs, parent: par === abs ? null : par }; }
+  const dirs = [];
+  for (const e of ents) {
+    let isDir = false; try { isDir = e.isDirectory() || (e.isSymbolicLink() && fs.statSync(path.join(abs, e.name)).isDirectory()); } catch (x) {}
+    if (isDir && !e.name.startsWith('.')) dirs.push({ name: e.name, path: path.join(abs, e.name) });
+  }
+  dirs.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  const par = path.dirname(abs);
+  return { ok: true, path: abs, parent: par === abs ? null : par, dirs };
+}
 async function handleConfig(req, res, u) {
   const sub = u.pathname.slice('/api/config'.length).replace(/^\//, '');
   try {
     if (req.method === 'GET' && sub === '') return sendJSON(res, { ok: true, ...configInfo() });
     if (sub === 'browse') return void handleBrowse(req, res);
+    if (req.method === 'GET' && sub === 'listdirs') return sendJSON(res, listDirs(u.searchParams.get('path') || ''));
     // estado de las integraciones (sin exponer secretos: sólo apiKey/clientId y booleanos)
     if (req.method === 'GET' && sub === 'services') {
       const lf = (scrobCfg && scrobCfg.lastfm) || {}, lb = (scrobCfg && scrobCfg.listenbrainz) || {};
