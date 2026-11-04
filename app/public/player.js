@@ -16,6 +16,19 @@ window.player = (function () {
   let radioOn = false; try { radioOn = localStorage.getItem('escucharrr.radio') === '1'; } catch (e) {}   // radio: auto-extiende la cola
   let radioFetching = false, undoStack = [];     // deshacer: pila de instantáneas de la cola
   let vol = 1; try { const v = parseFloat(localStorage.getItem(VKEY)); if (v >= 0 && v <= 1) vol = v; } catch (e) {}
+  // ── Volumen como fader en dB (RE de Roon: su control es lineal EN dB, no en amplitud) ──
+  // Roon muestra el volumen con `db_to_s`/`db_to_s_with_plus` (p. ej. «−12.0 dB»), mueve en pasos
+  // (`volume_step`) y tiene suelo/límite (`volume_soft_limit`); su panel DSP es lineal en dB
+  // (`PIXELS_PER_DB`). Aquí: `vol` sigue siendo la GANANCIA lineal (0–1) que consume todo el grafo;
+  // lo que cambia es que la POSICIÓN del slider (0–1) mapea perceptualmente a dB desde el suelo
+  // hasta 0 dB (unidad), con el extremo inferior en silencio real. Así el arrastre va fino: cada
+  // tramo del recorrido cambia los dB por igual, en vez de amontonar todo el cambio audible arriba.
+  const VOL_FLOOR_DB = -60;                                   // suelo del fader (−60 dB → silencio)
+  const dbToLin = db => db <= VOL_FLOOR_DB ? 0 : Math.pow(10, db / 20);
+  const linToDb = v => v <= 0 ? -Infinity : 20 * Math.log10(v);
+  const posToVol = p => { p = Math.max(0, Math.min(1, p)); return p <= 0 ? 0 : dbToLin(VOL_FLOOR_DB * (1 - p)); };
+  const volToPos = v => { if (v <= 0) return 0; const db = linToDb(v); return db <= VOL_FLOOR_DB ? 0 : db >= 0 ? 1 : 1 - db / VOL_FLOOR_DB; };
+  const volDbLabel = v => { if (v <= 0) return '−∞ dB'; const db = linToDb(v); return (db > 0.05 ? '+' : db < -0.05 ? '−' : '') + Math.abs(db).toFixed(1) + ' dB'; };
   try { const s = JSON.parse(localStorage.getItem(KEY)); if (s) { q = s.q || []; idx = (s.idx == null ? -1 : s.idx); } } catch (e) {}
   // zona de salida: nombre + dispositivo (base para multi-sala al estilo Roon; hoy = salida de este equipo)
   let zone = { name: 'Este equipo', deviceId: '', label: '', native: false, nativeDeviceId: '', nativeExclusive: false, upnp: false, upnpDeviceId: '', upnpName: '' };
@@ -157,7 +170,9 @@ window.player = (function () {
     return Math.pow(10, g / 20);
   }
   function setDeckGain(d, track) { const g = Math.max(0.0001, rgLinear(track)); if (d.gain) { try { d.gain.gain.cancelScheduledValues(ctx.currentTime); } catch (e) {} d.gain.gain.value = g; } }
-  function applyVol() { if (ctx) masterGain.gain.value = vol; else { active().el.volume = Math.min(1, vol * rgLinear(cur())); other().el.volume = 0; } try { localStorage.setItem(VKEY, String(vol)); } catch (e) {} }
+  // Aplica el volumen suavizando la rampa (setTargetAtTime) para evitar el «zipper»/clics del cambio
+  // brusco de ganancia al arrastrar; tau corta (~15 ms) = instantáneo al oído pero sin clic.
+  function applyVol() { if (ctx) { try { masterGain.gain.setTargetAtTime(vol, ctx.currentTime, 0.015); } catch (e) { masterGain.gain.value = vol; } } else { active().el.volume = Math.min(1, vol * rgLinear(cur())); other().el.volume = 0; } try { localStorage.setItem(VKEY, String(vol)); } catch (e) {} }
 
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify({ q, idx })); } catch (e) {} };
   const cur = () => q[idx] || null;
@@ -366,7 +381,7 @@ window.player = (function () {
         if (eqOn) procs.push('EQ gráfico');
         if (peqOn && peqBands.length) procs.push('EQ paramétrico');
         if (convOn && convFile) procs.push('Convolución');
-        if (vol < 1) procs.push('Volumen ' + Math.round(vol * 100) + '%');
+        if (vol < 1) procs.push('Volumen ' + volDbLabel(vol));
       }
       const bitperfect = exclusive || (!net && procs.length === 0);
       const outName = exclusive ? (zone.name || 'Este equipo') + ' · WASAPI exclusivo' : net ? (upnpDevName || 'Red') + ' · DLNA' : nativeMode ? (zone.name || 'Este equipo') + ' · WASAPI' : (zone.label || 'Navegador');
@@ -380,7 +395,7 @@ window.player = (function () {
         ${chain('Fuente', esc(srcLine), true)}
         ${chain('ReplayGain', exclusive || net ? 'omitido en esta salida' : (rgMode === 'off' ? 'desactivado' : (rgMode === 'album' ? 'álbum' : 'pista') + ' · ' + (applied === 0 ? 'sin cambio' : (applied > 0 ? '+' : '') + applied + ' dB')), !exclusive && !net && rgMode !== 'off' && applied !== 0)}
         ${chain('Ecualizador', exclusive || net ? 'omitido' : (eqOn ? 'gráfico' : 'plano') + (peqOn && peqBands.length ? ' · paramétrico (' + peqBands.length + ')' : '') + (convOn && convFile ? ' · convolución' : ''), !exclusive && !net && (eqOn || (peqOn && peqBands.length) || (convOn && convFile)))}
-        ${chain('Volumen', exclusive || net ? 'en el aparato' : Math.round(vol * 100) + '%', !exclusive && !net && vol < 1)}
+        ${chain('Volumen', exclusive || net ? 'en el aparato' : volDbLabel(vol) + ' · ' + Math.round(volToPos(vol) * 100) + '%', !exclusive && !net && vol < 1)}
         ${chain('Salida', esc(outName), false)}
         <div style="font-size:12px;color:var(--text-2);margin:16px 0 2px">Datos técnicos</div>
         ${kv('Formato', esc(srcLine || '?'))}
@@ -448,7 +463,7 @@ window.player = (function () {
         </div>
         <div style="display:flex;align-items:center;justify-content:center;gap:20px;color:var(--text-2);margin-top:9px">
           <span data-act="mute" style="cursor:pointer;display:inline-flex" title="Silenciar">${ic(volIcon(), 18)}</span>
-          <input data-act="vol" type="range" min="0" max="1" step="0.01" value="${vol}" title="Volumen" style="width:120px;accent-color:var(--accent)">
+          <input data-act="vol" type="range" min="0" max="1" step="0.01" value="${volToPos(vol)}" title="Volumen · ${volDbLabel(vol)}" style="width:120px;accent-color:var(--accent)">
           <span data-act="eq" title="Ecualizador y crossfade" style="cursor:pointer;display:inline-flex;${eqOn || xfade > 0 ? 'color:var(--accent)' : ''}">${ic('eq', 18)}</span>
           <span data-act="zone" title="Salida / zona" style="cursor:pointer;display:inline-flex;${nativeMode || upnpMode ? 'color:var(--accent)' : ''}">${ic('zone', 18)}</span>
         </div>
@@ -461,7 +476,7 @@ window.player = (function () {
   }
   function ensureBar() { if (bar) return; bar = document.createElement('div'); bar.id = 'nowbar'; bar.setAttribute('style', 'position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);border-top:1px solid var(--border);padding:8px 16px;display:none;align-items:center;gap:14px'); document.body.appendChild(bar); }
   const ic = (n, s) => window.icon ? window.icon(n, s || 18) : '';           // icono de línea monocromo
-  const volIcon = () => vol === 0 ? 'volume-mute' : vol < 0.5 ? 'volume-low' : 'volume-high';
+  const volIcon = () => vol <= 0 ? 'volume-mute' : volToPos(vol) < 0.5 ? 'volume-low' : 'volume-high';   // umbral en la POSICIÓN (perceptual), no en la amplitud
   function render() {
     ensureBar();
     if (irStation) return renderRadioBar();
@@ -488,7 +503,7 @@ window.player = (function () {
          </div>
        </div>
        <span data-act="mute" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Silenciar">${ic(volIcon(), 17)}</span>
-       <input data-act="vol" type="range" min="0" max="1" step="0.01" value="${vol}" title="Volumen" style="width:72px;accent-color:var(--accent)">
+       <input data-act="vol" type="range" min="0" max="1" step="0.01" value="${volToPos(vol)}" title="Volumen · ${volDbLabel(vol)}" style="width:72px;accent-color:var(--accent)">
        <span data-act="lyrics" title="Letra" style="cursor:pointer;display:inline-flex;color:var(--text-2)">${ic('lyrics', 17)}</span>
        <span data-act="eq" title="Ecualizador y crossfade" style="cursor:pointer;display:inline-flex;color:${eqOn || xfade > 0 ? 'var(--accent)' : 'var(--text-2)'}">${ic('eq', 17)}</span>
        <span data-act="zone" title="Salida / zona" style="cursor:pointer;font-size:12px;color:${nativeMode || upnpMode ? 'var(--accent)' : 'var(--text-2)'};display:inline-flex;align-items:center;gap:5px;max-width:160px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${ic('zone', 16)}<span style="overflow:hidden;text-overflow:ellipsis">${zoneLabel()}</span></span>
@@ -689,7 +704,26 @@ window.player = (function () {
   function prev() { if (nativeMode) { if (nativePos > 3 || idx <= 0) nativePlay(idx, { seekSec: 0 }); else nativePlay(idx - 1); return; } if (upnpMode) { if (upnpPos > 3 || idx <= 0) upnpPlay(idx, { seekSec: 0 }); else upnpPlay(idx - 1); return; } const d = active(); if (d.trackIdx === idx && d.el.currentTime > 3) { d.el.currentTime = 0; } else if (idx > 0) start(idx - 1); else d.el.currentTime = 0; }
   function toggle() { if (irStation) return toggleRadio(); if (nativeMode) return nativeToggle(); if (upnpMode) return upnpToggle(); const c = cur(); if (!c || c.playable === false) return; const d = active(); if (d.trackIdx !== idx) return start(idx); if (d.el.paused) { ensureGraph(); if (ctx && ctx.state === 'suspended') ctx.resume(); d.el.play().catch(() => {}); } else d.el.pause(); }
   function seekFrac(f) { if (irStation) return; if (nativeMode) return nativeSeek(f); if (upnpMode) return upnpSeek(f); const len = lenMs(); if (loadedCur() && len) active().el.currentTime = Math.max(0, Math.min(1, f)) * len / 1000; }
-  function setVol(v) { vol = Math.max(0, Math.min(1, v)); applyVol(); if (irEl) irEl.volume = vol; if (nativeMode) nativeVolumeApply(); else if (upnpMode) upnpVolumeApply(); render(); }
+  function setVol(v, opts) { vol = Math.max(0, Math.min(1, v)); applyVol(); if (irEl) irEl.volume = vol; if (nativeMode) nativeVolumeApply(); else if (upnpMode) upnpVolumeApply(); volFeedback(); if (opts && opts.norender) refreshVolUi(); else render(); }
+  // Pequeño ajuste en dB (teclas ±, rueda del ratón): mueve el fader en pasos de dB iguales,
+  // como el `volume_step`/`whole_volume_step` de Roon, no en saltos de amplitud.
+  function nudgeVol(dDb) { const p = volToPos(vol), np = Math.max(0, Math.min(1, p + dDb / -VOL_FLOOR_DB)); setVol(np <= 0 && dDb < 0 ? 0 : posToVol(np)); }
+  // Refresco ligero del volumen SIN reconstruir la barra (vital al arrastrar: reconstruir el <input>
+  // en cada evento 'input' cortaba el arrastre nativo y lo hacía ir a tirones).
+  function refreshVolUi() {
+    document.querySelectorAll('[data-act="mute"]').forEach(el => { el.innerHTML = ic(volIcon(), el.closest('#npfs') ? 18 : 17); });
+    const p = volToPos(vol);
+    document.querySelectorAll('[data-act="vol"]').forEach(el => { if (el !== document.activeElement && Math.abs(parseFloat(el.value) - p) > 1e-4) el.value = p; el.title = 'Volumen · ' + volDbLabel(vol); });
+  }
+  // Lectura transitoria del volumen en dB que se auto-oculta (RE de Roon: `volume_feedback_panel`
+  // + `volumefeedbacktimer`).
+  let volFbT = null;
+  function volFeedback() {
+    let b = document.getElementById('volfb');
+    if (!b) { b = document.createElement('div'); b.id = 'volfb'; b.setAttribute('style', 'position:fixed;left:50%;bottom:92px;transform:translateX(-50%);z-index:85;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 14px;border-radius:999px;font-size:13px;font-variant-numeric:tabular-nums;box-shadow:0 6px 18px rgba(0,0,0,.22);opacity:0;transition:opacity .12s;pointer-events:none'); document.body.appendChild(b); }
+    b.textContent = vol <= 0 ? 'Silencio' : volDbLabel(vol) + ' · ' + Math.round(volToPos(vol) * 100) + '%';
+    b.style.opacity = '1'; clearTimeout(volFbT); volFbT = setTimeout(() => { if (b) b.style.opacity = '0'; }, 900);
+  }
 
   function playTracks(tracks, i) { if (!tracks || !tracks.length) return; q = tracks; start(i || 0); }
   function playAlbum(id, i) { fetch('/api/album?id=' + id).then(r => r.json()).then(a => { const tr = (a.tracks || []).map(t => ({ trackId: t.trackId, recording_id: t.recording_id, title: t.title, artist: a.artist, albumId: a.id, length_ms: t.length_ms, playable: t.playable !== 0, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs })); if (!tr.length) { alert('Este álbum aún no tiene pistas en tu biblioteca.'); return; } playTracks(tr, i || 0); }); }
@@ -724,7 +758,7 @@ window.player = (function () {
          <span data-act="radiostop" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Parar la radio">${ic('close', 20)}</span>
        </div>
        <span data-act="mute" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Silenciar">${ic(volIcon(), 17)}</span>
-       <input data-act="vol" type="range" min="0" max="1" step="0.01" value="${vol}" title="Volumen" style="width:72px;accent-color:var(--accent)">
+       <input data-act="vol" type="range" min="0" max="1" step="0.01" value="${volToPos(vol)}" title="Volumen · ${volDbLabel(vol)}" style="width:72px;accent-color:var(--accent)">
        <span data-act="zone" title="Salida / zona" style="cursor:pointer;font-size:12px;color:${nativeMode || upnpMode ? 'var(--accent)' : 'var(--text-2)'};display:inline-flex;align-items:center;gap:5px;max-width:160px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${ic('zone', 16)}<span style="overflow:hidden;text-overflow:ellipsis">${zoneLabel()}</span></span>
        <a href="radio.html" title="Radio" style="color:var(--text-2);text-decoration:none;display:inline-flex;align-items:center">${ic('radio', 16)}</a>`;
     emit();
@@ -1072,12 +1106,14 @@ window.player = (function () {
     else if (k === 'seek') { const box = a.getBoundingClientRect(); seekFrac((e.clientX - box.left) / box.width); }
   });
   document.addEventListener('input', e => {
-    const v = e.target.closest('#nowbar [data-act="vol"], #npfs [data-act="vol"]'); if (v) { setVol(parseFloat(v.value)); return; }
+    const v = e.target.closest('[data-act="vol"]'); if (v) { setVol(posToVol(parseFloat(v.value)), { norender: true }); return; }
     const zn = e.target.closest('#zonepanel #zname'); if (zn) { zone.name = zn.value; persistZone(); updateZoneBtn(); return; }
     const eb = e.target.closest('#eqpanel .eqband'); if (eb) { setEqBand(+eb.dataset.i, parseInt(eb.value, 10)); return; }
     const xf = e.target.closest('#eqpanel [data-act="xfade"]'); if (xf) { setXfade(parseFloat(xf.value)); return; }
     const pa = e.target.closest('#dsppanel [data-act="preamp"]'); if (pa) { ensureGraph(); setPreamp(parseFloat(pa.value)); }
   });
+  // Rueda del ratón sobre el fader = ajuste fino de ±1 dB (detalle «fino» estilo Roon).
+  document.addEventListener('wheel', e => { const v = e.target.closest('[data-act="vol"]'); if (!v) return; e.preventDefault(); nudgeVol(e.deltaY < 0 ? +1 : -1); }, { passive: false });
 
   // ── scrubbing de la onda: arrastrar para buscar + burbuja de tiempo (hover y arrastre) ──
   function seekBoxFrom(t) { return t && t.closest ? t.closest('#nowbar [data-act="seek"], #npfs [data-act="seek"]') : null; }
@@ -1167,8 +1203,8 @@ window.player = (function () {
     else if (k === 'ArrowLeft' && e.shiftKey) { e.preventDefault(); prev(); }
     else if (k === 'ArrowRight') { e.preventDefault(); len = lenMs(); if (len) seekFrac(Math.min(1, (posMs() + 10000) / len)); }
     else if (k === 'ArrowLeft') { e.preventDefault(); len = lenMs(); if (len) seekFrac(Math.max(0, (posMs() - 10000) / len)); }
-    else if (k === 'ArrowUp') { e.preventDefault(); setVol(Math.min(1, vol + 0.05)); }
-    else if (k === 'ArrowDown') { e.preventDefault(); setVol(Math.max(0, vol - 0.05)); }
+    else if (k === 'ArrowUp') { e.preventDefault(); nudgeVol(+2); }
+    else if (k === 'ArrowDown') { e.preventDefault(); nudgeVol(-2); }
     else if (k === 'm' || k === 'M') { setVol(vol === 0 ? (parseFloat(localStorage.getItem(VKEY + '.last')) || 0.8) : (localStorage.setItem(VKEY + '.last', vol), 0)); }
     else if (k === 'f' || k === 'F') { if (cur()) toggleNpFs(); }
     else if (k === 'l' || k === 'L') { toggleLyPanel(); }

@@ -437,3 +437,32 @@ UI), tema claro/oscuro/auto (sin color de acento), eventos SSE de biblioteca (si
 Diferido: **perfiles multi-usuario** (ROI bajo en una app personal), **clásica/obras a fondo** (pocas
 obras), **mezcla armónica/similitud sónica espectral** (necesitan análisis que no tenemos), **ARC/
 remoto** (N/A), **DJ con voz** (descartado).
+
+## Pulido de micro-interacciones (RE del bundle BROO, Nov 4 2026)
+
+RE del `ui.brooxgz` (byte-mining de la tabla de cadenas; el cuerpo compilado `.broo` NO se decodifica)
+para afinar los detalles finos de la barra de reproducción.
+
+### Volumen = fader en dB (HECHO)
+Evidencia en el bundle: formateadores `db_to_s` / `db_to_s_with_plus` (muestra «−12.0 dB», «+0.0 dB»),
+presets de zona `zone_settings_neg1_db`…`neg24_db` (−1…−24 dB), `volume_step` / `whole_volume_step`
+(mueve en pasos de dB), `volume_soft_limit` (tope de seguridad), panel DSP lineal en dB (`PIXELS_PER_DB`,
+`DB_MIN/MAX/RANGE`), iconos `volume_small_icon_{low,med,high,mute}`, y la lectura transitoria
+`volume_feedback_panel` + `volumefeedbacktimer`. **El control de Roon es lineal EN dB, no en amplitud.**
+→ escucharrr (player.js): la POSICIÓN del slider (0–1) mapea a dB desde −60 dB (suelo→silencio) hasta
+0 dB (unidad); `vol` sigue siendo la ganancia lineal que consume el grafo. Arrastre fino y uniforme,
+rampa suavizada (`setTargetAtTime`, sin «zipper»), el `<input>` ya no se reconstruye al arrastrar (iba a
+tirones), rueda = ±1 dB, flechas = ±2 dB, iconos por posición perceptual, y burbuja de dB que se auto-oculta.
+
+### Ledger de otros micro-detalles (pendientes, por prioridad)
+1. **Tooltips con atajo de teclado** (`tooltip_with_keys`): mostrar la tecla junto al texto, p. ej.
+   «Silenciar (M)», «Reproducir/Pausa (Espacio)». Barato; ya tenemos los atajos. **P2**.
+2. **Estado «el usuario está buscando»** (`np_userseeking` / `nowplaying_seekpos`): al arrastrar la onda,
+   congelar el reloj a la posición objetivo y no pelear con el tick de reproducción. Verificar que el
+   scrubber actual ya lo hace; si no, añadirlo. **P2**.
+3. **Tope de volumen configurable** (`volume_soft_limit` / `audio_device_volume_limits`): límite superior
+   por salida/zona para escucha segura. **P3**.
+4. **Bordes con degradado en menús desplazables** (`menu_scroll_topfade`/`bottomfade`, `ms_show_topfade`):
+   fade arriba/abajo cuando una lista larga desborda (cola, paneles). Puro CSS. **P3**.
+5. **Reproducción aleatoria** (`shuffle_play_button`, `atom_shuffle`): botón de shuffle de la cola
+   (distinto de la Radio). **P3**.
