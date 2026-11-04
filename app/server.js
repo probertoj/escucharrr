@@ -174,8 +174,8 @@ function resolveOwnedPairs(pairs) { const idx = lidOwnedIndex(); return (pairs |
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 async function syncLiderarrrIdentify() {
   if (!liderarrrUrl()) throw new Error('Liderarrr no está configurado');
-  const rep = { albums_scanned: 0, albums_adopted: 0, albums_already: 0, albums_no_local: 0, albums_conflict: 0,
-                artists_scanned: 0, artists_adopted: 0, artists_already: 0, artists_no_local: 0, artists_conflict: 0, total: 0 };
+  const rep = { albums_scanned: 0, albums_with_mbid: 0, albums_adopted: 0, albums_already: 0, albums_no_local: 0, albums_conflict: 0,
+                artists_scanned: 0, artists_adopted: 0, artists_already: 0, artists_no_local: 0, artists_conflict: 0, total: 0, diag: null };
   const idx = lidOwnedIndex();   // matchKey(artista,título) → rg_id local (cacheado)
   const getRgMbid = db.prepare('SELECT mbid FROM release_group WHERE id=?');
   const rgByMbid = db.prepare('SELECT id FROM release_group WHERE mbid=?');
@@ -183,18 +183,31 @@ async function syncLiderarrrIdentify() {
   const provUp = db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at)
       VALUES(?,?,'mbid','liderarrr',?,datetime('now'))
       ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source='liderarrr', source_ref=excluded.source_ref, fetched_at=datetime('now')`);
+  // Tolerante a variantes de Liderarrr: la lista puede venir como {albums|items|data} o como array suelto;
+  // el MBID como rg_mbid|release_group_mbid|mbid|musicbrainz_id; artista/título con nombres alternativos.
+  const albumsOf = (b) => (b && (b.albums || b.items || b.data || b.results)) || (Array.isArray(b) ? b : null);
+  const mbidOf = (a) => String(a.rg_mbid || a.release_group_mbid || a.rgMbid || a.mbid || a.musicbrainz_id || a.mb_release_group || '').trim().toLowerCase();
+  const artistOf = (a) => a.album_artist || a.albumartist || a.artist || a.artist_name || '';
+  const titleOf = (a) => a.title || a.album || a.name || '';
   // 1) Álbumes — pagina /api/library y adopta rg_mbid donde el álbum local no tenga MBID.
-  const LIMIT = 500; let offset = 0, total = Infinity, guard = 0;
+  const LIMIT = 500; let offset = 0, total = Infinity, guard = 0, pages = 0;
   while (offset < total && guard++ < 400) {
     const r = await liderarrrFetch('GET', '/api/library?limit=' + LIMIT + '&offset=' + offset);
-    if (!r || !r.body || !Array.isArray(r.body.albums)) break;
-    total = (r.body.total != null) ? r.body.total : (offset + r.body.albums.length);
+    const albums = r ? albumsOf(r.body) : null;
+    if (!Array.isArray(albums)) {   // forma inesperada o error: deja constancia para diagnosticar
+      if (offset === 0) rep.diag = { stage: 'library', http: r && r.status, body_type: typeof (r && r.body), body_keys: (r && r.body && typeof r.body === 'object') ? Object.keys(r.body).slice(0, 12) : null };
+      break;
+    }
+    pages++;
+    total = (r.body && r.body.total != null) ? r.body.total : (offset + albums.length);
     rep.total = total;
-    for (const al of r.body.albums) {
+    if (offset === 0 && albums[0]) rep.diag = { stage: 'library', sample_keys: Object.keys(albums[0]).slice(0, 16) };   // forma real del primer álbum
+    for (const al of albums) {
       rep.albums_scanned++;
-      const mb = String(al.rg_mbid || '').trim().toLowerCase();
+      const mb = mbidOf(al);
       if (!UUID_RE.test(mb)) continue;
-      const rgId = idx.get(lidMatchKey(al.album_artist, al.title));
+      rep.albums_with_mbid++;
+      const rgId = idx.get(lidMatchKey(artistOf(al), titleOf(al)));
       if (!rgId) { rep.albums_no_local++; continue; }
       const cur = getRgMbid.get(rgId);
       if (cur && cur.mbid) { rep.albums_already++; continue; }          // ya identificado (tuyo o previo) → no tocar
@@ -202,9 +215,10 @@ async function syncLiderarrrIdentify() {
       if (owner && owner.id !== rgId) { rep.albums_conflict++; continue; }   // ese MBID ya está en otro álbum local → UNIQUE
       try { setRgMbid.run(mb, rgId); provUp.run('release_group', rgId, mb); rep.albums_adopted++; } catch (e) { rep.albums_conflict++; }
     }
-    if (r.body.albums.length < LIMIT) break;
+    if (albums.length < LIMIT) break;
     offset += LIMIT;
   }
+  rep.pages = pages;
   // 2) Artistas — /api/artists (nombre → mbid). Solo match por nombre normalizado y ÚNICO (evita falsos positivos).
   try {
     const r = await liderarrrFetch('GET', '/api/artists');

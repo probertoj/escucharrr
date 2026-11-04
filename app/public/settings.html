@@ -218,8 +218,19 @@ window.addEventListener('DOMContentLoaded', async () => {
         const r = await fetch('/api/liderarrr/sync-identify', { method: 'POST' }).then(x => x.json());
         if (r.ok) {
           const p = r.report;
-          const txt = `Listo. Álbumes: ${p.albums_adopted} identificados ahora · ${p.albums_already} ya lo estaban · ${p.albums_no_local} no están en tu biblioteca · ${p.albums_conflict} en conflicto. Artistas: ${p.artists_adopted} identificados.`;
-          srvMsg('ldsyncmsg', txt, true);
+          let txt, ok = true;
+          if (p.albums_with_mbid > 0) {
+            txt = `Listo. De ${p.total} álbumes en Liderarrr, ${p.albums_with_mbid} con MusicBrainz: ${p.albums_adopted} identificados ahora · ${p.albums_already} ya lo estaban · ${p.albums_no_local} no están en tu biblioteca · ${p.albums_conflict} en conflicto. Artistas: ${p.artists_adopted} identificados.`;
+          } else if (p.total > 0) {
+            // Devolvió álbumes pero ninguno emparejado con MusicBrainz todavía.
+            ok = false;
+            txt = `Liderarrr devolvió ${p.total} álbumes, pero ninguno está emparejado con MusicBrainz todavía. Ese emparejamiento se hace en Liderarrr: hazlo allí primero y vuelve a importar.` + (p.diag && p.diag.sample_keys ? ` (campos por álbum: ${p.diag.sample_keys.join(', ')})` : '');
+          } else {
+            // Liderarrr no devolvió biblioteca: endpoint/versión distinta, o biblioteca vacía.
+            ok = false;
+            txt = `Liderarrr respondió, pero no devolvió biblioteca${p.diag && p.diag.http ? ' (HTTP ' + p.diag.http + ')' : ''}. Puede ser otra versión de su API o una biblioteca vacía.` + (p.diag && p.diag.body_keys ? ' Campos recibidos: ' + p.diag.body_keys.join(', ') + '.' : '');
+          }
+          srvMsg('ldsyncmsg', txt, ok);
         } else srvMsg('ldsyncmsg', r.error || 'No se pudo importar.', false);
       } catch (e) { srvMsg('ldsyncmsg', 'Error: ' + e.message, false); }
       b.disabled = false; b.textContent = 'Importar identificación de Liderarrr';
