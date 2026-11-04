@@ -21,12 +21,17 @@
 .gc .cov:hover .playov{opacity:1}
 .gc .cov .playov:hover{background:rgba(0,0,0,.75);transform:translate(-50%,-50%) scale(1.06)}
 .gc.missing .cov{display:flex;align-items:center;justify-content:center;color:var(--muted);border:1px dashed var(--border);background:var(--surface)}
+/* Lo tienes en Liderarrr pero aún no empareja aquí (suele ser un título/artista distinto). */
+.gc.lidonly .cov{display:flex;align-items:center;justify-content:center;color:var(--accent);border:1px solid var(--accent);background:var(--accent-bg)}
+.gc.lidonly .cov a,.gc.lidonly .cov{text-decoration:none}
 .gc .t{font-size:13px;font-weight:600;margin-top:8px;line-height:1.25;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .gc .s{font-size:12px;color:var(--text-2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .gc.missing .t,.gc.missing .s{opacity:.72}
 .gc .foot{margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .pill{font-size:11px;border-radius:999px;padding:2px 9px;background:var(--surface-2);color:var(--text-2)}
 .pill.own{background:var(--accent-bg);color:var(--accent)}
+.pill.lid{background:var(--accent-bg);color:var(--accent)}
+.pill.only{background:var(--surface-2);color:var(--text-2);border:1px dashed var(--border)}
 .pill.heard{background:var(--surface-2);color:var(--text)}
 .wbtn2{cursor:pointer;font-size:12px;border:1px solid var(--border);background:var(--surface-2);color:var(--text-2);border-radius:999px;padding:3px 10px;display:inline-flex;align-items:center;gap:5px}
 .wbtn2:hover{border-color:var(--accent);color:var(--accent)}
@@ -69,7 +74,7 @@ async function loadList(){
     <textarea id="rtext" placeholder="Pega la lista — una por línea: Artista - Álbum (año opcional). Vacío = reto en blanco para ir rellenando."></textarea>
     <div style="display:flex;gap:8px;margin-top:8px"><button class="btn-accent" id="rcreate" style="padding:7px 14px">Crear</button><button class="btn-ghost" id="rcancel">Cancelar</button></div>
     <div id="rmsg" style="font-size:12.5px;margin-top:6px;display:none"></div></div>`;
-  h += `<div class="rgrid">` + list.map(c => `<a class="rcard" href="#${c.id}">${ring(c.pct)}<div><div class="nm">${esc(c.name)}</div><div class="mt">${c.owned}/${c.item_count} en tu biblioteca · ${esc(c.source||'')}</div></div></a>`).join('') + `</div>`;
+  h += `<div class="rgrid">` + list.map(c => `<a class="rcard" href="#${c.id}">${ring(c.pct)}<div><div class="nm">${esc(c.name)}</div><div class="mt">${c.owned}/${c.item_count} emparejados · ${esc(c.source||'')}</div></div></a>`).join('') + `</div>`;
   app.innerHTML = h;
   document.getElementById('newreto').onclick = () => { const f=document.getElementById('newform'); f.style.display = f.style.display==='none'?'block':'none'; };
   document.getElementById('rcancel').onclick = () => { document.getElementById('newform').style.display='none'; };
@@ -92,10 +97,18 @@ async function loadDetail(id){
   try { const rr = await api('resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pairs:c.items.map(i=>({artist:i.artist,album:i.album}))})});
     (rr.owned||[]).forEach(o=>{ if(o.rg_id) owned[o.artist+'\u0000'+o.album]=o.rg_id; }); } catch(e){}
   const ownedRg = c.items.map(i=>owned[i.artist+'\u0000'+i.album]).filter(Boolean);
+  // Reconciliar el emparejamiento de ambos lados: aquí (match local) ∪ Liderarrr (i.owned).
+  const localN = ownedRg.length;
+  const lidN = c.items.filter(i=>i.owned).length;
+  const unionN = c.items.filter(i=>owned[i.artist+'\u0000'+i.album] || i.owned).length;
+  const onlyLid = lidN - c.items.filter(i=>i.owned && owned[i.artist+'\u0000'+i.album]).length;   // tiene Liderarrr, no empareja aquí
+  const onlyHere = localN - c.items.filter(i=>i.owned && owned[i.artist+'\u0000'+i.album]).length; // empareja aquí, no en Liderarrr
+  const unionPct = c.item_count ? Math.round(unionN*100/c.item_count) : 0;
   let h = `<a href="#" style="color:var(--text-2);font-size:13px;display:inline-flex;align-items:center;gap:5px;margin-bottom:10px">${window.icon('arrow-left',14)}Todos los retos</a>`;
-  h += `<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:14px">${ring(c.pct)}
+  const diverge = (onlyLid||onlyHere) ? `<div style="font-size:12px;color:var(--text-2);margin-top:4px">${onlyLid?`${onlyLid} solo en Liderarrr`:''}${onlyLid&&onlyHere?' · ':''}${onlyHere?`${onlyHere} solo aquí`:''}${onlyLid?' — edita el título del álbum para emparejarlos':''}</div>` : '';
+  h += `<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:14px">${ring(unionPct)}
     <div style="flex:1;min-width:200px"><div style="font-family:var(--serif);font-size:22px;font-weight:600">${esc(c.name)}</div>
-      <div style="font-size:13px;color:var(--text-2);margin-top:3px">${c.owned}/${c.item_count} tienes · ${c.listened||0}/${c.item_count} oídos (Liderarrr)</div></div>
+      <div style="font-size:13px;color:var(--text-2);margin-top:3px">${unionN}/${c.item_count} emparejados · ${localN} aquí · ${lidN} en Liderarrr · ${c.listened||0} oídos</div>${diverge}</div>
     ${ownedRg.length?`<button class="btn-accent" id="retoradio" style="padding:8px 14px;display:inline-flex;align-items:center;gap:6px">${window.icon('radio',15)}Reto radio</button>`:''}</div>`;
   h += `<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap"><input id="additems" placeholder="Añadir discos: Artista - Álbum (una por línea)" style="flex:1;min-width:220px"><button class="btn-ghost" id="addbtn">Añadir</button></div><div id="amsg" style="font-size:12.5px;margin-bottom:8px;display:none"></div>`;
   // rejilla de portadas (tipo colección de Plex): los que tienes van a todo color y se reproducen desde aquí;
@@ -105,7 +118,15 @@ async function loadDetail(id){
     const sub = `${esc(i.artist)}${i.year?' · '+i.year:''}`;
     const heard = i.listened ? '<span class="pill heard">oído</span>' : '';
     if (rg) {
-      return `<div class="gc owned"><a class="cov" href="album.html?id=${rg}" title="Abrir ${esc(i.album)}"><img src="/api/cover?rg=${rg}" alt="" loading="lazy"><span class="playov play" data-rg="${rg}" title="Reproducir">${window.icon('play',26)}</span></a><div class="t">${esc(i.album)}</div><div class="s">${sub}</div><div class="foot">${heard}</div></div>`;
+      // Lo tienes aquí. Si Liderarrr no lo marca owned, señálalo (divergencia «solo aquí»).
+      const only = !i.owned ? '<span class="pill only" title="Lo tienes aquí pero Liderarrr no lo empareja">solo aquí</span>' : '';
+      return `<div class="gc owned"><a class="cov" href="album.html?id=${rg}" title="Abrir ${esc(i.album)}"><img src="/api/cover?rg=${rg}" alt="" loading="lazy"><span class="playov play" data-rg="${rg}" title="Reproducir">${window.icon('play',26)}</span></a><div class="t">${esc(i.album)}</div><div class="s">${sub}</div><div class="foot">${heard}${only}</div></div>`;
+    }
+    if (i.owned) {
+      // Lo tienes en Liderarrr pero no empareja aquí (título/artista distinto). Enlaza a la búsqueda local
+      // para encontrar tu copia y renombrarla (editar título) y así alinear ambos lados.
+      const q = encodeURIComponent(i.artist+' '+i.album);
+      return `<div class="gc lidonly"><a class="cov" href="search.html?q=${q}" title="Búscalo en tu biblioteca y edita su título para emparejarlo">${window.icon('search',28)}</a><div class="t">${esc(i.album)}</div><div class="s">${sub}</div><div class="foot">${heard}<span class="pill lid" title="Lo tienes en Liderarrr, aún sin emparejar aquí">en Liderarrr</span></div></div>`;
     }
     return `<div class="gc missing"><div class="cov">${window.icon('want',30)}</div><div class="t">${esc(i.album)}</div><div class="s">${sub}</div><div class="foot">${heard}<span class="wbtn" data-artist="${esc(i.artist)}" data-title="${esc(i.album)}" data-year="${i.year||''}"><span class="wbtn2">${window.icon('want',13)}Quiero</span></span></div></div>`;
   }).join('') + '</div>';
