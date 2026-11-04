@@ -15,6 +15,7 @@ window.player = (function () {
   let scrobbledIdx = -1, trackStartEpoch = 0;   // scrobbling: una vez por pista, con la hora de inicio
   let radioOn = false; try { radioOn = localStorage.getItem('escucharrr.radio') === '1'; } catch (e) {}   // radio: auto-extiende la cola
   let shuffle = false; try { shuffle = localStorage.getItem(SHKEY) === '1'; } catch (e) {}                 // aleatorio: baraja lo que viene (Roon shuffle_play)
+  let repeat = 'off'; try { const r = localStorage.getItem('escucharrr.repeat'); if (r === 'all' || r === 'one') repeat = r; } catch (e) {}   // repetición off/all/one (Roon atom_loop)
   let radioFetching = false, undoStack = [];     // deshacer: pila de instantáneas de la cola
   let vol = 1; try { const v = parseFloat(localStorage.getItem(VKEY)); if (v >= 0 && v <= 1) vol = v; } catch (e) {}
   // ── Volumen como fader en dB (RE de Roon: su control es lineal EN dB, no en amplitud) ──
@@ -465,6 +466,7 @@ window.player = (function () {
           <span data-act="toggle" style="cursor:pointer;display:inline-flex" title="Play / Pausa (Espacio)">${ic(playing ? 'pause' : 'play', 44)}</span>
           <span data-act="next" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Siguiente (⇧→)">${ic('next', 26)}</span>
           <span data-act="radio" title="Radio: extiende la cola con pistas afines (R)" style="cursor:pointer;display:inline-flex;color:${radioOn ? 'var(--accent)' : 'var(--text-2)'}">${ic('radio', 20)}</span>
+          <span data-act="repeat" title="${repeatTitle()}" style="cursor:pointer;display:inline-flex;color:${repeat !== 'off' ? 'var(--accent)' : 'var(--text-2)'}">${ic(repeatIcon(), 20)}</span>
           <span data-act="thumbdown" title="No para la radio (saltar y excluir)" style="cursor:pointer;display:inline-flex;color:var(--text-2)">${ic('thumb-down', 20)}</span>
         </div>
         <div style="display:flex;align-items:center;justify-content:center;gap:20px;color:var(--text-2);margin-top:9px">
@@ -510,6 +512,7 @@ window.player = (function () {
            <span data-act="prev" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Anterior (⇧←)">${ic('prev', 20)}</span>
            <span data-act="toggle" style="cursor:pointer;display:inline-flex" title="Play / Pausa (Espacio)">${ic(playing ? 'pause' : 'play', 26)}</span>
            <span data-act="next" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Siguiente (⇧→)">${ic('next', 20)}</span>
+           <span data-act="repeat" title="${repeatTitle()}" style="cursor:pointer;display:inline-flex;color:${repeat !== 'off' ? 'var(--accent)' : 'var(--text-2)'}">${ic(repeatIcon(), 17)}</span>
          </div>
          <div style="display:flex;align-items:center;gap:8px;width:100%;max-width:420px">
            <span id="npel" style="font-size:11px;color:var(--muted);width:34px;text-align:right">${mmss(p)}</span>
@@ -536,7 +539,7 @@ window.player = (function () {
 
   // ── crossfade: al acercarse el final de la pista activa, solapa con la siguiente ──
   function maybeCrossfade() {
-    if (!ctx || xfade <= 0 || fading) return;
+    if (!ctx || xfade <= 0 || fading || repeat === 'one') return;
     const d = active(); if (d.trackIdx !== idx) return;
     const dur = d.el.duration; if (!isFinite(dur) || dur <= 0) return;
     if (idx >= q.length - 1) return;
@@ -572,7 +575,7 @@ window.player = (function () {
       progress();
     }).catch(() => {});
   }
-  function onNativeEnded() { if (idx < q.length - 1) nativePlay(idx + 1); else { playing = false; stopNativePoll(); render(); } }
+  function onNativeEnded() { if (repeat === 'one') { nativePlay(idx); return; } if (idx < q.length - 1) nativePlay(idx + 1); else if (repeat === 'all' && q.length) nativePlay(0); else if (radioOn) maybeRadio(); else { playing = false; stopNativePoll(); render(); } }
   function nativePlay(i, opts) {
     idx = i; save(); const c = cur(); if (!c) return;
     if (c.playable === false) { playing = false; nativeStartedIdx = -1; render(); return; }
@@ -631,7 +634,7 @@ window.player = (function () {
       progress();
     }).catch(() => {});
   }
-  function onUpnpEnded() { if (idx < q.length - 1) upnpPlay(idx + 1); else if (radioOn) maybeRadio(); else { playing = false; stopUpnpPoll(); render(); } }
+  function onUpnpEnded() { if (repeat === 'one') { upnpPlay(idx); return; } if (idx < q.length - 1) upnpPlay(idx + 1); else if (repeat === 'all' && q.length) upnpPlay(0); else if (radioOn) maybeRadio(); else { playing = false; stopUpnpPoll(); render(); } }
   function upnpPlay(i, opts) {
     idx = i; save(); const c = cur(); if (!c) return;
     if (c.playable === false) { playing = false; upnpStartedIdx = -1; render(); return; }
@@ -717,8 +720,8 @@ window.player = (function () {
     trackStarted();
     render();
   }
-  function onEnded() { if (fading) return; next(); }
-  function next() { if (nativeMode) { if (idx < q.length - 1) nativePlay(idx + 1); else if (radioOn) maybeRadio(); else { playing = false; stopNativePoll(); render(); } return; } if (upnpMode) { if (idx < q.length - 1) upnpPlay(idx + 1); else if (radioOn) maybeRadio(); else { playing = false; stopUpnpPoll(); render(); } return; } if (idx < q.length - 1) start(idx + 1); else if (radioOn) maybeRadio(); else { playing = false; active().el.pause(); render(); } }
+  function onEnded() { if (fading) return; if (repeat === 'one') { start(idx); return; } next(); }   // repetir una: al acabar la pista, la misma
+  function next() { if (nativeMode) { if (idx < q.length - 1) nativePlay(idx + 1); else if (repeat === 'all' && q.length) nativePlay(0); else if (radioOn) maybeRadio(); else { playing = false; stopNativePoll(); render(); } return; } if (upnpMode) { if (idx < q.length - 1) upnpPlay(idx + 1); else if (repeat === 'all' && q.length) upnpPlay(0); else if (radioOn) maybeRadio(); else { playing = false; stopUpnpPoll(); render(); } return; } if (idx < q.length - 1) start(idx + 1); else if (repeat === 'all' && q.length) start(0); else if (radioOn) maybeRadio(); else { playing = false; active().el.pause(); render(); } }
   function prev() { if (nativeMode) { if (nativePos > 3 || idx <= 0) nativePlay(idx, { seekSec: 0 }); else nativePlay(idx - 1); return; } if (upnpMode) { if (upnpPos > 3 || idx <= 0) upnpPlay(idx, { seekSec: 0 }); else upnpPlay(idx - 1); return; } const d = active(); if (d.trackIdx === idx && d.el.currentTime > 3) { d.el.currentTime = 0; } else if (idx > 0) start(idx - 1); else d.el.currentTime = 0; }
   function toggle() { if (irStation) return toggleRadio(); if (nativeMode) return nativeToggle(); if (upnpMode) return upnpToggle(); const c = cur(); if (!c || c.playable === false) return; const d = active(); if (d.trackIdx !== idx) return start(idx); if (d.el.paused) { ensureGraph(); if (ctx && ctx.state === 'suspended') ctx.resume(); d.el.play().catch(() => {}); } else d.el.pause(); }
   function seekFrac(f) { if (irStation) return; if (nativeMode) return nativeSeek(f); if (upnpMode) return upnpSeek(f); const len = lenMs(); if (loadedCur() && len) active().el.currentTime = Math.max(0, Math.min(1, f)) * len / 1000; }
@@ -747,6 +750,10 @@ window.player = (function () {
   function fyShuffle(arr, from) { for (let i = arr.length - 1; i > (from || 0); i--) { const j = (from || 0) + Math.floor(Math.random() * (i - (from || 0) + 1)); const t = arr[i]; arr[i] = arr[j]; arr[j] = t; } }
   function shuffleUpcoming() { const from = idx >= 0 ? idx + 1 : 0; if (q.length - from < 2) return; fyShuffle(q, from); save(); }
   function setShuffle(on) { shuffle = !!on; try { localStorage.setItem(SHKEY, shuffle ? '1' : '0'); } catch (e) {} if (shuffle) { shuffleUpcoming(); if (window.toast) toast('Cola en aleatorio'); } render(); }
+  // Repetición: cicla off → toda la cola → una pista (Roon atom_loop: default/all/one).
+  function cycleRepeat() { repeat = repeat === 'off' ? 'all' : repeat === 'all' ? 'one' : 'off'; try { localStorage.setItem('escucharrr.repeat', repeat); } catch (e) {} if (window.toast) toast(repeat === 'all' ? 'Repetir: toda la cola' : repeat === 'one' ? 'Repetir: una pista' : 'Repetir: desactivado'); render(); }
+  const repeatIcon = () => repeat === 'one' ? 'repeat-one' : 'repeat';
+  const repeatTitle = () => 'Repetir: ' + (repeat === 'all' ? 'toda la cola' : repeat === 'one' ? 'una pista' : 'desactivado') + ' (⇧R)';
   // Tope de volumen (soft limit): dB máx del fader (0 = sin límite). Recorta el volumen actual si supera el tope.
   function setVolLimit(db) { db = db >= 0 ? 0 : Math.max(VOL_FLOOR_DB + 1, db); volLimitDb = db; try { localStorage.setItem('escucharrr.vollimit', String(db)); } catch (e) {} setVol(vol); }
   function playTracks(tracks, i) { if (!tracks || !tracks.length) return; q = tracks; if (shuffle && tracks.length > 2) { fyShuffle(q, 0); i = 0; } start(i || 0); }
@@ -1130,6 +1137,7 @@ window.player = (function () {
     else if (k === 'thumbdown') thumbDown();
     else if (k === 'radio') setRadio(!radioOn);
     else if (k === 'shuffle') setShuffle(!shuffle);
+    else if (k === 'repeat') cycleRepeat();
     else if (k === 'npjump') jumpTo(+a.dataset.i);
     else if (k === 'eq') toggleEqPanel();
     else if (k === 'lyrics') toggleLyPanel();
@@ -1220,7 +1228,7 @@ window.player = (function () {
 
   // ── atajos de teclado (persistentes; no interfieren mientras escribes) ──
   function kbTyping(t) { return !!(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)); }
-  const KBHELP = [['Espacio', 'Play / Pausa'], ['← / →', 'Retroceder / Avanzar 10 s'], ['Shift + ← / →', 'Pista anterior / siguiente'], ['↑ / ↓', 'Volumen'], ['M', 'Silenciar'], ['F', 'Pantalla completa'], ['L', 'Letra'], ['R', 'Radio (autoplay)'], ['S', 'Aleatorio'], ['/', 'Buscar'], ['?', 'Esta ayuda']];
+  const KBHELP = [['Espacio', 'Play / Pausa'], ['← / →', 'Retroceder / Avanzar 10 s'], ['Shift + ← / →', 'Pista anterior / siguiente'], ['↑ / ↓', 'Volumen'], ['M', 'Silenciar'], ['F', 'Pantalla completa'], ['L', 'Letra'], ['R', 'Radio (autoplay)'], ['S', 'Aleatorio'], ['⇧R', 'Repetir (off/cola/una)'], ['/', 'Buscar'], ['?', 'Esta ayuda']];
   function toggleKbHelp() {
     var p = document.getElementById('kbhelp'); if (p) { p.remove(); return; }
     p = document.createElement('div'); p.id = 'kbhelp'; p.setAttribute('style', 'position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;padding:20px');
@@ -1240,6 +1248,7 @@ window.player = (function () {
     else if (k === 'm' || k === 'M') { setVol(vol === 0 ? (parseFloat(localStorage.getItem(VKEY + '.last')) || 0.8) : (localStorage.setItem(VKEY + '.last', vol), 0)); }
     else if (k === 'f' || k === 'F') { if (cur()) toggleNpFs(); }
     else if (k === 'l' || k === 'L') { toggleLyPanel(); }
+    else if ((k === 'r' || k === 'R') && e.shiftKey) { cycleRepeat(); }
     else if (k === 'r' || k === 'R') { setRadio(!radioOn); }
     else if (k === 's' || k === 'S') { setShuffle(!shuffle); }
     else if (k === '/') { e.preventDefault(); var a = document.createElement('a'); a.href = '/search.html'; document.body.appendChild(a); a.click(); a.remove(); }
@@ -1256,5 +1265,5 @@ window.player = (function () {
 
   return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain, getZone, getAudio, getNative, setNativeMode, setRadio, undo,
     getSettings, setXfade, setRgMode, setEqEnabled, setEqBand, setPreset, openOutput: toggleZPanel, openEq: toggleEqPanel, openDsp: toggleDspPanel,
-    playRadio, stopRadio, getRadio, radioFrom, thumbDown, playMix, moveInQueue, addNext, enqueue, setShuffle, setVolLimit };
+    playRadio, stopRadio, getRadio, radioFrom, thumbDown, playMix, moveInQueue, addNext, enqueue, setShuffle, setVolLimit, cycleRepeat };
 })();

@@ -470,5 +470,12 @@ tirones), rueda = ±1 dB, flechas = ±2 dB, iconos por posición perceptual, y b
    (y tecla S) que baraja lo que viene sin mover la pista en curso; al iniciar un álbum con shuffle activo,
    se reproduce barajado. Distinto de la Radio.
 
-Siguientes candidatos (del inventario BROO, sin priorizar aún): repetir pista/cola (`repeat`), fundido entre
-pistas visible en la cola, «ver fotos/documentos» del disco, banderín de contenido explícito.
+6. ~~**Repetición off/cola/una**~~ ✅ (`atom_loop`: default/all/one, `loop_all_icon`/`loop_one_icon`): botón
+   en la barra (y **⇧R**) que cicla off → toda la cola → una pista. «Una» repite al acabar la pista
+   (auto), no secuestra el botón Siguiente; «toda» vuelve al principio al final de la cola. Iconos
+   `repeat`/`repeat-one`. Vale en navegador, nativo y red.
+
+Siguientes candidatos (del inventario BROO, sin priorizar aún): **banderín de contenido explícito**
+(`is_explicit`/`explicit_icon` + ajuste `show_album_explicit` — NECESITA leer una etiqueta de «explicit»
+al escanear: no hay dato hoy, es un cambio en data-layer, no un micro-detalle), fundido entre pistas
+visible en la cola, «ver fotos/documentos» del disco.
