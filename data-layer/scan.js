@@ -126,6 +126,9 @@ function folderMeta(dir) {   // "Artista - Álbum" (con espacios o pegado) → {
 // que "Discovery" (sin dígito) y "Use Your Illusion II" (no empieza por cd/disc/vol/digital media) NO casan.
 const _DISC_DIR_RE = /^(?:cd|dis[ck]|disco|disque|volume|vol|digital\s*media)\s*\.?\s*0*(\d{1,2})(?:[\s._\-–—:()\[\]].*)?$/i;
 const _DISC_TITLE_RE = /[\s\-–—_]*[\[(]?\s*(?:cd|dis[ck]|disco|disque)\s*\.?\s*0*(\d{1,2})\s*[)\]]?\s*$/i;   // "… CD1", "… (Disc 2)" al final del título
+// Carpeta-ARTISTA que marca recopilatorio (convención MB/Roon). Estricto: NO incluye "desconocido/unknown"
+// (eso es artista desconocido, no VA) ni "varios" a secas.
+const _VA_FOLDER_RE = /^(?:various\s*artists|varios\s*artistas|v\.?\s*a\.?|va)$/i;
 function discInfo(dir, rawAlbum) {
   let discFolder = null, albumDir = dir;
   const dm = _DISC_DIR_RE.exec(path.basename(dir));
@@ -270,15 +273,19 @@ try {
     const fmtLabel = (ext === 'dsf' || ext === 'dff') ? dsdLabel(parsed.info.sampleRate) : ext.toUpperCase();
     const st = fs.statSync(file), t = parsed.tags, inf = parsed.info;
     const dir = path.dirname(file);
-    // Recopilación (Various Artists): flag COMPILATION/cpil/TCMP, o ALBUMARTIST = «Various Artists».
-    // Se agrupa TODO el álbum bajo «Various Artists» (si no, cada pista con distinto ARTIST crearía su
-    // propio release_group). El crédito de cada PISTA conserva su artista real (abajo, tcid).
-    const isComp = /^\s*(1|true|yes|y)\s*$/i.test(String(t.COMPILATION || '')) || /^\s*(various\s*artists|varios\s*artistas|v\.?\s*a\.?|varios|verschiedene(\s*interpreten)?|multi[\s-]?artist)\s*$/i.test(String(t.ALBUMARTIST || '').trim());
     // Multi-disco: si el fichero está en una carpeta de disco (CD1/CD2…), el álbum es la carpeta padre.
     const bnDir = path.basename(dir);
     const discDirM = _DISC_DIR_RE.exec(bnDir);
     const albumDir = discDirM ? path.dirname(dir) : dir;      // directorio del ÁLBUM (no el del disco)
     const discFolder = discDirM ? (parseInt(discDirM[1], 10) || null) : null;
+    // Recopilación (Various Artists): flag COMPILATION/cpil/TCMP, ALBUMARTIST = «Various Artists», o la
+    // CARPETA-ARTISTA del álbum es "Various Artists"/"Varios Artistas"/"VA" (convención MB/Roon para comps;
+    // NO "desconocido/unknown", que son álbumes de artista desconocido, no recopilatorios). Se agrupa TODO
+    // el álbum bajo «Various Artists» (si no, cada pista con distinto ARTIST crea su propio release_group);
+    // el crédito de cada PISTA conserva su artista real (abajo, tcid).
+    const isComp = /^\s*(1|true|yes|y)\s*$/i.test(String(t.COMPILATION || ''))
+      || /^\s*(various\s*artists|varios\s*artistas|v\.?\s*a\.?|varios|verschiedene(\s*interpreten)?|multi[\s-]?artist)\s*$/i.test(String(t.ALBUMARTIST || '').trim())
+      || _VA_FOLDER_RE.test(path.basename(path.dirname(albumDir)));
     // derivación desde carpeta/fichero cuando faltan etiquetas (sobre el directorio del ÁLBUM)
     const fm = (!t.ALBUM || (!t.ALBUMARTIST && !t.ARTIST && !isComp)) ? folderMeta(albumDir) : { artist: null, album: null };
     const rawAlbum = t.ALBUM || fm.album || path.basename(albumDir);
