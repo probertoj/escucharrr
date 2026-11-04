@@ -1,0 +1,71 @@
+# escucharrr — listo para standalone (.exe de Windows) + QA de arquitectura
+
+Revisión estática (4 nov 2026) de qué falta para empaquetar escucharrr como ejecutable de Windows
+probable standalone, y hallazgos de arquitectura/seguridad. No sustituye a la QA de UX en vivo (esa
+necesita la app corriendo); esto es la parte de **arquitectura**.
+
+## Lo que YA juega a favor
+
+- **Cero dependencias npm.** Solo módulos core: `node:http(s)`, `node:sqlite`, `fs`, `path`, `os`,
+  `child_process`. No hay `node_modules`, no hay cadena de suministro que auditar. (Verificado: `require`
+  de no-core = 0.)
+- **BD autocontenida** (`app/escucharrr.db`, ruta relativa a `app/`), WAL + `busy_timeout`.
+- **Escaneo endurecido** contra el flaqueo del share (SMB): diferir+reintentar, detección de caída,
+  protección anti-borrado (commit 443e6fd).
+
+## Empaquetado — opciones (node:sqlite exige Node ≥ 22.5; el equipo usa 24.22.1)
+
+`node:sqlite` es un módulo nativo DENTRO del binario de Node, así que el empaquetado debe llevar un Node
+moderno. Opciones, de más simple a más integrada:
+
+1. **Node portátil + carpeta + lanzador** (recomendado para la primera prueba standalone). Se mete
+   `node.exe` (v24) + el árbol del proyecto en una carpeta y un `escucharrr.exe`/`.cmd` que hace
+   `node.exe app\server.js` y abre el navegador en `http://localhost:7733`. Cero build, funciona ya.
+   Contras: es una carpeta, no un único fichero.
+2. **Node SEA (Single Executable Applications)** — build oficial de Node: inyecta un blob en una copia de
+   `node.exe` → un único `.exe`. Como no hay deps npm, el blob es nuestro propio bundle. Hay que:
+   (a) agrupar el multi-fichero (app/, data-layer/, engine/, app/public/*) — o bien con la API de
+   **assets de SEA** (`sea.getAsset`) sirviendo los estáticos desde el blob, o concatenando el JS de
+   servidor en un entry único y embebiendo `public/` como assets; (b) resolver que `node:sqlite` siga
+   disponible (lo está: viaja en el `node.exe` base). Es el camino a "un `.exe`".
+3. **pkg / nexe**: NO recomendados aquí — su soporte de `node:sqlite` (módulo nativo interno) y de Node 24
+   es frágil; además SEA es la vía soportada oficialmente.
+
+### Dependencia externa: **ffmpeg**
+`app/server.js` lanza `ffmpeg` (p. ej. transcodificar DSD→FLAC en `/api/stream`) y el motor nativo lo usa.
+Un standalone NO puede asumir ffmpeg en el PATH. Opciones: (a) **empaquetar un `ffmpeg.exe` estático**
+junto al .exe y pasarle la ruta; (b) degradar con elegancia si falta (servir crudo con Range —el navegador
+decodifica casi todo— y avisar en Settings que sin ffmpeg no hay DSD/transcode). El `spawn` ya usa
+**args en array (sin shell) → sin inyección de comandos**; solo falta localizar el binario.
+
+## Seguridad / robustez — ANTES de exponerlo (y crítico para la versión móvil/remota)
+
+1. **Escucha en todas las interfaces.** `…).listen(PORT)` sin host → bind a `0.0.0.0`/`::`, es decir
+   **ya es accesible desde la LAN** (aunque el log diga "localhost"). No hay autenticación. Combinado con:
+2. **`/api/config/listdirs` enumera TODO el árbol de ficheros** del servidor (todas las unidades en
+   Windows) — es intencionado para el selector de carpetas y es **solo-lectura de nombres de carpeta**,
+   pero es divulgación de información si el puerto está expuesto.
+3. **Endpoints que escriben secretos/config** (`/api/config/*`: tokens de scrobbling, claves de Spotify,
+   URL/credenciales de Liderarrr, AcoustID) y **acciones con efecto** (reescaneo, restaurar copia, borrar
+   copia) no tienen auth.
+   → **Plan (se implementa en el paso móvil/remoto, con verificación en vivo):** por defecto **bind a
+   `127.0.0.1`**; exposición a LAN/remota **opt-in** (env `ESC_HOST`/ajuste) y SOLO con un **token/clave de
+   acceso** exigido a las rutas que mutan o divulgan. No se cambia el bind a ciegas ahora porque el propio
+   objetivo "versión móvil + acceso remoto" es habilitar el acceso desde fuera: se diseña junto.
+4. **Sin manejadores de proceso.** No hay `process.on('uncaughtException')` ni `'unhandledRejection')`.
+   En un .exe sin terminal que lo vigile, un error no capturado **mata la app**. → Añadir manejadores
+   top-level que registren y mantengan el servidor en pie (y, idealmente, un log a fichero en la carpeta de
+   la app). Se implementa en la fase de endurecimiento, con verificación de arranque en vivo.
+
+## Checklist para "casi listo para probar standalone"
+
+- [ ] Lanzador (opción 1) para una prueba standalone inmediata; luego SEA (opción 2) para el `.exe` único.
+- [ ] Localizar/empaquetar ffmpeg; degradar si falta (aviso en Settings).
+- [ ] Bind por defecto a 127.0.0.1 + exposición opt-in con token (en el paso móvil/remoto).
+- [ ] `uncaughtException`/`unhandledRejection` + log a fichero.
+- [ ] Primer arranque sin BD: hoy `process.exit(1)` si no existe `escucharrr.db`. Para standalone, mejor
+      **crear la BD vacía + migrar** y llevar directo al onboarding de "añade tu carpeta de música".
+- [ ] Abrir el navegador por defecto al arrancar (UX de doble-clic).
+- [ ] QA de UX en vivo (pendiente; necesita la app corriendo tras el reescaneo).
+
+Relacionado: [[library-playback-coverage]] (cobertura funcional), versiones/escaneo endurecido.
