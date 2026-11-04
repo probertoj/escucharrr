@@ -104,7 +104,10 @@ function pruneGraph(db, log) {
         AND NOT EXISTS (
           SELECT 1 FROM "release" rel JOIN medium m ON m.release_id=rel.id JOIN track tr ON tr.medium_id=m.id
           WHERE rel.release_group_id=rg.id AND (
-               EXISTS (SELECT 1 FROM local_file   lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id)
+               -- fichero asignado a esta pista (directo), o fichero SIN pista que casa por grabación.
+               -- El guard lf.track_id IS NULL evita que un fichero ya reasignado a OTRO album (al reagrupar
+               -- multi-disco/versiones) ancle en falso al album viejo por compartir la grabacion.
+               EXISTS (SELECT 1 FROM local_file   lf WHERE lf.track_id=tr.id OR (lf.recording_id=tr.recording_id AND lf.track_id IS NULL))
             OR EXISTS (SELECT 1 FROM playlist_item pi WHERE pi.track_id=tr.id OR pi.recording_id=tr.recording_id)
           ))`).all();
     // Antes de borrar (el CASCADE arrastra release→medium→track), conserva el historial:
