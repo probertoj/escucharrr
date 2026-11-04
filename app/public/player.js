@@ -191,7 +191,7 @@ window.player = (function () {
   function cover(id, s) { return `<img src="/api/cover?rg=${id || 0}" alt="" draggable="false" style="width:${s}px;height:${s}px;object-fit:cover;border-radius:7px;display:block">`; }
   function logPlay() { const c = cur(); if (c && c.trackId && loggedIdx !== idx) { loggedIdx = idx; fetch('/api/play', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ track_id: c.trackId, zone: zone.name }) }).catch(() => {}); } }
   const spost = (p, b) => fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).catch(() => {});
-  function trackStarted() { trackStartEpoch = Math.floor(Date.now() / 1000); const c = cur(); if (c && c.trackId) spost('/api/scrobble/nowplaying', { track_id: c.trackId }); fetchPeaks(); if (lypanel && lypanel.style.display === 'block') loadLyrics(); if (npfs && npfs.style.display === 'flex') { npLyActive = -1; npInfoTrack = -1; loadNpMeta(); renderNpFs(); } }   // "sonando ahora" + recargar letra/metadatos/espec si el panel/fullscreen está abierto
+  function trackStarted() { trackStartEpoch = Math.floor(Date.now() / 1000); const c = cur(); if (c && c.trackId) spost('/api/scrobble/nowplaying', { track_id: c.trackId }); fetchPeaks(); prefetchLyrics(); if (lypanel && lypanel.style.display === 'block') loadLyrics(); if (npfs && npfs.style.display === 'flex') { npLyActive = -1; npInfoTrack = -1; loadNpMeta(); renderNpFs(); } }   // "sonando ahora" + recargar letra/metadatos/espec si el panel/fullscreen está abierto
   // scrobble al superar el umbral (mitad de la pista o 4 min; pistas ≥ 30 s), una sola vez
   function maybeScrobble() {
     const c = cur(); if (!c || !c.trackId || scrobbledIdx === idx) return;
@@ -526,7 +526,7 @@ window.player = (function () {
        </div>
        <span data-act="mute" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Silenciar (M)">${ic(volIcon(), 17)}</span>
        <input data-act="vol" type="range" min="0" max="1" step="0.01" value="${volToPos(vol)}" title="Volumen · ${volDbLabel(vol)} (↑↓)" style="width:72px;accent-color:var(--accent)">
-       <span data-act="lyrics" title="Letra (L)" style="cursor:pointer;display:inline-flex;color:var(--text-2)">${ic('lyrics', 17)}</span>
+       <span data-act="lyrics" title="${lyHasFor((cur() || {}).trackId) ? 'Letra disponible (L)' : 'Letra (L)'}" style="cursor:pointer;display:inline-flex;color:${lyHasFor((cur() || {}).trackId) ? 'var(--accent)' : 'var(--text-2)'}">${ic('lyrics', 17)}</span>
        <span data-act="eq" title="Ecualizador y crossfade" style="cursor:pointer;display:inline-flex;color:${eqOn || xfade > 0 ? 'var(--accent)' : 'var(--text-2)'}">${ic('eq', 17)}</span>
        <span data-act="zone" title="Salida / zona" style="cursor:pointer;font-size:12px;color:${nativeMode || upnpMode ? 'var(--accent)' : 'var(--text-2)'};display:inline-flex;align-items:center;gap:5px;max-width:160px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${ic('zone', 16)}<span style="overflow:hidden;text-overflow:ellipsis">${zoneLabel()}</span></span>
        <a href="queue.html" title="Cola" style="color:var(--text-2);text-decoration:none;display:inline-flex;align-items:center;gap:5px;font-size:13px">${ic('queue', 16)}${idx + 1}/${q.length}</a>`;
@@ -983,6 +983,11 @@ window.player = (function () {
 
   // ── letra de la pista (LRCLIB, con resaltado sincronizado tipo karaoke) ──
   let lypanel = null, lyIdx = -1, lyData = null, lyActive = -1, lyCache = {};
+  // La letra «estaba oculta»: el botón se ilumina (acento) cuando la pista EN CURSO tiene letra, como
+  // hacen Apple Music/Spotify. Se precarga la disponibilidad al empezar la pista (cacheada).
+  function lyHasFor(tid) { const j = tid && lyCache[tid]; return !!(j && (j.found || j.synced || j.plain)); }
+  function refreshLyricsBtn() { const c = cur(); const on = !!(c && lyHasFor(c.trackId)); document.querySelectorAll('[data-act="lyrics"]').forEach(b => { b.style.color = on ? 'var(--accent)' : 'var(--text-2)'; b.title = on ? 'Letra disponible (L)' : 'Letra (L)'; }); }
+  function prefetchLyrics() { const c = cur(); if (!c || !c.trackId) return; if (lyCache[c.trackId]) { refreshLyricsBtn(); return; } fetch('/api/lyrics?track=' + c.trackId).then(r => r.json()).then(j => { j.syncedArr = j.synced ? parseLRC(j.synced) : null; lyCache[c.trackId] = j; const cc = cur(); if (cc && cc.trackId === c.trackId) refreshLyricsBtn(); }).catch(() => {}); }
   function parseLRC(s) {
     const out = [];
     for (const line of String(s || '').split('\n')) {

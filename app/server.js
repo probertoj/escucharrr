@@ -306,6 +306,10 @@ function buildQ(db) { return {
      JOIN artist_credit_name acn ON acn.artist_credit_id=rg.artist_credit_id
      JOIN release_group_genre rgg ON rgg.release_group_id=rg.id
      WHERE acn.artist_id=? GROUP BY rgg.genre_id ORDER BY n DESC LIMIT 12`),
+  // ── editar / unir artistas ──
+  artistAlbumCount: db.prepare(`SELECT COUNT(DISTINCT rg.id) n FROM artist_credit_name acn JOIN release_group rg ON rg.artist_credit_id=acn.artist_credit_id WHERE acn.artist_id=?`),
+  artistDupes: db.prepare(`SELECT a.id, a.name, a.disambiguation, a.mbid FROM artist a WHERE a.id!=? AND lower(trim(a.name))=lower(trim(?)) ORDER BY a.name`),
+  artistSearch: db.prepare(`SELECT a.id, a.name, a.disambiguation FROM artist a WHERE a.id!=? AND a.name LIKE ? ORDER BY (lower(a.name)=lower(?)) DESC, a.name LIMIT 20`),
   // ── género ──
   genreAlbums: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
      FROM v_album a JOIN release_group_genre rgg ON rgg.release_group_id=a.id
@@ -315,6 +319,11 @@ function buildQ(db) { return {
      JOIN genre g1 ON g1.id=x.genre_id JOIN genre g2 ON g2.id=y.genre_id
      WHERE g1.name=? GROUP BY g2.id ORDER BY n DESC, g2.name LIMIT 10`),
   allGenres: db.prepare(`SELECT g.name, count(*) n FROM genre g JOIN release_group_genre rgg ON rgg.genre_id=g.id GROUP BY g.id ORDER BY n DESC, g.name`),
+  // portada representativa por género crudo: prefiere un álbum CON portada descargada, si no, cualquiera
+  genreRepByRaw: db.prepare(`SELECT g.name raw,
+     (SELECT rgg.release_group_id FROM release_group_genre rgg JOIN release_group rg ON rg.id=rgg.release_group_id WHERE rgg.genre_id=g.id AND rg.cover_path IS NOT NULL ORDER BY rg.first_release DESC LIMIT 1) rg_cover,
+     (SELECT rgg.release_group_id FROM release_group_genre rgg WHERE rgg.genre_id=g.id ORDER BY rgg.release_group_id DESC LIMIT 1) rg_any
+     FROM genre g JOIN release_group_genre x ON x.genre_id=g.id GROUP BY g.id`),
   // ── descubrir (recomendaciones sobre el grafo local) ──
   discUnrated: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
      FROM v_album a WHERE a.tier_key IS NULL ORDER BY a.first_release DESC, a.title LIMIT 18`),
@@ -809,7 +818,55 @@ function artist(id) {
   a.appears = Q.artistAppears.all(id)
     .filter(x => !own.has(x.id))
     .map(x => ({ id: x.id, title: x.title, year: x.year, artist: x.artist, roles: (x.roles || '').split(',').filter(Boolean) }));
+  a.album_count = (Q.artistAlbumCount.get(id) || {}).n || 0;
+  // duplicados exactos de nombre (p. ej. 4 «blink-182») para ofrecer unirlos, con su nº de álbumes
+  a.dupes = Q.artistDupes.all(id, a.name).map(d => ({ id: d.id, name: d.name, disambiguation: d.disambiguation, mbid: d.mbid, album_count: (Q.artistAlbumCount.get(d.id) || {}).n || 0 }));
   return a;
+}
+// ── Unir artistas (Roon merge): reasigna álbumes/créditos de los duplicados al artista destino y
+// borra los duplicados. El vínculo artista→álbum es acn.artist_id; los roles de pista, credit.artist_id.
+function mergeArtists(into, fromIds) {
+  into = parseInt(into, 10);
+  const ids = [...new Set((fromIds || []).map(x => parseInt(x, 10)).filter(x => x && x !== into))];
+  if (!Number.isFinite(into) || !Q.artist.get(into)) throw new Error('artista destino inválido');
+  if (!ids.length) throw new Error('no hay duplicados que unir');
+  const ph = ids.map(() => '?').join(',');
+  db.exec('BEGIN');
+  try {
+    db.prepare(`UPDATE artist_credit_name SET artist_id=? WHERE artist_id IN (${ph})`).run(into, ...ids);
+    db.prepare(`UPDATE credit SET artist_id=? WHERE artist_id IN (${ph})`).run(into, ...ids);
+    // filas por-sujeto (bio, flags, tier, notas…): mover al destino si no choca, y limpiar el resto
+    for (const t of ['user_edit', 'provenance', 'flag', 'rating_tier', 'rating', 'rating_event', 'obsidian_link']) {
+      try { db.prepare(`UPDATE OR IGNORE ${t} SET subject_id=? WHERE subject_type='artist' AND subject_id IN (${ph})`).run(into, ...ids); } catch (e) {}
+      try { db.prepare(`DELETE FROM ${t} WHERE subject_type='artist' AND subject_id IN (${ph})`).run(...ids); } catch (e) {}
+    }
+    db.prepare(`DELETE FROM artist WHERE id IN (${ph})`).run(...ids);
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return { into, merged: ids.length };
+}
+async function handleArtistMerge(req, res) {
+  try { const b = await readBody(req); const r = mergeArtists(b.into, b.from); sseBroadcast('library'); return sendJSON(res, { ok: true, ...r }); }
+  catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+}
+// Renombrar un artista: cambia artist.name y, por defecto, los nombres de crédito que coincidían
+// (para que el cambio se vea en los álbumes, cuyo "artista" sale de artist_credit_name.name).
+async function handleArtistEdit(req, res) {
+  try {
+    const b = await readBody(req);
+    const id = parseInt(b.id, 10); const cur = Q.artist.get(id);
+    if (!cur) return sendJSON(res, { ok: false, error: 'artista no encontrado' });
+    const name = String(b.name == null ? cur.name : b.name).trim();
+    if (!name) return sendJSON(res, { ok: false, error: 'el nombre no puede estar vacío' });
+    db.exec('BEGIN');
+    try {
+      db.prepare(`UPDATE artist SET name=?, sort_name=COALESCE(?,sort_name), updated_at=datetime('now') WHERE id=?`).run(name, b.sort_name != null ? String(b.sort_name).trim() : null, id);
+      if (name !== cur.name) db.prepare(`UPDATE artist_credit_name SET name=? WHERE artist_id=? AND name=?`).run(name, id, cur.name);   // propaga a los créditos que usaban el nombre viejo
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    sseBroadcast('library');
+    return sendJSON(res, { ok: true, id, name });
+  } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 // ── discografía "ideal" del artista (MusicBrainz) con huecos (lo que NO tienes) → para «Quiero» ──
 // Modelo de Roon (Ideal discography): se lista TODO lo que editó el artista y se marcan los huecos.
@@ -959,6 +1016,18 @@ function genre(name) {
   albums.sort((x, y) => String(y.year || '').localeCompare(String(x.year || '')) || String(x.title).localeCompare(String(y.title)));
   const related = gmAgg([].concat(...raws.map(r => Q.genreRelated.all(r)))).filter(g => g.name !== name).slice(0, 10);
   return { name, albums, related };
+}
+// Mosaico de géneros estilo Roon: los géneros canónicos más grandes, cada uno con una portada
+// representativa. Mapea la portada de cada género crudo a su canónico (una por canónico).
+function genreTiles(limit) {
+  const rep = new Map();   // canónico → { rg, hasCover }
+  for (const r of Q.genreRepByRaw.all()) {
+    const c = gmOne(r.raw); if (c == null) continue;
+    const rg = r.rg_cover || r.rg_any; if (!rg) continue;
+    const prev = rep.get(c);
+    if (!prev || (r.rg_cover && !prev.hasCover)) rep.set(c, { rg, hasCover: !!r.rg_cover });
+  }
+  return gmAgg(Q.allGenres.all()).slice(0, limit || 30).map(g => ({ name: g.name, n: g.n, rg: (rep.get(g.name) || {}).rg || null }));
 }
 function discover(opts) {
   let tg = gmAgg(Q.allGenres.all());
@@ -2168,6 +2237,9 @@ http.createServer((req, res) => {
   if (u.pathname === '/api/lyrics') return void getLyrics(parseInt(u.searchParams.get('track'), 10)).then(r => sendJSON(res, r)).catch(() => sendJSON(res, { found: false }));
   if (u.pathname === '/api/identify' && req.method === 'GET') return void handleIdentifySuggest(req, res, u);
   if (u.pathname === '/api/identify/apply' && req.method === 'POST') return void handleIdentifyApply(req, res);
+  if (u.pathname === '/api/artist/merge' && req.method === 'POST') return void handleArtistMerge(req, res);
+  if (u.pathname === '/api/artist/edit' && req.method === 'POST') return void handleArtistEdit(req, res);
+  if (u.pathname === '/api/artist/search' && req.method === 'GET') { const id = parseInt(u.searchParams.get('id'), 10) || 0; const q = (u.searchParams.get('q') || '').trim(); if (q.length < 2) return sendJSON(res, { ok: true, items: [] }); return sendJSON(res, { ok: true, items: Q.artistSearch.all(id, '%' + q + '%', q).map(a => ({ id: a.id, name: a.name, disambiguation: a.disambiguation, album_count: (Q.artistAlbumCount.get(a.id) || {}).n || 0 })) }); }
   if (u.pathname === '/api/album/reanalyze' && req.method === 'POST') return void handleReanalyze(req, res);
   if (u.pathname === '/api/playlists' || u.pathname === '/api/playlist' || u.pathname.startsWith('/api/playlist/')) return void handlePlaylists(req, res, u);
   if (u.pathname === '/api/smartlists' || u.pathname === '/api/smartlist' || u.pathname.startsWith('/api/smartlist/')) return void handleSmart(req, res, u);
@@ -2196,6 +2268,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/work') { const w = work(parseInt(u.searchParams.get('id'), 10)); return w ? sendJSON(res, w) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/genre') { const g = genre(u.searchParams.get('name')); return g ? sendJSON(res, g) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/genres') return sendJSON(res, gmAgg(Q.allGenres.all()));
+    if (u.pathname === '/api/genres/tiles') return sendJSON(res, { tiles: genreTiles(parseInt(u.searchParams.get('limit'), 10) || 30) });
     if (u.pathname === '/api/genremap') return void handleGenreMap(req, res, u);
     if (u.pathname === '/api/bookmarks') return sendJSON(res, { items: Q.bmList.all().map(b => ({ id: b.id, name: b.name, state: (() => { try { return JSON.parse(b.state || '{}'); } catch (e) { return {}; } })() })) });
     if (u.pathname === '/api/tags') return sendJSON(res, Q.allTags.all());

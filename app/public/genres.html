@@ -6,31 +6,57 @@
 <title>escucharrr — géneros</title>
 <link rel="stylesheet" href="styles.css">
 <style>
-nav.top{display:flex;gap:16px;font-size:14px;margin-bottom:16px}
-nav.top a{color:var(--text-2)} nav.top a.on{color:var(--text);font-weight:600}
-.gcloud{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
-.gtile{display:flex;align-items:baseline;gap:8px;background:var(--surface-2);border:1px solid transparent;border-radius:999px;padding:8px 15px;transition:background .12s,color .12s,border-color .12s}
+/* mosaico de géneros estilo Roon: tiles grandes con portada + nombre encima */
+.gtiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:13px;margin-top:14px}
+.gtile2{position:relative;aspect-ratio:16/10;border-radius:12px;overflow:hidden;display:flex;align-items:flex-end;text-decoration:none;color:#fff;background:var(--surface-2);box-shadow:var(--shadow)}
+.gtile2 img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;filter:grayscale(.35) brightness(.6);transition:filter .18s,transform .18s}
+.gtile2:hover img{filter:grayscale(0) brightness(.72);transform:scale(1.03)}
+.gtile2 .ov{position:relative;z-index:1;width:100%;padding:14px 16px;background:linear-gradient(to top,rgba(0,0,0,.62),rgba(0,0,0,.05))}
+.gtile2 .gn{font-family:var(--serif);font-size:23px;font-weight:600;line-height:1.08;text-shadow:0 1px 6px rgba(0,0,0,.4)}
+.gtile2 .gc{font-size:12px;opacity:.88;margin-top:2px;font-variant-numeric:tabular-nums}
+/* nube con todos los géneros (incl. los pequeños/raros) */
+.gcloud{display:flex;flex-wrap:wrap;gap:9px;margin-top:10px}
+.gtile{display:flex;align-items:baseline;gap:8px;background:var(--surface-2);border:1px solid transparent;border-radius:999px;padding:7px 14px;transition:background .12s,color .12s,border-color .12s}
 .gtile:hover{background:var(--accent-bg);color:var(--accent);border-color:var(--accent-bg)}
 .gtile .nm{text-transform:capitalize}
 .gtile .n{color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
 .gtile:hover .n{color:var(--accent)}
+.gsec{margin-top:30px;font-family:var(--serif);font-size:20px;font-weight:600}
 </style>
 </head>
 <body>
 <div class="wrap">
   <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><h1 style="margin:0">Géneros</h1><a href="genremap.html" style="color:var(--accent);font-size:13px">Limpiar géneros</a></div>
   <div class="count" id="count">cargando…</div>
+  <div class="gtiles" id="tiles"></div>
+  <div class="gsec" id="allhdr" style="display:none">Todos los géneros</div>
   <div class="gcloud" id="cloud"></div>
 </div>
 
 <script>
-const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-function load(){fetch('/api/genres').then(r=>r.json()).then(gs=>{
-  count.textContent=gs.length+' géneros en tu biblioteca';
-  const max=Math.max(1,...gs.map(g=>g.n));
-  cloud.innerHTML=gs.map(g=>{const sz=13+Math.round(g.n/max*9);
-    return `<a class="gtile" href="genre.html?name=${encodeURIComponent(g.name)}"><span class="nm" style="font-size:${sz}px">${esc(g.name)}</span><span class="n">${g.n}</span></a>`;}).join('');
-}).catch(e=>count.textContent='error: '+e.message);}
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function load(){
+  // mosaico (géneros gordos con portada) + nube completa, en paralelo
+  Promise.all([
+    fetch('/api/genres/tiles?limit=30').then(r=>r.json()).catch(()=>({tiles:[]})),
+    fetch('/api/genres').then(r=>r.json()).catch(()=>[])
+  ]).then(([t,gs])=>{
+    const tiles=(t&&t.tiles)||[];
+    count.textContent=gs.length+' géneros en tu biblioteca';
+    document.getElementById('tiles').innerHTML=tiles.map(g=>{
+      const href='genre.html?name='+encodeURIComponent(g.name);
+      const img=g.rg?`<img src="/api/cover?rg=${g.rg}" alt="" loading="lazy" draggable="false">`:'';
+      return `<a class="gtile2" href="${href}">${img}<div class="ov"><div class="gn">${esc(g.name)}</div><div class="gc">${g.n} álbum${g.n===1?'':'es'}</div></div></a>`;
+    }).join('');
+    // la nube muestra el RESTO (los que no están ya en el mosaico), para no repetir
+    const inTiles=new Set(tiles.map(g=>g.name.toLowerCase()));
+    const rest=gs.filter(g=>!inTiles.has(String(g.name).toLowerCase()));
+    document.getElementById('allhdr').style.display=rest.length?'':'none';
+    const max=Math.max(1,...gs.map(g=>g.n));
+    cloud.innerHTML=rest.map(g=>{const sz=13+Math.round(g.n/max*8);
+      return `<a class="gtile" href="genre.html?name=${encodeURIComponent(g.name)}"><span class="nm" style="font-size:${sz}px">${esc(g.name)}</span><span class="n">${g.n}</span></a>`;}).join('');
+  }).catch(e=>count.textContent='error: '+e.message);
+}
 load();
 document.addEventListener('escucharrr:changed',load);   // biblioteca en vivo
 </script>
