@@ -166,6 +166,43 @@ let _lidOwned = { at: 0, map: null };
 function lidOwnedIndex() { if (_lidOwned.map && Date.now() - _lidOwned.at < 15000) return _lidOwned.map; const map = new Map(); for (const a of db.prepare('SELECT id, artist, title FROM v_album').all()) map.set(lidMatchKey(a.artist, a.title), a.id); _lidOwned = { at: Date.now(), map }; return map; }
 function resolveOwnedPairs(pairs) { const idx = lidOwnedIndex(); return (pairs || []).map(p => ({ artist: p.artist, album: p.album, rg_id: idx.get(lidMatchKey(p.artist, p.album)) ?? null })); }
 
+// ── Diagnóstico del puente Liderarrr: sondea su API (solo lectura) y devuelve un JSON copiable ──
+// Pensado para que un betatester (p. ej. Serge, en Docker) nos pase qué responde SU instancia cuando el
+// import sale a cero: forma de /api/library, si los álbumes traen MBID, estado de /api/artists, etc.
+async function liderarrrDiag() {
+  const out = { url: liderarrrUrl(), when: new Date().toISOString(), local_albums: 0, local_identified: 0, probes: {} };
+  try { out.local_albums = db.prepare('SELECT COUNT(*) n FROM release_group').get().n; } catch (e) {}
+  try { out.local_identified = db.prepare('SELECT COUNT(*) n FROM release_group WHERE mbid IS NOT NULL').get().n; } catch (e) {}
+  const probe = async (label, apipath) => {
+    try {
+      const r = await liderarrrFetch('GET', apipath);
+      const b = r.body;
+      const arr = (b && (b.albums || b.items || b.data || b.results)) || (Array.isArray(b) ? b : null);
+      const info = { http: r.status, body_type: Array.isArray(b) ? 'array' : typeof b,
+        keys: (b && typeof b === 'object' && !Array.isArray(b)) ? Object.keys(b).slice(0, 16) : null };
+      if (Array.isArray(arr)) {
+        info.count = arr.length;
+        info.total = (b && b.total != null) ? b.total : null;
+        if (arr[0]) { info.first_item_keys = Object.keys(arr[0]).slice(0, 24); info.first_item = arr[0]; }
+      }
+      out.probes[label] = info;
+    } catch (e) { out.probes[label] = { error: String(e.message) }; }
+  };
+  await probe('library', '/api/library?limit=3&offset=0');
+  await probe('artists', '/api/artists?limit=3');
+  await probe('challenges', '/api/challenges');
+  // ¿qué campo lleva el MBID de release-group en SU biblioteca? (clave para que el import empareje)
+  try {
+    const lib = out.probes.library, it = lib && lib.first_item;
+    if (it) {
+      const CANDS = ['rg_mbid', 'release_group_mbid', 'rgMbid', 'mbid', 'musicbrainz_id', 'mb_release_group'];
+      lib.mbid_field = CANDS.find(k => it[k]) || null;
+      lib.first_item_has_mbid = !!lib.mbid_field;
+    }
+  } catch (e) {}
+  return out;
+}
+
 // ── Importar la identificación de MusicBrainz ya hecha en Liderarrr (para no re-identificar aquí) ──
 // Liderarrr ya empareja su biblioteca contra MusicBrainz y expone rg_mbid por álbum (/api/library) y mbid
 // por artista (/api/artists). Adoptamos esos MBID en los álbumes/artistas locales que aún NO los tienen:
@@ -195,9 +232,11 @@ async function syncLiderarrrIdentify() {
     const r = await liderarrrFetch('GET', '/api/library?limit=' + LIMIT + '&offset=' + offset);
     const albums = r ? albumsOf(r.body) : null;
     if (!Array.isArray(albums)) {   // forma inesperada o error: deja constancia para diagnosticar
-      if (offset === 0) rep.diag = { stage: 'library', http: r && r.status, body_type: typeof (r && r.body), body_keys: (r && r.body && typeof r.body === 'object') ? Object.keys(r.body).slice(0, 12) : null };
+      if (offset === 0) { rep.diag = { stage: 'library', http: r && r.status, body_type: typeof (r && r.body), body_keys: (r && r.body && typeof r.body === 'object') ? Object.keys(r.body).slice(0, 12) : null };
+        console.log('[liderarrr-sync] /api/library sin lista de álbumes:', JSON.stringify(rep.diag)); }
       break;
     }
+    if (offset === 0) console.log('[liderarrr-sync] /api/library http', r.status, '| álbumes pág.1', albums.length, '| total', (r.body && r.body.total), '| 1er álbum campos:', albums[0] ? Object.keys(albums[0]).join(',') : '—');
     pages++;
     total = (r.body && r.body.total != null) ? r.body.total : (offset + albums.length);
     rep.total = total;
@@ -242,6 +281,7 @@ async function syncLiderarrrIdentify() {
     }
   } catch (e) { rep.artists_error = String(e.message); }
   _lidOwned = { at: 0, map: null };   // invalida el índice (los MBID no cambian el matchKey, pero por higiene)
+  console.log('[liderarrr-sync] resultado:', JSON.stringify(rep));
   sseBroadcast('library');
   return rep;
 }
@@ -250,6 +290,10 @@ async function handleLiderarrr(req, res, u) {
   const sub = u.pathname.slice('/api/liderarrr/'.length);
   if (sub === 'resolve' && req.method === 'POST') { const b = await readBody(req); return sendJSON(res, { ok: true, owned: resolveOwnedPairs(b.pairs || []) }); }
   if (!liderarrrUrl()) return sendJSON(res, { ok: false, error: 'Liderarrr no está configurado (ponlo en Ajustes → Servicios).' });
+  if (sub === 'diag' && req.method === 'GET') {   // diagnóstico (solo lectura) para depurar qué devuelve SU Liderarrr
+    try { const diag = await liderarrrDiag(); console.log('[liderarrr-diag]', JSON.stringify(diag)); return sendJSON(res, { ok: true, diag }); }
+    catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+  }
   if (sub === 'sync-identify' && req.method === 'POST') {   // adopta la identificación MusicBrainz ya hecha en Liderarrr
     try {
       const report = await syncLiderarrrIdentify();

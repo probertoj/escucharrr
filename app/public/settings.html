@@ -193,8 +193,9 @@ window.addEventListener('DOMContentLoaded', async () => {
       </div><div id="ldmsg" style="font-size:12.5px;margin-top:6px;display:none"></div>
       ${(s.liderarrr && s.liderarrr.connected) ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
         <div class="d" style="margin-bottom:8px">Liderarrr ya empareja tu biblioteca contra <b>MusicBrainz</b>. Importa esa identificación para que escucharrr marque tus discos como identificados <b>sin re-hacer el trabajo</b>: adopta el MBID donde aún no lo tengas (nunca pisa el tuyo).</div>
-        <button id="ldsync">Importar identificación de Liderarrr</button>
-        <div id="ldsyncmsg" style="font-size:12.5px;margin-top:8px;display:none"></div></div>` : ''}</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="ldsync">Importar identificación de Liderarrr</button><button id="lddiag" title="Comprueba qué responde tu Liderarrr (para depurar). Copia el resultado y pásaselo a Roberto.">Diagnóstico</button></div>
+        <div id="ldsyncmsg" style="font-size:12.5px;margin-top:8px;display:none"></div>
+        <pre id="lddiagout" style="display:none;margin-top:8px;font-size:11.5px;line-height:1.45;background:var(--surface-2);border:1px solid var(--border);border-radius:9px;padding:10px 12px;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word;user-select:all"></pre></div>` : ''}</div>
     <div class="row"><div class="lbl"><div class="k">Tidal / Qobuz</div><div class="d soon">próximamente</div></div></div>`;
     wireServices(s);
   }
@@ -234,6 +235,15 @@ window.addEventListener('DOMContentLoaded', async () => {
         } else srvMsg('ldsyncmsg', r.error || 'No se pudo importar.', false);
       } catch (e) { srvMsg('ldsyncmsg', 'Error: ' + e.message, false); }
       b.disabled = false; b.textContent = 'Importar identificación de Liderarrr';
+    };
+    if ($('lddiag')) $('lddiag').onclick = async () => {
+      const b = $('lddiag'), out = $('lddiagout'); b.disabled = true; b.textContent = 'Comprobando…';
+      try {
+        const r = await fetch('/api/liderarrr/diag').then(x => x.json());
+        out.style.display = 'block';
+        out.textContent = r.ok ? ('Diagnóstico de Liderarrr (cópialo y pásaselo a Roberto):\n\n' + JSON.stringify(r.diag, null, 2)) : ('Error: ' + (r.error || 'no se pudo'));
+      } catch (e) { out.style.display = 'block'; out.textContent = 'Error: ' + e.message; }
+      b.disabled = false; b.textContent = 'Diagnóstico';
     };
   }
   loadServices();
