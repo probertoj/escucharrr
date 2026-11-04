@@ -120,10 +120,11 @@ function folderMeta(dir) {   // "Artista - Álbum" (con espacios o pegado) → {
 // ── Multi-disco (estilo Roon): varias subcarpetas CD1/CD2 (o un marcador "CDn" en el título) son DISCOS de
 // UN álbum, no álbumes distintos. Detectamos la carpeta de disco (→ el álbum es la carpeta padre) y quitamos
 // el "CDn/Disc n" del final del título para que todos los discos resuelvan al MISMO release_group (medium por disco). ──
-// Carpeta de disco: "CD1", "Disc 2", "Vol. 1", y también con texto descriptivo tras el número —muy común en
-// cajas— como "Disc 1 (Original Album)" o "CD2 - Bonus". El texto solo cuenta tras un separador (espacio/.-:(),
-// etc.), así que "Discovery" (sin dígito) y "Use Your Illusion II" (no empieza por cd/disc/vol) NO casan.
-const _DISC_DIR_RE = /^(?:cd|dis[ck]|disco|disque|volume|vol)\s*\.?\s*0*(\d{1,2})(?:[\s._\-–—:()\[\]].*)?$/i;
+// Carpeta de disco: "CD1", "Disc 2", "Vol. 1", "Digital Media 01" (nombre de soporte MusicBrainz, muy común en
+// descargas multidisco), y también con texto descriptivo tras el número —muy común en cajas— como
+// "Disc 1 (Original Album)" o "CD2 - Bonus". El texto solo cuenta tras un separador (espacio/.-:(), etc.), así
+// que "Discovery" (sin dígito) y "Use Your Illusion II" (no empieza por cd/disc/vol/digital media) NO casan.
+const _DISC_DIR_RE = /^(?:cd|dis[ck]|disco|disque|volume|vol|digital\s*media)\s*\.?\s*0*(\d{1,2})(?:[\s._\-–—:()\[\]].*)?$/i;
 const _DISC_TITLE_RE = /[\s\-–—_]*[\[(]?\s*(?:cd|dis[ck]|disco|disque)\s*\.?\s*0*(\d{1,2})\s*[)\]]?\s*$/i;   // "… CD1", "… (Disc 2)" al final del título
 function discInfo(dir, rawAlbum) {
   let discFolder = null, albumDir = dir;
