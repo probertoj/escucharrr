@@ -24,6 +24,7 @@
     zone: '<rect x="6" y="3" width="12" height="18" rx="2.5"/><circle cx="12" cy="14" r="3.6"/><circle cx="12" cy="7" r="1.1"/>',
     lyrics: '<path d="M5 7h14M5 12h14M5 17h9"/>',
     queue: '<path d="M4 7h11M4 12h11M4 17h7"/><path d="M18 14.5 22 17l-4 2.5z" fill="currentColor" stroke="none"/>',
+    shuffle: '<path d="M4 7h4l9 10h3"/><path d="M4 17h4l9-10h3"/><path d="M18 4l3 3-3 3M18 14l3 3-3 3"/>',
     star: '<path d="M12 3.6l2.6 5.3 5.8.9-4.2 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8L3.6 9.8l5.8-.9z"/>',
     'star-fill': '<path d="M12 3.6l2.6 5.3 5.8.9-4.2 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8L3.6 9.8l5.8-.9z" fill="currentColor" stroke="none"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',

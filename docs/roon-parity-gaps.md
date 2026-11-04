@@ -454,15 +454,21 @@ presets de zona `zone_settings_neg1_db`…`neg24_db` (−1…−24 dB), `volume_
 rampa suavizada (`setTargetAtTime`, sin «zipper»), el `<input>` ya no se reconstruye al arrastrar (iba a
 tirones), rueda = ±1 dB, flechas = ±2 dB, iconos por posición perceptual, y burbuja de dB que se auto-oculta.
 
-### Ledger de otros micro-detalles (pendientes, por prioridad)
-1. **Tooltips con atajo de teclado** (`tooltip_with_keys`): mostrar la tecla junto al texto, p. ej.
-   «Silenciar (M)», «Reproducir/Pausa (Espacio)». Barato; ya tenemos los atajos. **P2**.
-2. **Estado «el usuario está buscando»** (`np_userseeking` / `nowplaying_seekpos`): al arrastrar la onda,
-   congelar el reloj a la posición objetivo y no pelear con el tick de reproducción. Verificar que el
-   scrubber actual ya lo hace; si no, añadirlo. **P2**.
-3. **Tope de volumen configurable** (`volume_soft_limit` / `audio_device_volume_limits`): límite superior
-   por salida/zona para escucha segura. **P3**.
-4. **Bordes con degradado en menús desplazables** (`menu_scroll_topfade`/`bottomfade`, `ms_show_topfade`):
-   fade arriba/abajo cuando una lista larga desborda (cola, paneles). Puro CSS. **P3**.
-5. **Reproducción aleatoria** (`shuffle_play_button`, `atom_shuffle`): botón de shuffle de la cola
-   (distinto de la Radio). **P3**.
+### Ledger de otros micro-detalles
+1. ~~**Tooltips con atajo de teclado**~~ ✅ (`tooltip_with_keys`): los controles de la barra muestran la
+   tecla — «Play / Pausa (Espacio)», «Anterior (⇧←)», «Silenciar (M)», «Radio … (R)», «Aleatorio … (S)»,
+   «Volumen · −X dB (↑↓)», «Buscar (←/→ 10 s)».
+2. ~~**Estado «el usuario está buscando»**~~ ✅ (`np_userseeking` / `nowplaying_seekpos`): ya estaba — al
+   arrastrar la onda, `progress()` se congela (`scrubbing`), `wfPreview()` pinta el reloj en la posición
+   objetivo y se busca al soltar. Verificado por inspección.
+3. ~~**Tope de volumen configurable**~~ ✅ (`volume_soft_limit`): presets Sin límite / −6 / −12 / −18 /
+   −24 dB en el panel de Salida; el fader recorta su tope ahí (solo volumen por software).
+4. ~~**Bordes con degradado en menús desplazables**~~ ✅ (`menu_scroll_topfade`/`bottomfade`,
+   `ms_show_topfade`): `fadeScroll()` con máscara de gradiente que aparece arriba/abajo según haya más
+   contenido; aplicado al cuerpo de «Ahora suena» a pantalla completa.
+5. ~~**Reproducción aleatoria**~~ ✅ (`shuffle_play_button`, `atom_shuffle`): botón de shuffle en la barra
+   (y tecla S) que baraja lo que viene sin mover la pista en curso; al iniciar un álbum con shuffle activo,
+   se reproduce barajado. Distinto de la Radio.
+
+Siguientes candidatos (del inventario BROO, sin priorizar aún): repetir pista/cola (`repeat`), fundido entre
+pistas visible en la cola, «ver fotos/documentos» del disco, banderín de contenido explícito.
