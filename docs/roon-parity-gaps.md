@@ -479,3 +479,31 @@ Siguientes candidatos (del inventario BROO, sin priorizar aún): **banderín de 
 (`is_explicit`/`explicit_icon` + ajuste `show_album_explicit` — NECESITA leer una etiqueta de «explicit»
 al escanear: no hay dato hoy, es un cambio en data-layer, no un micro-detalle), fundido entre pistas
 visible en la cola, «ver fotos/documentos» del disco.
+
+## Sidebar y dispositivos/zonas (RE del bundle BROO, Nov 4 2026)
+
+### Sidebar agrupado como Roon (HECHO)
+Roon agrupa el menú lateral en secciones con cabecera en versalitas (BROWSE: Home, Genres, Live Radio,
+Listen Later, Tags, History · MY LIBRARY: Albums, Artists, Tracks, Composers, Compositions, My Live Radio,
+Folders). → `nav.js` pasa de lista plana a secciones: **Buscar** (suelto) + **Explorar** (Inicio, Descubrir,
+Géneros, Radio, Lanzamientos, Retos, Historial) + **Mi biblioteca** (Álbumes, Pistas, Obras, Listas,
+Inteligentes, Carpetas, Inspector). Cabeceras `.navsec` en versalitas en escritorio, ocultas en la barra
+horizontal móvil. Mismos iconos de línea monocromos.
+
+### Ajustes de audio: «Enable» de un dispositivo detectado → zona (HECHO)
+RE de `settings_audio.broo` + `device_setup.broo`: Roon lista cada salida de audio; una detectada pero no
+activada muestra **«Enable this device»** (`settings_audio` str; botones `Enable`/`Disable`). Al activarla se
+abre `device_setup` (nombrar la zona `audio_device_setup_private_zone`, modo exclusivo, DSD, MQA, control de
+volumen, resync, identificar `device_setup_identify_device`) y la salida pasa a ser una **zona** persistente,
+siempre disponible en el selector (`popup_audio_device_picker`/`zone_menu`), con `settings_audio_retry_device`
+/ `settings_audio_disable_device` para reintentar/desactivar. Las zonas se pueden **agrupar** para multi-sala
+(`zone_group_button`, `dialog_group_zones`, `atom_zone_grouped_zone`). Tipos con icono propio: roonready,
+roontested, raatserver, airplay, cast/chromecast, sonos, squeezebox, devialet, meridian, kef…
+
+→ escucharrr (`player.js`, panel de Salida): un dispositivo de red detectado y **no activado** muestra un
+botón **«Activar»** (antes solo un pin discreto). Al pulsarlo, `enableZone()` lo guarda como **zona con el
+nombre del propio aparato, sin preguntar** (UX simple), y queda arriba en «zonas guardadas» = siempre en el
+selector de la barra. Ya activado → «✓ Activado» (toca para desactivar). Tocar la fila sigue reproduciendo
+ahí al momento. Probado: «Activar» → zona persistida en `escucharrr.zones` y visible en el selector.
+Pendiente de paridad (no hecho): agrupar zonas (multi-sala) y el `device_setup` completo (exclusivo/DSD/MQA
+por zona ya existen para el motor nativo, no para red).

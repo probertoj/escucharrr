@@ -700,6 +700,15 @@ window.player = (function () {
     const name = (prompt('Nombre de la zona:', deviceName || zone.name || 'Zona') || '').trim(); if (!name) return;
     zones.push({ id: Date.now(), name, kind, deviceId: deviceId || '', deviceName: deviceName || '', exclusive: !!exclusive }); persistZones(); renderZPanel();
   }
+  // «Activar» un dispositivo detectado (estilo Roon «Enable this device»): lo guarda como zona con el
+  // nombre del propio aparato, SIN preguntar, para que quede siempre en el selector de salida. No cambia
+  // la reproducción; el usuario elige la zona cuando quiera sonar ahí. Idempotente.
+  function enableZone(kind, deviceId, deviceName, exclusive) {
+    if (zoneSavedId(kind, deviceId, exclusive)) return;
+    const name = (deviceName || 'Zona').trim() || 'Zona';
+    zones.push({ id: Date.now(), name, kind, deviceId: deviceId || '', deviceName: deviceName || '', exclusive: !!exclusive });
+    persistZones(); if (window.toast) toast('Zona «' + name + '» activada'); renderZPanel();
+  }
 
   function start(i, atSec) {
     if (irStation) stopRadio(true);   // reproducir una pista para la radio
@@ -895,7 +904,8 @@ window.player = (function () {
     h += '</div>';
     // ── salida de RED (UPnP/DLNA): renderers de la LAN (Eversolo, etc.) — se rellena async ──
     h += '<div style="border-top:1px solid var(--border);margin:10px -14px 0;padding:10px 14px 0">';
-    h += '<div style="font-weight:600;margin-bottom:6px">Salida de red</div>';
+    h += '<div style="font-weight:600;margin-bottom:2px">Dispositivos de red</div>';
+    h += '<div style="font-size:11px;color:var(--text-2);margin-bottom:6px">Detectados en tu red (UPnP/DLNA, Chromecast). Pulsa <b>Activar</b> para guardarlos como zona y tenerlos siempre en el selector.</div>';
     h += '<div id="upnplist" style="color:var(--text-2);font-size:12px">Buscando dispositivos de red…</div>';
     if (upnpMode) h += '<div data-act="uoff" style="margin-top:7px;color:var(--accent);cursor:pointer;font-size:12px;display:inline-flex;align-items:center;gap:5px">' + ic('arrow-left', 13) + 'Volver a este equipo</div>';
     h += '<div style="font-size:11px;color:var(--text-2);margin-top:6px">El dispositivo descarga la música; el volumen va al aparato. ReplayGain y EQ no se aplican en red.</div></div>';
@@ -912,8 +922,12 @@ window.player = (function () {
     box.innerHTML = urs.map(d => { const on = upnpMode && (upnpDeviceId === d.id); const cast = d.castable !== false;
       const tag = d.kind === 'chromecast' ? 'Chromecast' : d.kind === 'airplay' ? 'AirPlay' : (d.model || 'DLNA');
       const saved = zoneSavedId('upnp', d.id);
-      const pin = cast ? `<span class="zsave" data-kind="upnp" data-id="${esc(d.id)}" data-name="${esc(d.name)}" title="${saved ? 'Quitar de zonas guardadas' : 'Guardar como zona'}" style="cursor:pointer;color:${saved ? 'var(--accent)' : 'var(--text-2)'};display:inline-flex">${ic(saved ? 'pin-fill' : 'pin', 15)}</span>` : '';
-      return `<div class="udev" data-id="${esc(d.id)}" data-name="${esc(d.name)}" data-cast="${cast ? 1 : 0}" title="${cast ? '' : 'Detectado en la red. Reproducir en AirPlay usa un protocolo propietario, aún no soportado.'}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:${cast ? 'pointer' : 'default'};${cast ? '' : 'opacity:.6;'}${on ? 'background:var(--accent-bg);color:var(--accent)' : ''}"><span style="width:16px;display:inline-flex;justify-content:center">${on ? ic('check', 15) : ''}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(d.name)} <span style="color:var(--muted);font-size:11px">· ${esc(tag)}${cast ? '' : ' (detectado)'}</span></span>${pin}</div>`; }).join('');
+      // estilo Roon: un dispositivo detectado pero no activado muestra «Activar»; al activarlo se guarda
+      // como zona (siempre disponible en el selector). Ya activado → «Activado» (toca para desactivar).
+      const ctrl = !cast ? '' : saved
+        ? `<span class="zsave" data-kind="upnp" data-id="${esc(d.id)}" data-name="${esc(d.name)}" title="Desactivar (quitar de zonas)" style="cursor:pointer;color:var(--accent);font-size:11px;display:inline-flex;align-items:center;gap:4px">${ic('check', 14)}Activado</span>`
+        : `<span class="zenable" data-id="${esc(d.id)}" data-name="${esc(d.name)}" title="Activar: guardar como zona siempre disponible en el selector" style="cursor:pointer;font-size:11.5px;padding:2px 11px;border-radius:999px;border:1px solid var(--accent);color:var(--accent);white-space:nowrap">Activar</span>`;
+      return `<div class="udev" data-id="${esc(d.id)}" data-name="${esc(d.name)}" data-cast="${cast ? 1 : 0}" title="${cast ? 'Toca para reproducir aquí ahora' : 'Detectado en la red. Reproducir en AirPlay usa un protocolo propietario, aún no soportado.'}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:${cast ? 'pointer' : 'default'};${cast ? '' : 'opacity:.6;'}${on ? 'background:var(--accent-bg);color:var(--accent)' : ''}"><span style="width:16px;display:inline-flex;justify-content:center">${on ? ic('check', 15) : ''}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(d.name)} <span style="color:var(--muted);font-size:11px">· ${esc(tag)}${cast ? '' : ' (detectado)'}</span></span>${ctrl}</div>`; }).join('');
   }
 
   // ── letra de la pista (LRCLIB, con resaltado sincronizado tipo karaoke) ──
@@ -1094,6 +1108,7 @@ window.player = (function () {
   // interacción de la barra y los popovers (delegada)
   document.addEventListener('click', e => {
     const zsv = e.target.closest('#zonepanel .zsave'); if (zsv) { e.stopPropagation(); toggleSaveZone(zsv.dataset.kind, zsv.dataset.id, zsv.dataset.name, zsv.dataset.excl === '1'); return; }
+    const zen = e.target.closest('#zonepanel .zenable'); if (zen) { e.stopPropagation(); enableZone('upnp', zen.dataset.id, zen.dataset.name); return; }
     const zdel = e.target.closest('#zonepanel .zpresetdel'); if (zdel) { e.stopPropagation(); deleteZone(zdel.dataset.zone); return; }
     const zp = e.target.closest('#zonepanel .zpreset'); if (zp) { const z = zones.find(x => String(x.id) === String(zp.dataset.zone)); if (z) applyZone(z); return; }
     if (e.target.closest('#zonepanel [data-act="zonesave"]')) { const nm = (prompt('Nombre de la zona:', zone.name || 'Zona') || '').trim(); if (nm) saveCurrentZone(nm); return; }

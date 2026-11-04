@@ -14,23 +14,30 @@
   applyTheme(theme());
 
   function ig(n, s) { return (window.icon ? window.icon(n, s || 19) : ''); }   // icono de línea monocromo
-  var ITEMS = [
-    { href: 'home.html', label: 'Inicio', ico: 'home' },
-    { href: 'index.html', label: 'Biblioteca', ico: 'library', root: true },
-    { href: 'tracks.html', label: 'Pistas', ico: 'music' },
-    { href: 'discover.html', label: 'Descubrir', ico: 'discover' },
-    { href: 'genres.html', label: 'Géneros', ico: 'genres' },
-    { href: 'folders.html', label: 'Carpetas', ico: 'folder' },
-    { href: 'works.html', label: 'Obras', ico: 'lyrics' },
-    { href: 'inspector.html', label: 'Inspector', ico: 'inspect' },
-    { href: 'playlists.html', label: 'Listas', ico: 'lists' },
-    { href: 'smartlists.html', label: 'Inteligentes', ico: 'filter' },
-    { href: 'radio.html', label: 'Radio', ico: 'radio' },
-    { href: 'retos.html', label: 'Retos', ico: 'challenge' },
-    { href: 'lanzamientos.html', label: 'Lanzamientos', ico: 'calendar' },
-    { href: 'history.html', label: 'Historial', ico: 'history' },
-    { href: 'search.html', label: 'Buscar', ico: 'search' }
+  // Sidebar agrupado como el de Roon: una acción suelta (Buscar) + «Explorar» (browse/descubrir)
+  // y «Mi biblioteca» (tu colección). Mismos iconos de línea monocromos.
+  var SECTIONS = [
+    { items: [{ href: 'search.html', label: 'Buscar', ico: 'search' }] },
+    { title: 'Explorar', items: [
+      { href: 'home.html', label: 'Inicio', ico: 'home' },
+      { href: 'discover.html', label: 'Descubrir', ico: 'discover' },
+      { href: 'genres.html', label: 'Géneros', ico: 'genres' },
+      { href: 'radio.html', label: 'Radio', ico: 'radio' },
+      { href: 'lanzamientos.html', label: 'Lanzamientos', ico: 'calendar' },
+      { href: 'retos.html', label: 'Retos', ico: 'challenge' },
+      { href: 'history.html', label: 'Historial', ico: 'history' }
+    ] },
+    { title: 'Mi biblioteca', items: [
+      { href: 'index.html', label: 'Álbumes', ico: 'library', root: true },
+      { href: 'tracks.html', label: 'Pistas', ico: 'music' },
+      { href: 'works.html', label: 'Obras', ico: 'lyrics' },
+      { href: 'playlists.html', label: 'Listas', ico: 'lists' },
+      { href: 'smartlists.html', label: 'Inteligentes', ico: 'filter' },
+      { href: 'folders.html', label: 'Carpetas', ico: 'folder' },
+      { href: 'inspector.html', label: 'Inspector', ico: 'inspect' }
+    ] }
   ];
+  var ITEMS = SECTIONS.reduce(function (a, s) { return a.concat(s.items); }, []);   // plano, para marcar activo
   var SETTINGS = { href: 'settings.html', label: 'Ajustes', ico: 'settings' };
 
   function curFile() {
@@ -55,9 +62,12 @@
     var nav = document.createElement('nav');
     nav.id = 'appnav'; nav.className = 'appnav';
     var html = '<a class="brand" href="index.html">escucharrr</a>';
-    html += ITEMS.map(function (i) {
-      var on = (i.href === act) ? ' on' : '';
-      return '<a class="' + 'itm' + on + '" href="' + i.href + '"><span class="ico">' + ig(i.ico) + '</span>' + i.label + '</a>';
+    html += SECTIONS.map(function (s) {
+      var h = s.title ? '<div class="navsec">' + s.title + '</div>' : '';
+      return h + s.items.map(function (i) {
+        var on = (i.href === act) ? ' on' : '';
+        return '<a class="' + 'itm' + on + '" href="' + i.href + '"><span class="ico">' + ig(i.ico) + '</span>' + i.label + '</a>';
+      }).join('');
     }).join('');
     html += '<span class="sp"></span>';
     html += '<a class="itm' + (SETTINGS.href === act ? ' on' : '') + '" href="' + SETTINGS.href + '"><span class="ico">' + ig(SETTINGS.ico) + '</span>' + SETTINGS.label + '</a>';

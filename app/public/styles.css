@@ -38,11 +38,14 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);lin
 .appnav a.on{background:var(--accent-bg);color:var(--accent);font-weight:600}
 .appnav .ico{width:20px;flex:none;display:inline-flex;align-items:center;justify-content:center;color:inherit;opacity:.9}
 .appnav .sp{margin-left:auto}
+.appnav .navsec{display:none}
 .appnav .theme{color:var(--muted);cursor:pointer;padding:7px;border-radius:8px;flex:none;background:none;border:none;display:inline-flex}
 .appnav .theme:hover{background:var(--surface-2);color:var(--text-2)}
 @media(min-width:920px){
   .appnav{position:fixed;top:0;left:0;bottom:0;width:224px;flex-direction:column;align-items:stretch;gap:2px;border-bottom:none;border-right:1px solid var(--border);padding:22px 14px 78px;overflow-y:auto}
   .appnav .brand{font-size:23px;margin:2px 8px 18px}
+  .appnav .navsec{display:block;font-size:11px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin:17px 12px 6px}
+  .appnav .navsec:first-of-type{margin-top:4px}
   .appnav a{font-size:14.5px;padding:9px 12px}
   .appnav a.on{box-shadow:inset 2px 0 0 var(--accent)}
   .appnav .sp{margin-left:0;margin-top:auto}
