@@ -146,7 +146,26 @@ let liderarrrCfg = null;
 function loadLiderarrr() { try { liderarrrCfg = fs.existsSync(LIDERARRR_PATH) ? JSON.parse(fs.readFileSync(LIDERARRR_PATH, 'utf8')) : null; } catch (e) { liderarrrCfg = null; } return liderarrrCfg; }
 loadLiderarrr();
 function liderarrrUrl() { const u = liderarrrCfg && liderarrrCfg.url; return u ? String(u).replace(/\/+$/, '') : ''; }
-function saveLiderarrr(url) { const clean = String(url || '').trim().replace(/\/+$/, ''); if (clean) fs.writeFileSync(LIDERARRR_PATH, JSON.stringify({ url: clean }, null, 2) + '\n', 'utf8'); else { try { if (fs.existsSync(LIDERARRR_PATH)) fs.unlinkSync(LIDERARRR_PATH); } catch (e) {} } loadLiderarrr(); return liderarrrUrl(); }
+// Liderarrr usa Basic Auth OPCIONAL (env LIDERARRR_AUTH="usuario:contraseña", o solo contraseña → usuario
+// "liderarrr"). Si el usuario guarda una contraseña, mandamos Authorization: Basic base64(usuario:contraseña).
+function liderarrrAuth() {
+  const pass = liderarrrCfg && liderarrrCfg.pass;
+  if (!pass) return null;
+  const user = (liderarrrCfg && liderarrrCfg.user) || 'liderarrr';
+  return 'Basic ' + Buffer.from(user + ':' + pass, 'utf8').toString('base64');
+}
+function saveLiderarrr(url, user, pass) {
+  const clean = String(url || '').trim().replace(/\/+$/, '');
+  if (clean) {
+    const prev = liderarrrCfg || {};
+    const cfg = { url: clean };
+    // Si no se escribe contraseña nueva, se conserva la guardada (p. ej. al solo actualizar la URL).
+    const finalPass = (pass != null && String(pass) !== '') ? String(pass) : prev.pass;
+    if (finalPass) { cfg.user = ((user != null && String(user).trim() !== '') ? String(user).trim() : prev.user) || 'liderarrr'; cfg.pass = finalPass; }
+    fs.writeFileSync(LIDERARRR_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+  } else { try { if (fs.existsSync(LIDERARRR_PATH)) fs.unlinkSync(LIDERARRR_PATH); } catch (e) {} }
+  loadLiderarrr(); return liderarrrUrl();
+}
 // Reenvía una petición a la API de Liderarrr (misma BD → cambios bidireccionales).
 function liderarrrFetch(method, apipath, body) {
   return new Promise((resolve, reject) => {
@@ -154,7 +173,8 @@ function liderarrrFetch(method, apipath, body) {
     let u; try { u = new URL(base + apipath); } catch (e) { return reject(new Error('URL de Liderarrr inválida')); }
     const lib = u.protocol === 'https:' ? https : http;
     const data = body != null ? JSON.stringify(body) : null;
-    const req = lib.request(u, { method, headers: Object.assign({ Accept: 'application/json' }, data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}) },
+    const auth = liderarrrAuth();
+    const req = lib.request(u, { method, headers: Object.assign({ Accept: 'application/json' }, auth ? { Authorization: auth } : {}, data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}) },
       r => { let b = ''; r.on('data', d => b += d); r.on('end', () => { let j = b; try { j = b ? JSON.parse(b) : null; } catch (e) {} resolve({ status: r.statusCode, body: j }); }); });
     req.on('error', reject); req.setTimeout(12000, () => req.destroy(new Error('timeout')));
     if (data) req.write(data); req.end();
@@ -2135,7 +2155,7 @@ async function handleConfig(req, res, u) {
         listenbrainz: { connected: !!lb.token },
         lastfm: { apiKey: lf.apiKey || '', hasSecret: !!lf.apiSecret, connected: !!lf.sessionKey, callbackUri: LASTFM_CALLBACK },
         spotify: { configured: spotifyConfigured(), authorized: !!spotifyTok, clientId: (spotifyCfg && spotifyCfg.clientId) || '', redirectUri: SPOTIFY_REDIRECT, matched: Q.spotifyCount.get().n },
-        liderarrr: { url: liderarrrUrl(), connected: !!liderarrrUrl() },
+        liderarrr: { url: liderarrrUrl(), connected: !!liderarrrUrl(), hasAuth: !!(liderarrrCfg && liderarrrCfg.pass), user: (liderarrrCfg && liderarrrCfg.user) || '' },
         enabled: scrobble.enabledServices(scrobCfg || {}), pending: scrobble.pendingCount(db, scrobCfg || {}) });
     }
     const body = await readBody(req);
@@ -2166,9 +2186,14 @@ async function handleConfig(req, res, u) {
     if (sub === 'liderarrr') {
       if (body.clear) { saveLiderarrr(''); return sendJSON(res, { ok: true, connected: false }); }
       const url = String(body.url || '').trim(); if (!url) return sendJSON(res, { ok: false, error: 'Pon la URL de tu Liderarrr (p. ej. http://192.168.1.50:3861).' });
-      saveLiderarrr(url);
-      try { const r = await liderarrrFetch('GET', '/api/wanted/keys', null); if (r.status && r.status < 500) return sendJSON(res, { ok: true, connected: true, url: liderarrrUrl() }); saveLiderarrr(''); return sendJSON(res, { ok: false, error: 'Responde con HTTP ' + r.status + ' (¿es la URL correcta?).' }); }
-      catch (e) { saveLiderarrr(''); return sendJSON(res, { ok: false, error: 'No responde: ' + e.message }); }
+      saveLiderarrr(url, body.user, body.pass);   // credencial opcional (Basic Auth de Liderarrr)
+      try {
+        const r = await liderarrrFetch('GET', '/api/wanted/keys', null);
+        if (r.status >= 200 && r.status < 300) return sendJSON(res, { ok: true, connected: true, url: liderarrrUrl() });
+        saveLiderarrr('');
+        if (r.status === 401 || r.status === 403) return sendJSON(res, { ok: false, error: 'Liderarrr responde ' + r.status + ': requiere autenticación. Tu Liderarrr tiene LIDERARRR_AUTH activado — pon la contraseña (y el usuario si no es «liderarrr»).' });
+        return sendJSON(res, { ok: false, error: 'Responde con HTTP ' + r.status + ' (¿es la URL correcta?).' });
+      } catch (e) { saveLiderarrr(''); return sendJSON(res, { ok: false, error: 'No responde: ' + e.message }); }
     }
     if (sub === 'folders') { writeWatchFolders(Array.isArray(body.folders) ? body.folders : []); startWatching(); if (watchConfig() && watchConfig().music.length) _ingSchedule('music'); return sendJSON(res, { ok: true, ...configInfo() }); }
     if (sub === 'obsidian') { writeObsidian(String(body.vault || '').trim(), String(body.albumsFolder || '').trim()); startWatching(); _ingSchedule('vault'); return sendJSON(res, { ok: true, ...configInfo() }); }
