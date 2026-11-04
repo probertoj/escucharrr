@@ -146,7 +146,7 @@ async function handleLiderarrr(req, res, u) {
   try {
     const body = (req.method === 'POST' || req.method === 'DELETE' || req.method === 'PUT') ? await readBody(req) : null;
     const r = await liderarrrFetch(req.method, '/api/' + sub + (u.search || ''), body);
-    res.writeHead(r.status || 200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.writeHead(r.status || 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });   // datos en vivo de Liderarrr: que el navegador no los cachee nunca
     res.end(typeof r.body === 'string' ? r.body : JSON.stringify(r.body));
   } catch (e) { sendJSON(res, { ok: false, error: 'No se pudo contactar con Liderarrr: ' + e.message }); }
 }
