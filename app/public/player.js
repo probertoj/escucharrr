@@ -25,7 +25,7 @@ window.player = (function () {
   // lo que cambia es que la POSICIÓN del slider (0–1) mapea perceptualmente a dB desde el suelo
   // hasta 0 dB (unidad), con el extremo inferior en silencio real. Así el arrastre va fino: cada
   // tramo del recorrido cambia los dB por igual, en vez de amontonar todo el cambio audible arriba.
-  const VOL_FLOOR_DB = -60;                                   // suelo del fader (−60 dB → silencio)
+  const VOL_FLOOR_DB = -40;                                   // suelo del fader (−40 dB → silencio). Más suave que −60: evita la «zona muerta» en el cuarto inferior (al 25% ≈ −30 dB, aún audible). Ajusta este número para cambiar el tacto del volumen.
   // Tope de volumen (soft limit) estilo Roon (`volume_soft_limit` / presets `zone_settings_negN_db`):
   // dB máximo del fader; 0 = sin límite. El recorrido va de VOL_FLOOR_DB (silencio) al tope.
   let volLimitDb = 0; try { const n = parseFloat(localStorage.getItem('escucharrr.vollimit')); if (n <= 0 && n > VOL_FLOOR_DB) volLimitDb = n; } catch (e) {}
