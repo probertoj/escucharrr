@@ -76,6 +76,14 @@
     nav.innerHTML = html;
     document.body.insertBefore(nav, document.body.firstChild);
 
+    // Scrollbar auto-ocultable (como Roon): aparece mientras desplazas y se desvanece ~900 ms tras parar.
+    var sbt;
+    nav.addEventListener('scroll', function () {
+      nav.classList.add('scrolling');
+      clearTimeout(sbt);
+      sbt = setTimeout(function () { nav.classList.remove('scrolling'); }, 900);
+    }, { passive: true });
+
     document.getElementById('themebtn').addEventListener('click', function () {
       var order = ['auto', 'light', 'dark'];
       var next = order[(order.indexOf(theme()) + 1) % order.length];

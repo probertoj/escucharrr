@@ -42,7 +42,16 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);lin
 .appnav .theme{color:var(--muted);cursor:pointer;padding:7px;border-radius:8px;flex:none;background:none;border:none;display:inline-flex}
 .appnav .theme:hover{background:var(--surface-2);color:var(--text-2)}
 @media(min-width:920px){
-  .appnav{position:fixed;top:0;left:0;bottom:0;width:224px;flex-direction:column;align-items:stretch;gap:2px;border-bottom:none;border-right:1px solid var(--border);padding:22px 14px 78px;overflow-y:auto}
+  .appnav{position:fixed;top:0;left:0;bottom:0;width:224px;flex-direction:column;align-items:stretch;gap:2px;border-bottom:none;border-right:1px solid var(--border);padding:22px 14px 78px;overflow-y:auto;scrollbar-gutter:stable}
+  /* Scrollbar estilo Roon: overlay fino que solo aparece mientras desplazas o al pasar el ratón, y se desvanece
+     al parar (nav.js añade/quita .scrolling). Ancho constante → sin reflow. Firefox vía scrollbar-color. */
+  .appnav{scrollbar-width:thin;scrollbar-color:transparent transparent}
+  .appnav::-webkit-scrollbar{width:11px}
+  .appnav::-webkit-scrollbar-track{background:transparent}
+  .appnav::-webkit-scrollbar-thumb{background-color:transparent;border-radius:999px;border:3px solid transparent;background-clip:padding-box;transition:background-color .4s ease .2s}
+  .appnav.scrolling,.appnav:hover{scrollbar-color:var(--muted) transparent}
+  .appnav.scrolling::-webkit-scrollbar-thumb,.appnav:hover::-webkit-scrollbar-thumb{background-color:var(--muted);transition:background-color .12s ease}
+  .appnav.scrolling::-webkit-scrollbar-thumb:hover,.appnav:hover::-webkit-scrollbar-thumb:hover{background-color:var(--text-2)}
   .appnav .brand{font-size:23px;margin:2px 8px 18px}
   .appnav .navsec{display:block;font-size:11px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin:17px 12px 6px}
   .appnav .navsec:first-of-type{margin-top:4px}
