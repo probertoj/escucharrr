@@ -158,4 +158,49 @@ function pruneGraph(db, log) {
   return r;
 }
 
-module.exports = { pruneMissingFiles, pruneGraph, isUnder };
+// Repara "discos fantasma" de rips con TPOS roto: algunos rips etiquetan DISCNUMBER = TRACKNUMBER, así que
+// cada pista cae en SU PROPIO disco (N medios de 1 pista) y el álbum sale partido en N discos de una canción
+// (p. ej. Coldplay "Ghost Stories" con 9 discos de 1 tema). Roon lo arregla identificando contra su nube;
+// aquí lo detectamos por una FIRMA INEQUÍVOCA y conservadora para no tocar multidisco legítimo:
+//   · el release tiene >1 medio y CADA medio tiene exactamente 1 pista (nº de discos == nº de pistas), y
+//   · TODOS sus ficheros están en UNA sola carpeta (plana, sin subcarpetas de disco CD1/CD2…).
+// Un multidisco real tiene varias pistas por disco (nº pistas > nº discos) o vive en subcarpetas → nunca casa.
+// (Un 2-CD real con 1 tema por CD en carpeta plana es rarísimo; ese caso lo resolvería la identificación.)
+// Colapsa: mueve todas las pistas al primer medio y borra los medios que quedan vacíos. Idempotente.
+const _DISC_DIR_RE_P = /^(?:cd|dis[ck]|disco|disque|volume|vol)\s*\.?\s*0*(\d{1,2})$/i;
+function collapseBogusDiscs(db, log) {
+  const path = require('path');
+  // Candidatos por el grafo: releases con >1 medio y una pista por medio (nº medios == nº pistas).
+  const cand = db.prepare(`
+    SELECT rel.id rel, COUNT(DISTINCT m.id) media, COUNT(tr.id) tracks
+    FROM "release" rel JOIN medium m ON m.release_id=rel.id JOIN track tr ON tr.medium_id=m.id
+    GROUP BY rel.id HAVING media>1 AND media=tracks`).all();
+  if (!cand.length) return 0;
+  const dirsOf = db.prepare(`SELECT DISTINCT lf.path FROM medium m JOIN track tr ON tr.medium_id=m.id
+     JOIN local_file lf ON lf.track_id=tr.id WHERE m.release_id=?`);
+  const mediaOf = db.prepare(`SELECT id, position FROM medium WHERE release_id=? ORDER BY position`);
+  const moveTracks = db.prepare('UPDATE track SET medium_id=? WHERE medium_id=?');
+  const delMed = db.prepare('DELETE FROM medium WHERE id=?');
+  let fixed = 0;
+  db.exec('BEGIN');
+  try {
+    for (const c of cand) {
+      const paths = dirsOf.all(c.rel).map(r => r.path);
+      if (!paths.length) continue;
+      const dirs = new Set(paths.map(p => path.dirname(p).toLowerCase()));
+      if (dirs.size !== 1) continue;                               // más de una carpeta → no es la firma (posible multidisco/versión)
+      const only = path.basename([...dirs][0]);
+      if (_DISC_DIR_RE_P.test(only)) continue;                     // la carpeta ES un disco (CD1…) → multidisco real
+      const meds = mediaOf.all(c.rel);
+      if (meds.length < 2) continue;
+      const target = meds[0].id;                                   // primer medio (menor posición) = destino
+      for (const m of meds.slice(1)) { moveTracks.run(target, m.id); delMed.run(m.id); }  // junta pistas y borra medios vacíos
+      fixed++;
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  if (fixed && log) log(`discos fantasma reparados (TPOS roto, colapsados a 1 disco): ${fixed} álbum(es)`);
+  return fixed;
+}
+
+module.exports = { pruneMissingFiles, pruneGraph, collapseBogusDiscs, isUnder };

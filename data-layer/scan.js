@@ -324,6 +324,7 @@ if (PRUNE) {
   // (seenPaths), y aun así con lápida (missing_count >= umbral). Gated al montaje sano.
   prune.pruneMissingFiles(db, [path.resolve(ROOT)], (m) => console.log('  ' + m), { seenPaths, okDirs, mountHealthy, scanSeq: SCAN_SEQ, missThreshold: MISS_THRESHOLD, nrm });
   prune.pruneGraph(db, (m) => console.log('  ' + m));
+  prune.collapseBogusDiscs(db, (m) => console.log('  ' + m));   // repara "discos fantasma" de rips con TPOS=TRACKNUMBER
 }
 
 // FTS (instantánea por prefijo): artistas + álbumes
