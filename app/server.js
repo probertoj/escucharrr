@@ -285,7 +285,10 @@ function buildQ(db) { return {
   // ── artista ──
   artist: db.prepare(`SELECT id,name,sort_name,type,country,founded,bio,disambiguation FROM artist WHERE id=?`),
   artistBioProv: db.prepare(`SELECT source,source_ref FROM provenance WHERE subject_type='artist' AND subject_id=? AND field='bio'`),
+  artistBioEdProv: db.prepare(`SELECT source,source_ref FROM provenance WHERE subject_type='artist' AND subject_id=? AND field='bio_editorial'`),   // procedencia de la bio editorial (separada de la del usuario)
   artistBioEdit: db.prepare(`SELECT value v FROM user_edit WHERE subject_type='artist' AND subject_id=? AND field='bio'`),
+  setArtistBio: db.prepare(`UPDATE artist SET bio=?, updated_at=datetime('now') WHERE id=?`),   // bio editorial (Wikipedia) bajo demanda
+  setBioProv: db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at) VALUES(?,?,?,?,?,datetime('now')) ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source=excluded.source, source_ref=excluded.source_ref, fetched_at=datetime('now')`),
   artistTier: db.prepare(`SELECT tier_key FROM rating_tier WHERE subject_type='artist' AND subject_id=?`),
   artistAlbums: db.prepare(`SELECT DISTINCT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
      FROM v_album a JOIN release_group rg ON rg.id=a.id
@@ -811,9 +814,19 @@ function work(id) {
 function artist(id) {
   const a = Q.artist.get(id); if (!a) return null;
   a.composed = Q.artistWorks.all(id);      // obras compuestas por este artista
-  const edit = Q.artistBioEdit.get(id);
-  a.bio = edit ? edit.v : a.bio;
-  a.bio_source = edit ? { source: 'user' } : (Q.artistBioProv.get(id) || null);
+  // Biografía con selector de FUENTE (como las reseñas de álbum): tu bio (editable; manda) + editorial de
+  // Wikipedia (por defecto en inglés). artist.bio = texto editorial; user_edit = el tuyo.
+  const editorialBio = a.bio;
+  const userBio = Q.artistBioEdit.get(id);
+  // procedencia de la editorial: preferentemente 'bio_editorial'; si no, la vieja 'bio' cuando NO es del usuario
+  const edProv = Q.artistBioEdProv.get(id) || (() => { const p = Q.artistBioProv.get(id); return (p && p.source && p.source !== 'user') ? p : null; })();
+  a.bios = [];
+  if (userBio && userBio.v) a.bios.push({ source: 'user', label: 'Tu bio', editable: true, text: userBio.v, ref: null });
+  if (editorialBio) a.bios.push({ source: (edProv && edProv.source) || 'editorial', label: (edProv && edProv.source === 'wikipedia') ? 'Wikipedia' : 'Editorial', editable: false, text: editorialBio, ref: (edProv && edProv.source_ref) || null });
+  a.rawUserBio = (userBio && userBio.v) || '';
+  a.bio = a.bios.length ? a.bios[0].text : null;                                   // compat: la primera (tu bio manda)
+  a.bio_source = a.bios.length ? { source: a.bios[0].source, source_ref: a.bios[0].ref } : null;
+  a.has_editorial = a.bios.some(b => b.source !== 'user');
   a.tier_key = (Q.artistTier.get(id) || {}).tier_key || null;
   a.genres = gmAgg(Q.artistGenres.all(id));
   a.albums = Q.artistAlbums.all(id);
@@ -825,6 +838,52 @@ function artist(id) {
   // duplicados exactos de nombre (p. ej. 4 «blink-182») para ofrecer unirlos, con su nº de álbumes
   a.dupes = Q.artistDupes.all(id, a.name).map(d => ({ id: d.id, name: d.name, disambiguation: d.disambiguation, mbid: d.mbid, album_count: (Q.artistAlbumCount.get(d.id) || {}).n || 0 }));
   return a;
+}
+// ── Biografía editorial del artista desde Wikipedia (INGLÉS por defecto), bajo demanda ──
+const WIKI_UA = 'escucharrr/0.1 ( https://github.com/probertoj/escucharrr )';
+async function wikiSummary(lang, title) {
+  try {
+    const r = await fetch(`https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`, { headers: { 'User-Agent': WIKI_UA, 'Accept': 'application/json' } });
+    if (!r.ok) return null; const j = await r.json();
+    if (!j || !j.extract || j.type === 'disambiguation') return null;
+    const url = (j.content_urls && j.content_urls.desktop && j.content_urls.desktop.page) || `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(title)}`;
+    return { extract: j.extract.trim(), url, lang };
+  } catch (e) { return null; }
+}
+async function fetchArtistBio(a) {
+  if (a.mbid) {
+    try {
+      const mb = await mbFetch('artist/' + a.mbid + '?inc=url-rels&fmt=json');   // mbFetch limita a ~1/s
+      const rels = (mb && mb.relations) || []; let qid = null, wikiUrl = null;
+      for (const rel of rels) { const u = rel.url && rel.url.resource; if (!u) continue; if (rel.type === 'wikidata') { const m = u.match(/(Q\d+)/); if (m) qid = m[1]; } else if (rel.type === 'wikipedia') wikiUrl = u; }
+      if (qid) {
+        try {
+          const wr = await fetch(`https://www.wikidata.org/wiki/Special:EntityData/${qid}.json`, { headers: { 'User-Agent': WIKI_UA } });
+          if (wr.ok) { const wj = await wr.json(); const sl = (wj.entities && wj.entities[qid] && wj.entities[qid].sitelinks) || {};
+            if (sl.enwiki) { const s = await wikiSummary('en', sl.enwiki.title); if (s) return s; }   // inglés primero
+            const any = Object.keys(sl).find(k => /wiki$/.test(k) && !/(wikiquote|wikisource|commons|wikinews|wikivoyage|wiktionary)/.test(k));
+            if (any) { const s = await wikiSummary(any.replace(/wiki$/, ''), sl[any].title); if (s) return s; }
+          }
+        } catch (e) {}
+      }
+      if (wikiUrl) { const m = wikiUrl.match(/^https?:\/\/([a-z-]+)\.wikipedia\.org\/wiki\/(.+)$/); if (m) { const s = await wikiSummary(m[1], decodeURIComponent(m[2])); if (s) return s; } }
+    } catch (e) {}
+  }
+  return await wikiSummary('en', a.name);   // sin MBID / sin artículo: en.wikipedia por nombre
+}
+async function handleArtistEditorial(req, res, u) {
+  try {
+    const id = parseInt(u.searchParams.get('id'), 10);
+    const a = Q.artist.get(id); if (!a) return sendJSON(res, { ok: false, error: 'artista no encontrado' });
+    const prov = Q.artistBioEdProv.get(id);
+    if (a.bio && prov) return sendJSON(res, { ok: true, bio: a.bio, source: prov.source, source_ref: prov.source_ref, cached: true });   // ya cacheada
+    const ed = await fetchArtistBio(a);
+    if (!ed) return sendJSON(res, { ok: true, bio: null });
+    Q.setArtistBio.run(ed.extract, id);
+    Q.setBioProv.run('artist', id, 'bio_editorial', 'wikipedia', ed.url);
+    sseBroadcast('library');
+    return sendJSON(res, { ok: true, bio: ed.extract, source: 'wikipedia', source_ref: ed.url });
+  } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 // ── Unir artistas (Roon merge): reasigna álbumes/créditos de los duplicados al artista destino y
 // borra los duplicados. El vínculo artista→álbum es acn.artist_id; los roles de pista, credit.artist_id.
@@ -2272,6 +2331,7 @@ http.createServer((req, res) => {
   if (u.pathname === '/api/identify/apply' && req.method === 'POST') return void handleIdentifyApply(req, res);
   if (u.pathname === '/api/artist/merge' && req.method === 'POST') return void handleArtistMerge(req, res);
   if (u.pathname === '/api/artist/edit' && req.method === 'POST') return void handleArtistEdit(req, res);
+  if (u.pathname === '/api/artist/editorial' && req.method === 'GET') return void handleArtistEditorial(req, res, u);
   if (u.pathname === '/api/artist/search' && req.method === 'GET') { const id = parseInt(u.searchParams.get('id'), 10) || 0; const q = (u.searchParams.get('q') || '').trim(); if (q.length < 2) return sendJSON(res, { ok: true, items: [] }); return sendJSON(res, { ok: true, items: Q.artistSearch.all(id, '%' + q + '%', q).map(a => ({ id: a.id, name: a.name, disambiguation: a.disambiguation, album_count: (Q.artistAlbumCount.get(a.id) || {}).n || 0 })) }); }
   if (u.pathname === '/api/album/reanalyze' && req.method === 'POST') return void handleReanalyze(req, res);
   if (u.pathname === '/api/playlists' || u.pathname === '/api/playlist' || u.pathname.startsWith('/api/playlist/')) return void handlePlaylists(req, res, u);
