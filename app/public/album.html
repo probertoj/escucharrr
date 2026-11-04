@@ -76,7 +76,8 @@ function renderAlbum(a){
       <div style="flex:none"><div class="cov"><img src="/api/cover?rg=${a.id}&p=${encodeURIComponent(a.cover_pref||'auto')}" alt="" draggable="false" style="width:100%;height:100%;object-fit:cover;display:block"></div><div class="coverpref">${[['auto','Auto'],['file','Archivo'],['download','Descargada'],['none','Ninguna']].map(([v,l])=>`<span class="cpref${(a.cover_pref||'auto')===v?' on':''}" data-v="${v}" title="Fuente de la portada">${l}</span>`).join('')}</div></div>
       <div style="flex:1;min-width:240px">
         <div style="color:var(--text-2);font-size:13px">${esc(a.primary_type||'álbum')} · ${a.year||'—'}</div>
-        <h1>${esc(a.title)}</h1>
+        <h1 style="display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap">${esc(a.title)}<button class="titleedit" title="Editar el título del álbum" aria-label="Editar título" style="flex:none;background:none;border:none;color:var(--text-2);cursor:pointer;padding:3px;display:inline-flex;align-items:center">${window.icon('edit',17)}</button></h1>
+        ${(a.orig_title&&a.orig_title!==a.title)?`<div style="font-size:12px;color:var(--text-2);margin-top:-4px;margin-bottom:2px">Original: ${esc(a.orig_title)} · <a href="#" class="titlerevert" style="color:var(--accent)">revertir</a></div>`:''}
         <div style="font-size:15px">${artistLink}</div>
         ${(a.tracks||[]).length?`<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn-accent" id="playalbum" style="display:inline-flex;align-items:center;gap:6px">${window.icon('play',15)}Reproducir</button><button id="radioalbum" title="Radio: reproduce y extiende con pistas afines de tu biblioteca" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('radio',15)}Radio</button><button id="mixalbum" title="Mezcla: una lista afín a este álbum" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('music',15)}Mezcla</button><button id="queuealbum" title="Añadir a la cola" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('queue',15)}A la cola</button><button id="nextalbum" title="Reproducir a continuación" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('next',15)}A continuación</button><button id="addalbum" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('plus',15)}Añadir a lista</button><button id="identifyalbum" title="${a.mbid?'Ya identificado con MusicBrainz — reidentificar':'Emparejar con MusicBrainz por nº de pistas y duraciones'}" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon(a.mbid?'check':'search',15)}${a.mbid?'Reidentificar':'Identificar'}</button>${a.has_audio?`<button id="reanalyzealbum" ${a.reanalyzing?'disabled':''} title="Recalcula el loudness/ReplayGain y la barra de onda de este álbum (en segundo plano, sin tocar el escaneo global)" style="cursor:${a.reanalyzing?'default':'pointer'};background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px;opacity:${a.reanalyzing?'.65':'1'}">${window.icon('refresh',15)}${a.reanalyzing?'Analizando…':'Reanalizar'}</button>`:''}<span id="retoslot"></span></div>`:''}
         <div class="meta">
@@ -183,7 +184,30 @@ document.addEventListener('click',e=>{
   const rt=e.target.closest('#app .revtoggle'); if(rt){ const box=document.getElementById('aboutbox'); const col=box.classList.toggle('collapsed'); rt.textContent=col?'Ver más':'Ver menos'; return; }
   const rs=e.target.closest('#app .revsrc'); if(rs){ showReview(+rs.dataset.i); return; }
   const ae=e.target.closest('#app .aboutedit'); if(ae){ openAboutEditor(); return; }
+  const te=e.target.closest('#app .titleedit'); if(te){ openTitleEditor(); return; }
+  const tv=e.target.closest('#app .titlerevert'); if(tv){ e.preventDefault(); editField('title','').then(r=>{ if(r.ok){toast('Título restaurado');load();}else toast(r.error||'error'); }); return; }
 });
+function openTitleEditor(){
+  const a=window.ALB; if(!a)return;
+  if(document.getElementById('titledlg'))return;
+  const ov=document.createElement('div'); ov.id='titledlg'; ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:120';
+  ov.innerHTML=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;width:min(440px,92vw);box-shadow:0 12px 40px rgba(0,0,0,.4)">
+    <div style="font-weight:600;font-size:15px;margin-bottom:10px;display:inline-flex;align-items:center;gap:7px">${window.icon('edit',16)}Editar título del álbum</div>
+    <input id="titlein" type="text" value="${esc(a.title||'')}" style="width:100%;font:inherit;font-size:15px;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--text);box-sizing:border-box">
+    <div style="font-size:12px;color:var(--text-2);margin-top:8px">No toca las etiquetas de tus ficheros ni el escaneo: solo cambia cómo se muestra y se empareja aquí.${(a.orig_title&&a.orig_title!==a.title)?` Original: <b style="color:var(--text)">${esc(a.orig_title)}</b>.`:''}</div>
+    <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
+      <button id="titlecancel" style="padding:7px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer;color:var(--text)">Cancelar</button>
+      <button id="titlesave" class="btn-accent" style="padding:7px 16px">Guardar</button>
+    </div></div>`;
+  document.body.appendChild(ov);
+  const inp=document.getElementById('titlein'); inp.focus(); inp.select();
+  const close=()=>ov.remove();
+  ov.addEventListener('click',ev=>{ if(ev.target===ov)close(); });
+  const save=()=>{ const v=inp.value.trim(); if(!v){toast('El título no puede estar vacío');return;} editField('title',v).then(r=>{ if(r.ok){toast('Título actualizado');close();load();}else toast(r.error||'error'); }); };
+  document.getElementById('titlecancel').onclick=close;
+  document.getElementById('titlesave').onclick=save;
+  inp.addEventListener('keydown',ev=>{ if(ev.key==='Enter'){ev.preventDefault();save();} else if(ev.key==='Escape'){ev.preventDefault();close();} });
+}
 function openAboutEditor(){
   const box=document.getElementById('aboutbox'); if(!box||box.querySelector('textarea'))return;
   const existing=rawAbout;   // el markdown original, no el texto ya renderizado

@@ -41,6 +41,33 @@ function migrate(db) {
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_isrc ON recording(isrc)');
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_acoustid ON recording(acoustid)');
   db.exec('CREATE INDEX IF NOT EXISTS ix_file_size ON local_file(size_bytes)');   // para reconciliar movimientos/renombrados por identidad
+  // v_album.title ahora prioriza el título editado por el usuario (user_edit field='title') sobre rg.title.
+  // Recreamos la vista en BD existentes (CREATE VIEW IF NOT EXISTS no la actualizaría). El título original
+  // queda como orig_title: ensureRg sigue casando por rg.title, así que un reescaneo NO duplica el álbum.
+  try {
+    const def = db.prepare("SELECT sql FROM sqlite_master WHERE type='view' AND name='v_album'").get();
+    if (def && !/orig_title/.test(def.sql || '')) {
+      db.exec('DROP VIEW v_album');
+      db.exec(`CREATE VIEW v_album AS
+SELECT rg.id,
+       COALESCE((SELECT ue.value FROM user_edit ue
+                   WHERE ue.subject_type='release_group' AND ue.subject_id=rg.id AND ue.field='title'),
+                rg.title) AS title,
+       rg.title AS orig_title,
+       rg.primary_type, rg.first_release,
+       substr(rg.first_release,1,4) AS year,
+       (SELECT group_concat(acn.name || acn.join_phrase,'')
+          FROM artist_credit_name acn WHERE acn.artist_credit_id = rg.artist_credit_id
+          ORDER BY acn.position) AS artist,
+       rt.tier_key, t.rank AS tier_rank,
+       (SELECT AVG(stars) FROM rating r WHERE r.subject_type='release_group' AND r.subject_id=rg.id) AS album_stars,
+       EXISTS(SELECT 1 FROM flag f WHERE f.subject_type='release_group' AND f.subject_id=rg.id AND f.flag='favorite') AS is_favorite
+FROM release_group rg
+LEFT JOIN rating_tier rt ON rt.subject_type='release_group' AND rt.subject_id=rg.id
+LEFT JOIN tier t ON t.key = rt.tier_key`);
+      added.push('view:v_album(title override)');
+    }
+  } catch (e) {}
   return added;
 }
 

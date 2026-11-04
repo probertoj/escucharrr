@@ -68,6 +68,32 @@ function initAppSchema(d) {
     `CREATE INDEX IF NOT EXISTS ix_flag_subject ON flag(subject_type, subject_id)`,
     `CREATE INDEX IF NOT EXISTS ix_rating_subject ON rating(subject_type, subject_id)`,
   ]) { try { d.exec(ix); } catch (e) {} }
+  // v_album.title prioriza el título editado por el usuario (user_edit field='title') sobre rg.title, y expone
+  // orig_title. El escaneo corre migrate.js, pero el servidor puede arrancar solo: recrea aquí la vista si está
+  // en la forma antigua (CREATE VIEW IF NOT EXISTS no la actualizaría). rg.title queda intacto → ensureRg no duplica.
+  try {
+    const def = d.prepare("SELECT sql FROM sqlite_master WHERE type='view' AND name='v_album'").get();
+    if (def && !/orig_title/.test(def.sql || '')) {
+      d.exec('DROP VIEW v_album');
+      d.exec(`CREATE VIEW v_album AS
+SELECT rg.id,
+       COALESCE((SELECT ue.value FROM user_edit ue
+                   WHERE ue.subject_type='release_group' AND ue.subject_id=rg.id AND ue.field='title'),
+                rg.title) AS title,
+       rg.title AS orig_title,
+       rg.primary_type, rg.first_release,
+       substr(rg.first_release,1,4) AS year,
+       (SELECT group_concat(acn.name || acn.join_phrase,'')
+          FROM artist_credit_name acn WHERE acn.artist_credit_id = rg.artist_credit_id
+          ORDER BY acn.position) AS artist,
+       rt.tier_key, t.rank AS tier_rank,
+       (SELECT AVG(stars) FROM rating r WHERE r.subject_type='release_group' AND r.subject_id=rg.id) AS album_stars,
+       EXISTS(SELECT 1 FROM flag f WHERE f.subject_type='release_group' AND f.subject_id=rg.id AND f.flag='favorite') AS is_favorite
+FROM release_group rg
+LEFT JOIN rating_tier rt ON rt.subject_type='release_group' AND rt.subject_id=rg.id
+LEFT JOIN tier t ON t.key = rt.tier_key`);
+    }
+  } catch (e) {}
 }
 let db = new DatabaseSync(DB_PATH);
 initAppSchema(db);
@@ -191,7 +217,7 @@ function buildQ(db) { return {
   countryAll: db.prepare(`SELECT release_group_id id, country c FROM "release" WHERE country IS NOT NULL GROUP BY release_group_id`),
   labelAll: db.prepare(`SELECT rel.release_group_id id, l.name c FROM "release" rel JOIN label l ON l.id=rel.label_id GROUP BY rel.release_group_id`),
   tagsAll:   db.prepare(`SELECT ti.subject_id id, group_concat(t.name,'|') gs FROM tag_item ti JOIN tag t ON t.id=ti.tag_id WHERE ti.subject_type='release_group' GROUP BY ti.subject_id`),
-  album: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.tier_rank,
+  album: db.prepare(`SELECT a.id,a.title,a.orig_title,a.artist,a.year,a.primary_type,a.tier_key,a.tier_rank,
       (SELECT label FROM tier WHERE key=a.tier_key) tier_label, a.album_stars, a.is_favorite,
       EXISTS(SELECT 1 FROM flag f WHERE f.subject_type='release_group' AND f.subject_id=a.id AND f.flag='listen_later') listen_later,
       (SELECT acn.artist_id FROM artist_credit_name acn JOIN release_group rg ON rg.artist_credit_id=acn.artist_credit_id
@@ -2129,6 +2155,13 @@ function handleEditSync(body) {
     const on = !!body.value;
     if (on) Q.edSetFlag.run(st, sid, field); else Q.edDelFlag.run(st, sid, field);
     return { field, value: on };
+  }
+  if (field === 'title') {   // renombrar álbum: override en user_edit (v_album.title lo prioriza); rg.title queda intacto para que el reescaneo no duplique
+    if (st !== 'release_group') throw new Error('solo se puede editar el título de un álbum');
+    const v = body.value == null ? '' : String(body.value).trim();
+    if (v === '') { Q.edDelUserEdit.run(st, sid, 'title'); Q.edDelProv.run(st, sid, 'title'); return { field, value: null }; }
+    Q.edSetUserEdit.run(st, sid, 'title', v); Q.edSetProv.run(st, sid, 'title');
+    return { field, value: v };
   }
   if (EDIT_TEXT_FIELDS.has(field)) {
     const v = body.value == null ? '' : String(body.value);

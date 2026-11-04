@@ -377,7 +377,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
 
 -- Álbum con su artista, tier, rank de tier, media de estrellas, año y favorito.
 CREATE VIEW IF NOT EXISTS v_album AS
-SELECT rg.id, rg.title, rg.primary_type, rg.first_release,
+SELECT rg.id,
+       COALESCE((SELECT ue.value FROM user_edit ue
+                   WHERE ue.subject_type='release_group' AND ue.subject_id=rg.id AND ue.field='title'),
+                rg.title) AS title,
+       rg.title AS orig_title,
+       rg.primary_type, rg.first_release,
        substr(rg.first_release,1,4) AS year,
        (SELECT group_concat(acn.name || acn.join_phrase,'')
           FROM artist_credit_name acn WHERE acn.artist_credit_id = rg.artist_credit_id
