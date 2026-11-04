@@ -217,22 +217,61 @@ function readdirRetry(dir, tries = 6) {
   }
   throw last;
 }
+function statRetry(file, tries = 4) {   // stat de un fichero de red con reintentos (flaqueo SMB transitorio)
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try { return fs.statSync(file); }
+    catch (e) { last = e; if (i < tries - 1) sleepSync(300 * (i + 1)); }
+  }
+  throw last;
+}
 // okDirs: carpetas enumeradas CON ÉXITO en este escaneo. seenPaths: ficheros de música VISTOS en
 // disco (normalizados), se parseen o no. La poda solo retira un fichero si su carpeta está en
 // okDirs y su ruta NO está en seenPaths — así un fallo de lectura (SMB) nunca marca nada ausente.
 const okDirs = new Set();
 const seenPaths = new Set();
+const AUDIO_RE = /\.(flac|wav|dsf|dff|mp3|m4a|aac|aiff|aif|ogg|oga|opus)$/i;   // sin pérdida + MP3/M4A/AAC/AIFF/OGG/Opus
+const deferredDirs = [];        // carpetas ilegibles tras los reintentos cortos → se reintentan en pasadas posteriores
+let consecFail = 0;             // carpetas ilegibles CONSECUTIVAS: señal de que el montaje/red cayó
+// Enumera una carpeta; si falla tras los reintentos cortos, la DIFIERE (aún no la salta). Ante una racha de
+// fallos (share caído), espera a que el montaje reconecte en vez de quemar cientos de carpetas a 6 reintentos.
+function enumDir(dir) {
+  try { const ents = readdirRetry(dir); okDirs.add(nrm(dir)); consecFail = 0; return ents; }
+  catch (e) {
+    if (++consecFail === 5 || (consecFail > 5 && consecFail % 25 === 0)) {
+      console.warn('  [share] ' + consecFail + ' carpetas seguidas ilegibles: el montaje parece caído; espero reconexión (15s)…');
+      sleepSync(15000);
+      try { fs.readdirSync(path.resolve(ROOT)); consecFail = 0; } catch (x) {}   // la raíz respondió → el share volvió
+    }
+    deferredDirs.push({ dir, code: e.code || e.message });
+    return null;
+  }
+}
 function walk(dir, out) {
-  let ents; try { ents = readdirRetry(dir); } catch (e) { console.warn('  (carpeta ilegible tras reintentos, saltada):', dir, '(' + (e.code || e.message) + ')'); try { insSkip.run(dir, 'carpeta ilegible: ' + (e.code || e.message)); } catch (x) {} return; }
-  okDirs.add(nrm(dir));
+  const ents = enumDir(dir);
+  if (!ents) return;            // diferida: se reintentará; sus ficheros NO entran en seenPaths → quedan protegidos
   for (const e of ents) {
     const f = path.join(dir, e.name);
     let isDir = false; try { isDir = e.isDirectory(); } catch (x) {}
     if (isDir) walk(f, out);
-    else if (/\.(flac|wav|dsf|dff|mp3|m4a|aac|aiff|aif|ogg|oga|opus)$/i.test(e.name)) { out.push(f); seenPaths.add(nrm(f)); }   // sin pérdida + MP3/M4A/AAC/AIFF/OGG/Opus
+    else if (AUDIO_RE.test(e.name)) { out.push(f); seenPaths.add(nrm(f)); }
   }
 }
 const files = []; walk(path.resolve(ROOT), files);
+// Pasadas de recuperación sobre carpetas DIFERIDAS por flaqueo transitorio del SMB: hasta 3, con backoff
+// creciente. Re-enumerar una diferida re-descubre su subárbol (al fallar no añadió nada, así que no duplica).
+// Las que sigan ilegibles al final quedan FUERA de okDirs → sus ficheros están protegidos de la poda.
+for (let pass = 1; pass <= 3 && deferredDirs.length; pass++) {
+  const retry = deferredDirs.splice(0);   // vaciar; walk re-añade las que sigan fallando, para la pasada siguiente
+  console.warn('  [share] recuperación pasada ' + pass + '/3: reintentando ' + retry.length + ' carpeta(s) diferida(s)…');
+  sleepSync(5000 * pass);                  // 5s / 10s / 15s: da margen al SMB para reconectar
+  consecFail = 0;
+  for (const d of retry) walk(d.dir, files);
+}
+if (deferredDirs.length) {
+  console.warn('  [share] ' + deferredDirs.length + ' carpeta(s) siguen ilegibles tras todas las pasadas (sus ficheros quedan PROTEGIDOS de la poda):');
+  for (const d of deferredDirs) { console.warn('    ' + d.dir + ' (' + d.code + ')'); try { insSkip.run(d.dir, 'carpeta ilegible: ' + d.code); } catch (x) {} }
+}
 // Gate de montaje (modelo Roon "available but does not exist"): solo se puede podar si la RAÍZ se
 // enumeró con éxito y vimos algún fichero. Si no, el volumen/red está caído o incompleto → no restar.
 const mountHealthy = okDirs.has(nrm(ROOT)) && seenPaths.size > 0;
@@ -262,6 +301,7 @@ let ok = 0, ident = 0, moved = 0, normed = 0;
 db.exec('BEGIN');
 try {
   for (const file of files) {
+   try {
     const ext = path.extname(file).slice(1).toLowerCase();
     const parseOne = () => ext === 'flac' ? readFlac(file) : ext === 'dsf' ? readDsf(file) : ext === 'dff' ? readDff(file)
       : ext === 'mp3' ? TAGS.readMp3(file) : (ext === 'm4a' || ext === 'aac') ? TAGS.readMp4(file)
@@ -271,7 +311,7 @@ try {
     if (!parsed && perr) { console.warn('  error leyendo', path.basename(file), perr.message); try { insSkip.run(file, 'error al leer: ' + (perr.code || perr.message)); } catch (x) {} }
     if (!parsed) continue;
     const fmtLabel = (ext === 'dsf' || ext === 'dff') ? dsdLabel(parsed.info.sampleRate) : ext.toUpperCase();
-    const st = fs.statSync(file), t = parsed.tags, inf = parsed.info;
+    const st = statRetry(file), t = parsed.tags, inf = parsed.info;
     const dir = path.dirname(file);
     // Multi-disco: si el fichero está en una carpeta de disco (CD1/CD2…), el álbum es la carpeta padre.
     const bnDir = path.basename(dir);
@@ -331,6 +371,9 @@ try {
     if (rec === 'move') moved++; else if (rec === 'norm') normed++;
     S.insFile.run(file, fmtLabel, inf.sampleRate, inf.bits, inf.channels, inf.durationMs, st.size, String(st.mtimeMs), isrc, acoustid, fingerprint, trackId, recId, matchBy, matchConf, SCAN_SEQ);
     ok++;
+   } catch (fileErr) {   // error transitorio en un fichero (stat/lectura): no abortar todo el escaneo, saltarlo y seguir
+    console.warn('  error procesando', path.basename(file), '(' + (fileErr.code || fileErr.message) + ')'); try { insSkip.run(file, 'error al procesar: ' + (fileErr.code || fileErr.message)); } catch (x) {}
+   }
   }
   db.exec('COMMIT');
 } catch (e) { db.exec('ROLLBACK'); throw e; }
