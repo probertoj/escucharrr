@@ -12,15 +12,22 @@
 .rcard .nm{font-weight:600;font-size:15px;line-height:1.25}
 .rcard .mt{font-size:12.5px;color:var(--text-2);margin-top:3px}
 .ring{flex:none}
-.item{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--border)}
-.item .pos{width:26px;text-align:right;color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
-.item .ti{flex:1;min-width:0}
-.item .ti .a{font-size:14px}
-.item .ti .b{font-size:12.5px;color:var(--text-2)}
-.item .act{display:flex;gap:6px;align-items:center}
+/* rejilla de portadas estilo colección de Plex: todos los discos a la vista, se reproducen desde aquí */
+.cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:18px 16px;margin-top:10px}
+.gc .cov{position:relative;display:block;aspect-ratio:1;border-radius:10px;overflow:hidden;background:var(--surface-2);text-decoration:none}
+.gc .cov img{width:100%;height:100%;object-fit:cover;display:block}
+.gc .cov .playov{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.34);color:#fff;opacity:0;transition:opacity .12s}
+.gc .cov:hover .playov{opacity:1}
+.gc.missing .cov{display:flex;align-items:center;justify-content:center;color:var(--muted);border:1px dashed var(--border);background:var(--surface)}
+.gc .t{font-size:13px;font-weight:600;margin-top:8px;line-height:1.25;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.gc .s{font-size:12px;color:var(--text-2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gc.missing .t,.gc.missing .s{opacity:.72}
+.gc .foot{margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .pill{font-size:11px;border-radius:999px;padding:2px 9px;background:var(--surface-2);color:var(--text-2)}
 .pill.own{background:var(--accent-bg);color:var(--accent)}
 .pill.heard{background:var(--surface-2);color:var(--text)}
+.wbtn2{cursor:pointer;font-size:12px;border:1px solid var(--border);background:var(--surface-2);color:var(--text-2);border-radius:999px;padding:3px 10px;display:inline-flex;align-items:center;gap:5px}
+.wbtn2:hover{border-color:var(--accent);color:var(--accent)}
 .btn-ghost{cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 11px;font-size:13px;display:inline-flex;align-items:center;gap:5px}
 textarea{width:100%;min-height:92px;font:inherit;padding:9px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:var(--text);box-sizing:border-box}
 .note{background:var(--surface-2);border-radius:12px;padding:16px 18px;color:var(--text-2);font-size:14px;line-height:1.55}
@@ -89,18 +96,20 @@ async function loadDetail(id){
       <div style="font-size:13px;color:var(--text-2);margin-top:3px">${c.owned}/${c.item_count} tienes · ${c.listened||0}/${c.item_count} oídos (Liderarrr)</div></div>
     ${ownedRg.length?`<button class="btn-accent" id="retoradio" style="padding:8px 14px;display:inline-flex;align-items:center;gap:6px">${window.icon('radio',15)}Reto radio</button>`:''}</div>`;
   h += `<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap"><input id="additems" placeholder="Añadir discos: Artista - Álbum (una por línea)" style="flex:1;min-width:220px"><button class="btn-ghost" id="addbtn">Añadir</button></div><div id="amsg" style="font-size:12.5px;margin-bottom:8px;display:none"></div>`;
-  h += c.items.map(i => {
+  // rejilla de portadas (tipo colección de Plex): los que tienes van a todo color y se reproducen desde aquí;
+  // los que faltan, en placeholder con «Quiero»
+  h += '<div class="cgrid">' + c.items.map(i => {
     const rg = owned[i.artist+'\u0000'+i.album];
-    const left = rg ? `<span class="play" data-rg="${rg}" title="Reproducir" style="cursor:pointer;color:var(--accent);display:inline-flex">${window.icon('play',16)}</span>` : `<span style="width:16px;display:inline-block"></span>`;
-    const tag = rg ? '<span class="pill own">en tu biblioteca</span>' : '<span class="pill">no la tienes</span>';
+    const sub = `${esc(i.artist)}${i.year?' · '+i.year:''}`;
     const heard = i.listened ? '<span class="pill heard">oído</span>' : '';
-    const want = rg ? '' : `<span class="wbtn" data-artist="${esc(i.artist)}" data-title="${esc(i.album)}" data-year="${i.year||''}" title="Quiero — Liderarrr lo buscará" style="cursor:pointer;color:var(--text-2);display:inline-flex">${window.icon('want',16)}</span>`;
-    const link = i.artist_id && rg ? `href="album.html?id=${rg}"` : '';
-    return `<div class="item"><span class="pos">${i.position+1}</span>${left}<div class="ti"><div class="a">${esc(i.album)}</div><div class="b">${esc(i.artist)}${i.year?' · '+i.year:''}</div></div><div class="act">${heard}${tag}${want}</div></div>`;
-  }).join('');
+    if (rg) {
+      return `<div class="gc owned"><a class="cov" href="album.html?id=${rg}" title="Abrir ${esc(i.album)}"><img src="/api/cover?rg=${rg}" alt="" loading="lazy"><span class="playov play" data-rg="${rg}" title="Reproducir">${window.icon('play',26)}</span></a><div class="t">${esc(i.album)}</div><div class="s">${sub}</div><div class="foot">${heard}</div></div>`;
+    }
+    return `<div class="gc missing"><div class="cov">${window.icon('want',30)}</div><div class="t">${esc(i.album)}</div><div class="s">${sub}</div><div class="foot">${heard}<span class="wbtn" data-artist="${esc(i.artist)}" data-title="${esc(i.album)}" data-year="${i.year||''}"><span class="wbtn2">${window.icon('want',13)}Quiero</span></span></div></div>`;
+  }).join('') + '</div>';
   app.innerHTML = h;
 
-  app.querySelectorAll('.play').forEach(el => el.onclick = () => { if (window.player) window.player.playAlbum(+el.dataset.rg, 0); });
+  app.querySelectorAll('.playov.play').forEach(el => el.onclick = (e) => { e.preventDefault(); e.stopPropagation(); if (window.player) window.player.playAlbum(+el.dataset.rg, 0); });
   const rr = document.getElementById('retoradio'); if (rr) rr.onclick = () => { if (window.player) window.player.radioFrom(ownedRg[0]); };
   app.querySelectorAll('.wbtn').forEach(el => el.onclick = async () => {
     el.style.pointerEvents='none';

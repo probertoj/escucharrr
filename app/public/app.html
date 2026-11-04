@@ -91,8 +91,8 @@
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     var a = e.target.closest ? e.target.closest('a[href]') : null; if (!a) return;
     if (a.target === '_blank' || a.hasAttribute('download')) return;
-    var href = a.getAttribute('href'); if (!href || /^(https?:|mailto:|tel:)/i.test(href) && new URL(href, location.origin).origin !== location.origin) return;
-    var u; try { u = new URL(href, location.origin); } catch (x) { return; }
+    var href = a.getAttribute('href'); if (!href || /^(https?:|mailto:|tel:)/i.test(href) && new URL(href, location.href).origin !== location.origin) return;
+    var u; try { u = new URL(href, location.href); } catch (x) { return; }   // base = página actual, no el origen: un enlace de hash (#123) queda en la página, no manda a «/»
     if (u.origin !== location.origin) return;
     if (!/\.html$/.test(u.pathname) && u.pathname !== '/') return;   // solo rutas de página
     e.preventDefault();

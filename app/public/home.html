@@ -29,7 +29,10 @@ nav.top a{color:var(--text-2)} nav.top a.on{color:var(--text);font-weight:600}
 
   <div id="resumeSec" style="display:none"><div class="sec">Sigue escuchando</div><div class="row" id="resume"></div></div>
   <div id="becauseSec" style="display:none"><div class="sec" style="margin-top:22px" id="becauseTitle">Porque escuchaste</div><div class="row" id="because"></div></div>
-  <div id="novedadesSec" style="display:none"><div class="sec" style="margin-top:22px">Novedades para ti <span style="font-size:12px;color:var(--muted);font-weight:400">· vía Liderarrr</span></div><div class="row" id="novedades"></div></div>
+  <div id="novedadesSec" style="display:none">
+    <div id="availSec" style="display:none"><div class="sec" style="margin-top:22px">Novedades para ti <span style="font-size:12px;color:var(--muted);font-weight:400">· ya disponibles</span></div><div class="row" id="novAvail"></div></div>
+    <div id="soonSec" style="display:none"><div class="sec" style="margin-top:22px">Próximamente <span style="font-size:12px;color:var(--muted);font-weight:400">· síguelos para enterarte</span></div><div class="row" id="novSoon"></div></div>
+  </div>
 
   <div class="sec" style="margin-top:22px">Añadido recientemente</div>
   <div class="row" id="recent"></div>
@@ -113,20 +116,33 @@ async function loadNovedades(){
     fetch('/api/liderarrr/globalreleases?days=30').then(r=>r.json()).catch(()=>[]),
     fetch('/api/liderarrr/wanted/keys').then(r=>r.json()).catch(()=>({})) ]); }catch(e){}
   if(!Array.isArray(nr))nr=[]; if(!Array.isArray(gr))gr=[]; if(keys&&keys.ok===false)keys={};
-  // mezcla: primero los de tus artistas, luego afinidad; dedupe por matchKey; no poseídos; hasta 16
+  // mezcla: primero los de tus artistas, luego afinidad; dedupe por matchKey; no poseídos
   const seen=new Set(), items=[];
-  for(const r of nr.concat(gr)){ if(r.owned) continue; const k=_mk(r.artist,r.title); if(seen.has(k))continue; seen.add(k); items.push(r); if(items.length>=16)break; }
+  for(const r of nr.concat(gr)){ if(r.owned) continue; const k=_mk(r.artist,r.title); if(seen.has(k))continue; seen.add(k); items.push(r); if(items.length>=40)break; }
   if(!items.length) return;
-  const box=document.getElementById('novedades'), sec=document.getElementById('novedadesSec');
-  box.innerHTML=items.map(r=>{ const k=_mk(r.artist,r.title); const w=keys[k];
+  // separar YA DISPONIBLES (lo que de verdad quieres oír hoy) de PRÓXIMAMENTE (solo seguir)
+  const _t=new Date(); const todayStr=_t.getFullYear()+'-'+String(_t.getMonth()+1).padStart(2,'0')+'-'+String(_t.getDate()).padStart(2,'0');
+  const isFuture=r=>{ const d=(r.release_date||'').slice(0,10); return d>todayStr; };   // compara por fecha local (hoy = disponible), sin deriva de zona horaria
+  const avail=items.filter(r=>!isFuture(r)).slice(0,16);
+  const soon=items.filter(isFuture).sort((a,b)=>new Date(a.release_date)-new Date(b.release_date)).slice(0,16);
+  const fdate=d=>{ try{ return new Date(d).toLocaleDateString('es',{day:'numeric',month:'short'}); }catch(e){ return ''; } };
+  // tarjeta: mode 'avail' → «Quiero» (Liderarrr lo baja para escuchar); 'soon' → «Seguir» + fecha de salida
+  const cardHtml=(r,mode)=>{ const k=_mk(r.artist,r.title); const w=keys[k];
     const cov=r.cover?`<img src="${esc(r.cover)}" alt="" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block">`:cover(0);
-    const act=w?`<span class="badge" style="position:absolute;left:6px;top:6px;background:var(--accent-bg);color:var(--accent)">${w.status==='owned'?'conseguido':w.status==='grabbed'?'pedido':'vigilando'}</span>`:`<span class="nwant" data-artist="${esc(r.artist)}" data-title="${esc(r.title)}" data-date="${esc(r.release_date||'')}" data-cover="${esc(r.cover||'')}" title="Quiero — Liderarrr lo buscará" style="position:absolute;right:6px;top:6px;cursor:pointer;background:rgba(0,0,0,.55);color:#fff;border-radius:999px;width:26px;height:26px;display:flex;align-items:center;justify-content:center">${window.icon('want',15)}</span>`;
-    return `<div class="card" style="position:relative"><div class="cov" style="position:relative;border-radius:10px;overflow:hidden;aspect-ratio:1">${cov}${act}</div><div class="t">${esc(r.title)}</div><div class="s">${esc(r.artist)}${r.reason?' · '+esc(r.reason):''}</div></div>`;
-  }).join('');
-  sec.style.display='';
-  box.querySelectorAll('.nwant').forEach(el=>el.onclick=async()=>{ el.style.pointerEvents='none';
+    const bl=w?(w.status==='owned'?'conseguido':w.status==='grabbed'?'pedido':mode==='soon'?'siguiendo':'vigilando'):'';
+    const badge=w?`<span class="badge" style="position:absolute;left:6px;top:6px;background:var(--accent-bg);color:var(--accent)">${bl}</span>`:'';
+    const btn=w?'':`<span class="nwant" data-mode="${mode}" data-artist="${esc(r.artist)}" data-title="${esc(r.title)}" data-date="${esc(r.release_date||'')}" data-cover="${esc(r.cover||'')}" title="${mode==='soon'?'Seguir — Liderarrr lo vigilará y lo bajará al salir':'Quiero — Liderarrr lo buscará'}" style="position:absolute;right:6px;top:6px;cursor:pointer;background:rgba(0,0,0,.55);color:#fff;border-radius:999px;${mode==='soon'?'padding:3px 10px;font-size:11px;display:flex;align-items:center;gap:4px':'width:26px;height:26px;display:flex;align-items:center;justify-content:center'}">${window.icon(mode==='soon'?'calendar':'want',mode==='soon'?13:15)}${mode==='soon'?'Seguir':''}</span>`;
+    const sub=mode==='soon'?`sale el ${fdate(r.release_date)}`:(r.reason?esc(r.reason):esc(r.artist));
+    const subLine=mode==='soon'?`<div class="s">${esc(r.artist)}</div><div class="s" style="color:var(--accent)">${sub}</div>`:`<div class="s">${esc(r.artist)}${r.reason?' · '+esc(r.reason):''}</div>`;
+    return `<div class="card" style="position:relative${mode==='soon'?';opacity:.92':''}"><div class="cov" style="position:relative;border-radius:10px;overflow:hidden;aspect-ratio:1">${cov}${badge}${btn}</div><div class="t">${esc(r.title)}</div>${subLine}</div>`;
+  };
+  const sec=document.getElementById('novedadesSec');
+  if(avail.length){ document.getElementById('novAvail').innerHTML=avail.map(r=>cardHtml(r,'avail')).join(''); document.getElementById('availSec').style.display=''; }
+  if(soon.length){ document.getElementById('novSoon').innerHTML=soon.map(r=>cardHtml(r,'soon')).join(''); document.getElementById('soonSec').style.display=''; }
+  if(avail.length||soon.length) sec.style.display='';
+  document.querySelectorAll('#novedadesSec .nwant').forEach(el=>el.onclick=async()=>{ el.style.pointerEvents='none'; const soonMode=el.dataset.mode==='soon';
     try{ const rr=await fetch('/api/liderarrr/wanted',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist:el.dataset.artist,title:el.dataset.title,release_date:el.dataset.date||null,cover:el.dataset.cover||null,origin:'inicio'})}).then(x=>x.json());
-      if(rr&&(rr.ok||rr.match_key)) el.outerHTML='<span class="badge" style="position:absolute;left:6px;top:6px;background:var(--accent-bg);color:var(--accent)">vigilando</span>'; else el.style.pointerEvents='auto';
+      if(rr&&(rr.ok||rr.match_key)) el.outerHTML='<span class="badge" style="position:absolute;left:6px;top:6px;background:var(--accent-bg);color:var(--accent)">'+(soonMode?'siguiendo':'vigilando')+'</span>'; else el.style.pointerEvents='auto';
     }catch(e){ el.style.pointerEvents='auto'; } });
 }
 loadNovedades();
