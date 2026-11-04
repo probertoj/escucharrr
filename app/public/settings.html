@@ -42,6 +42,24 @@ input[type=range]{accent-color:var(--accent)}
 .sw .t::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:var(--muted);transition:transform .15s,background .15s}
 .sw input:checked+.t{background:var(--accent-bg);border-color:var(--accent)}
 .sw input:checked+.t::after{transform:translateX(18px);background:var(--accent)}
+/* Settings estilo Roon: nav de categorías a la izquierda + panel de contenido a la derecha */
+.setlayout{display:flex;gap:24px;align-items:flex-start}
+.setnav{position:sticky;top:16px;flex:none;width:214px;display:flex;flex-direction:column;gap:2px}
+.setnav button{display:flex;align-items:center;gap:11px;width:100%;text-align:left;padding:10px 12px;border:none;background:none;border-radius:10px;font-size:14.5px;color:var(--text);cursor:pointer;font-family:inherit}
+.setnav button .ni{display:inline-flex;color:var(--text-2);flex:none}
+.setnav button:hover{background:var(--surface-2)}
+.setnav button.on{background:var(--accent-bg);color:var(--accent);font-weight:600}
+.setnav button.on .ni{color:var(--accent)}
+.setpanel{flex:1;min-width:0}
+.setpanel .grp{display:none;margin:0}
+.setpanel .grp.on{display:block;animation:setfade .18s ease}
+@keyframes setfade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media(max-width:820px){
+  .setlayout{flex-direction:column;gap:12px}
+  .setnav{position:static;width:auto;flex-direction:row;overflow-x:auto;gap:6px;padding-bottom:4px}
+  .setnav button{width:auto;white-space:nowrap;padding:8px 13px;border:1px solid var(--border)}
+  .setnav button .ni{display:none}
+}
 </style>
 </head>
 <body>
@@ -73,7 +91,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   const bands = S.eqGains.map((g,i) => `<div class="b"><span class="g" id="eqg${i}">${g>0?'+':''}${g}</span><input class="eqband" type="range" min="-12" max="12" step="1" value="${g}" data-i="${i}"><span class="f">${esc(S.eqFreqs[i]||'')}</span></div>`).join('');
 
   app.innerHTML = `
-  <div class="grp"><h2><span class="gi">${window.icon('library',18)}</span> Biblioteca</h2><div class="body">
+  <div class="grp" data-cat="biblioteca"><h2><span class="gi">${window.icon('library',18)}</span> Biblioteca</h2><div class="body">
     <div class="row"><div class="stat">
       <span class="s"><b>${lib.albums||0}</b> álbumes</span><span class="s"><b>${lib.artists||0}</b> artistas</span>
       <span class="s"><b>${lib.tracks||0}</b> pistas</span><span class="s"><b>${lib.files||0}</b> ficheros</span>
@@ -91,14 +109,14 @@ window.addEventListener('DOMContentLoaded', async () => {
     <div class="row" style="display:block"><div class="k" style="margin-bottom:6px">Ficheros saltados en el último escaneo <span id="skipcount" style="color:var(--muted);font-weight:400"></span></div><div id="skiplist" class="d" style="max-height:220px;overflow:auto;font-size:12px;line-height:1.5">cargando…</div></div>
   </div></div>
 
-  <div class="grp"><h2><span class="gi">${window.icon('backup',18)}</span> Copia de seguridad</h2><div class="body">
+  <div class="grp" data-cat="backups"><h2><span class="gi">${window.icon('backup',18)}</span> Copia de seguridad</h2><div class="body">
     <div class="row"><div class="lbl"><div class="k">Crear una copia ahora</div><div class="d">Guarda una instantánea de toda tu biblioteca (tiers, valoraciones, etiquetas, historial, emisoras, presets…). Se conservan las <b>12</b> más recientes; además se crea una automática al arrancar si la última es antigua.</div></div><button id="bknow">Crear copia</button></div>
     <div class="row" style="display:block"><div class="k" style="margin-bottom:8px">Copias guardadas</div>
       <div id="bklist" class="d">cargando…</div>
       <div id="bkmsg" style="font-size:12.5px;margin-top:8px;display:none"></div></div>
   </div></div>
 
-  <div class="grp"><h2><span class="gi">${window.icon('zone',18)}</span> Audio — salida</h2><div class="body">
+  <div class="grp" data-cat="audio"><h2><span class="gi">${window.icon('zone',18)}</span> Audio — salida</h2><div class="body">
     <div class="row"><div class="lbl"><div class="k">Zona de salida actual</div><div class="d">${esc(zoneName)}</div></div>
       <button id="chooseout">Elegir salida / zona…</button></div>
     <div class="row"><div class="lbl"><div class="k">Motor nativo (WASAPI)</div><div class="d">${nat.available?(nat.built?'compilado y disponible · resample sinc Kaiser, dither TPDF, EQ propio':'disponible pero sin compilar (ejecuta <span class="mono">engine/build.ps1</span>)'):'no disponible en esta build'}</div></div></div>
@@ -106,7 +124,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       <button id="chooseout2">Elegir salida…</button></div>
   </div></div>
 
-  <div class="grp"><h2><span class="gi">${window.icon('play',18)}</span> Reproducción</h2><div class="body">
+  <div class="grp" data-cat="reproduccion"><h2><span class="gi">${window.icon('play',18)}</span> Reproducción</h2><div class="body">
     <div class="row"><div class="lbl"><div class="k">Crossfade</div><div class="d">solapa el final de una pista con el inicio de la siguiente</div></div>
       <input id="xf" type="range" min="0" max="12" step="0.5" value="${S.xfade}" style="width:160px"><span class="val" id="xfval"></span></div>
     <div class="row"><div class="lbl"><div class="k">Normalización de volumen (ReplayGain)</div><div class="d">por pista (−18 LUFS) · por álbum (conserva la dinámica del disco) · desactivada</div></div>${rgSeg()}</div>
@@ -114,28 +132,64 @@ window.addEventListener('DOMContentLoaded', async () => {
       <label class="sw"><input type="checkbox" id="radio" ${S.radio?'checked':''}><span class="t"></span></label></div>
   </div></div>
 
-  <div class="grp"><h2><span class="gi">${window.icon('eq',18)}</span> Ecualizador</h2><div class="body">
+  <div class="grp" data-cat="dsp"><h2><span class="gi">${window.icon('eq',18)}</span> Ecualizador</h2><div class="body">
     <div class="row"><div class="lbl"><div class="k">Ecualizador de 7 bandas</div><div class="d">se aplica a la salida del navegador y, si está activo, al motor nativo</div></div>
       <label class="sw"><input type="checkbox" id="eqon" ${S.eqOn?'checked':''}><span class="t"></span></label></div>
     <div class="row" style="display:block"><div class="pre" id="pre">${presets}</div>
       <div class="eqbands" id="eqbands">${bands}</div></div>
   </div></div>
 
-  <div class="grp"><h2><span class="gi">${window.icon('refresh',18)}</span> Servicios y scrobbling</h2><div class="body" id="servicesbody">
+  <div class="grp" data-cat="servicios"><h2><span class="gi">${window.icon('refresh',18)}</span> Servicios y scrobbling</h2><div class="body" id="servicesbody">
     <div class="d">cargando…</div>
   </div></div>
 
-  <div class="grp"><h2><span class="gi">${window.icon('theme-auto',18)}</span> Interfaz</h2><div class="body">
+  <div class="grp" data-cat="general"><h2><span class="gi">${window.icon('theme-auto',18)}</span> Interfaz</h2><div class="body">
     <div class="row"><div class="lbl"><div class="k">Tema</div><div class="d">automático sigue al sistema; el fondo claro es blanco por diseño</div></div>${themeSeg}</div>
     <div class="row"><div class="lbl"><div class="k">Menú lateral</div><div class="d">fijo a la izquierda en escritorio, barra superior en móvil</div></div><span class="val">activo</span></div>
   </div></div>
 
-  <div class="grp"><h2><span class="gi">${window.icon('settings',18)}</span> Avanzado</h2><div class="body">
+  <div class="grp" data-cat="about"><h2><span class="gi">${window.icon('settings',18)}</span> Acerca de</h2><div class="body">
     <div class="row"><div class="lbl"><div class="k">Versión</div></div><span class="val">escucharrr ${esc(ap.version||'0.1')}</span></div>
     <div class="row"><div class="lbl"><div class="k">Servidor</div></div><span class="val">puerto ${esc(String(ap.port||''))}</span></div>
     <div class="row"><div class="lbl"><div class="k">Base de datos</div><div class="d mono">${esc(ap.db||'')}</div></div></div>
     <div class="row"><div class="lbl"><div class="k">Perfiles y acceso · Atajos de teclado</div><div class="d soon">próximamente</div></div></div>
   </div></div>`;
+
+  // ── Settings estilo Roon: nav de categorías + panel (reordena los grupos ya renderizados, sin recrearlos) ──
+  (function categorize() {
+    const cats = [
+      ['general', 'Interfaz', 'theme-auto'],
+      ['biblioteca', 'Biblioteca', 'library'],
+      ['audio', 'Audio', 'zone'],
+      ['reproduccion', 'Reproducción', 'play'],
+      ['dsp', 'Ecualizador', 'eq'],
+      ['servicios', 'Servicios', 'refresh'],
+      ['backups', 'Copias de seguridad', 'backup'],
+      ['about', 'Acerca de', 'settings'],
+    ];
+    const layout = document.createElement('div'); layout.className = 'setlayout';
+    const nav = document.createElement('nav'); nav.className = 'setnav'; nav.setAttribute('aria-label', 'Secciones de configuración');
+    const panel = document.createElement('div'); panel.className = 'setpanel';
+    layout.appendChild(nav); layout.appendChild(panel);
+    for (const [cat, label, icon] of cats) {
+      const grp = app.querySelector('.grp[data-cat="' + cat + '"]');
+      if (grp) panel.appendChild(grp);                    // mueve cada grupo al panel en el orden de categoría
+      const b = document.createElement('button'); b.type = 'button'; b.dataset.cat = cat;
+      b.innerHTML = '<span class="ni">' + window.icon(icon, 18) + '</span>' + esc(label);
+      nav.appendChild(b);
+    }
+    app.innerHTML = ''; app.appendChild(layout);
+    function activate(cat) {
+      if (!cats.some(c => c[0] === cat)) cat = cats[0][0];
+      nav.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.cat === cat));
+      panel.querySelectorAll('.grp').forEach(g => g.classList.toggle('on', g.dataset.cat === cat));
+      try { localStorage.setItem('set.cat', cat); } catch (e) {}
+      if (location.hash.slice(1) !== cat) { try { history.replaceState(null, '', '#' + cat); } catch (e) {} }
+    }
+    nav.addEventListener('click', e => { const b = e.target.closest('button'); if (b) activate(b.dataset.cat); });
+    let start = location.hash.slice(1); if (!start) { try { start = localStorage.getItem('set.cat') || ''; } catch (e) {} }
+    activate(start || cats[0][0]);
+  })();
 
   // ── cableado (reusa la lógica del player) ──
   const setXfLabel = v => { const l = document.getElementById('xfval'); if (l) l.textContent = (+v === 0) ? 'desactivado' : (+v).toFixed(1).replace('.0','') + ' s'; };
