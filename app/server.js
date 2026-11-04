@@ -123,6 +123,7 @@ async function lfmAuthCall(method, extra) {
   return j;
 }
 
+const coverfetch = require('../data-layer/coverfetch');   // descarga perezosa de portadas (Cover Art Archive)
 // Spotify (SOLO comparar biblioteca local ↔ álbumes guardados del usuario; no reproduce).
 const spotify = require('../data-layer/spotify');
 const SPOTIFY_TOKEN_PATH = path.join(__dirname, '.spotify-token');
@@ -236,8 +237,12 @@ async function handleLiderarrr(req, res, u) {
   if (sub === 'resolve' && req.method === 'POST') { const b = await readBody(req); return sendJSON(res, { ok: true, owned: resolveOwnedPairs(b.pairs || []) }); }
   if (!liderarrrUrl()) return sendJSON(res, { ok: false, error: 'Liderarrr no está configurado (ponlo en Ajustes → Servicios).' });
   if (sub === 'sync-identify' && req.method === 'POST') {   // adopta la identificación MusicBrainz ya hecha en Liderarrr
-    try { const report = await syncLiderarrrIdentify(); return sendJSON(res, { ok: true, report }); }
-    catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+    try {
+      const report = await syncLiderarrrIdentify();
+      // Tras adoptar MBIDs, baja en 2º plano las portadas que falten (CAA): los recién identificados no las tenían.
+      _spawnIngest([path.join(_DL, 'covers.js'), '--db', DB_PATH]).then(o => o && console.log('  [liderarrr] portadas:', o)).catch(() => {});
+      return sendJSON(res, { ok: true, report });
+    } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
   }
   try {
     const body = (req.method === 'POST' || req.method === 'DELETE' || req.method === 'PUT') ? await readBody(req) : null;
@@ -295,7 +300,8 @@ function buildQ(db) { return {
      FROM v_album a WHERE a.id=?`),
   about: db.prepare(`SELECT value v FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='about'`),
   aboutExt: db.prepare(`SELECT about v FROM release_group WHERE id=?`),   // reseña editorial externa (Wikipedia)
-  coverOf: db.prepare(`SELECT cover_path, cover_mime FROM release_group WHERE id=?`),   // carátula cacheada (Cover Art Archive)
+  coverOf: db.prepare(`SELECT cover_path, cover_mime, mbid FROM release_group WHERE id=?`),   // carátula cacheada (Cover Art Archive) + mbid (para la descarga perezosa)
+  coverTried: db.prepare(`SELECT 1 FROM provenance WHERE subject_type='release_group' AND subject_id=? AND field='cover'`),   // ¿ya se consultó la portada en CAA? (hubo o no)
   coverPref: db.prepare(`SELECT value FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='cover_pref'`),   // preferencia de fuente de portada (Roon: use_file/use_meta/use_best/clear)
   flagGet: db.prepare(`SELECT 1 FROM flag WHERE subject_type=? AND subject_id=? AND flag=? LIMIT 1`),
   // ficheros FLAC del álbum, para extraer el arte embebido (como Roon lee de los propios ficheros)
@@ -1736,6 +1742,32 @@ function tryEmbeddedCover(res, id) {   // arte embebido en los FLAC (cacheado en
   } catch (e) {}
   return false;
 }
+// ── Descarga PEREZOSA de portadas desde Cover Art Archive ──────────────────────────────────────
+// Un álbum identificado (con MBID) pero sin portada cacheada ni arte embebido mostraba el placeholder,
+// aunque CAA tuviera la carátula: identificar fija el MBID pero no bajaba la portada. Ahora, al pedir
+// su portada, si falta se encola una descarga en segundo plano (no bloquea: se sirve el placeholder ya
+// y la próxima carga trae la real). Dedup + poca concurrencia + marcador negativo (provenance 'cover').
+const _coverTried = new Set();      // rg ids ya intentados en caliente (evita reconsultar la provenance)
+const _coverQueue = [];             // cola de { id, mbid }
+let _coverActive = 0;
+const COVER_CONC = 3;
+function queueCoverFetch(id, mbid) {
+  if (!mbid || _coverTried.has(id)) return;
+  if (Q.coverTried.get(id)) { _coverTried.add(id); return; }   // ya consultado alguna vez (hubo o no portada)
+  if (_coverQueue.some(x => x.id === id)) return;
+  _coverTried.add(id);
+  _coverQueue.push({ id, mbid });
+  pumpCoverQueue();
+}
+function pumpCoverQueue() {
+  while (_coverActive < COVER_CONC && _coverQueue.length) {
+    const job = _coverQueue.shift(); _coverActive++;
+    coverfetch.fetchCoverFor(db, { id: job.id, mbid: job.mbid, appDir: __dirname })
+      .then(r => { if (r && r.found) sseBroadcast('library'); else if (r && !r.miss && r.status) _coverTried.delete(job.id); })   // error transitorio → reintentable luego
+      .catch(() => { _coverTried.delete(job.id); })
+      .finally(() => { _coverActive--; setTimeout(pumpCoverQueue, 350); });   // cortesía con CAA/archive.org
+  }
+}
 // Portada según la preferencia del usuario por álbum (Roon: archivo/metadatos/mejor/ninguna).
 // Por defecto 'auto' = descargada > embebida > SVG. El SVG de respaldo no se cachea.
 function serveCover(res, id) {
@@ -1744,8 +1776,8 @@ function serveCover(res, id) {
   const pref = (Q.coverPref.get(id) || {}).value || 'auto';
   if (pref === 'none') { /* a SVG */ }
   else if (pref === 'file') { if (tryEmbeddedCover(res, id)) return; }
-  else if (pref === 'download') { if (tryDownloadedCover(res, row)) return; }
-  else { if (tryDownloadedCover(res, row)) return; if (tryEmbeddedCover(res, id)) return; }   // auto
+  else if (pref === 'download') { if (tryDownloadedCover(res, row)) return; if (row && row.mbid) queueCoverFetch(id, row.mbid); }
+  else { if (tryDownloadedCover(res, row)) return; if (tryEmbeddedCover(res, id)) return; if (row && row.mbid) queueCoverFetch(id, row.mbid); }   // auto: descargada > embebida > (bajar de CAA en 2º plano) > SVG
   res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(coverSvg(id));
 }
@@ -2322,6 +2354,10 @@ async function handleIdentifyApply(req, res) {
         .then((out) => { if (out) console.log('  [identify] enrich rg', rg, '→', out); sseBroadcast('library'); })
         .catch(() => {});
     }
+    // …y la portada de Cover Art Archive de ese disco (antes solo se bajaba en un paso aparte).
+    _spawnIngest([path.join(_DL, 'covers.js'), '--db', DB_PATH, '--rg', String(rg)])
+      .then((out) => { if (out) console.log('  [identify] portada rg', rg, '→', out); sseBroadcast('library'); })
+      .catch(() => {});
     return sendJSON(res, { ok: true, releaseMbid: r.releaseMbid, rgMbid: r.rgMbid, enriching: b.enrich !== false });
   } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
 }
