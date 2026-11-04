@@ -1083,6 +1083,22 @@ async function handleNative(req, res, u) {
 // ── salida de red UPnP/DLNA: el servidor controla el renderer (mismo patrón que la zona nativa) ──
 let _upnpDevs = { at: 0, items: [] };
 let _upnp = { renderer: null, dev: null, trackId: null, nextTrackId: null, nextUrl: '', durationSec: 0, playing: false, paused: false };
+// Grupo de zonas (multi-sala, estilo Roon dialog_group_zones): miembros SECUNDARIOS DLNA que reproducen
+// la misma URL a la vez que el primario (_upnp). Sincronía aproximada (cada equipo descarga por su cuenta;
+// no es sample-exact — eso requeriría un transporte con reloj tipo RAAT, propietario). Las mutaciones
+// (pause/resume/stop/seek/volume/setnext) se reparten al primario y a todos los secundarios.
+let _upnpGroup = [];
+async function upnpGroupTeardown() { for (const g of _upnpGroup) { try { await g.renderer.stop(); } catch (e) {} } _upnpGroup = []; }
+async function upnpGroupEach(fn) { for (const g of _upnpGroup) { try { await fn(g.renderer, g.dev); } catch (e) {} } }
+async function upnpGroupPrimeNext(trackId) {   // ceba la siguiente en cada miembro (gapless best-effort)
+  if (!_upnpGroup.length) return;
+  const meta = trackId ? upnpMetaOf(trackId) : null; if (!meta) return;
+  for (const g of _upnpGroup) {
+    try { const gbase = 'http://' + UPNP.lanIp(g.dev.ip) + ':' + PORT;
+      await g.renderer.setNextUri({ url: gbase + '/api/stream?track=' + trackId, mime: meta.mime, title: meta.title, artist: meta.artist, album: meta.album, durationSec: meta.durationSec, coverUrl: meta.albumId ? gbase + '/api/cover?rg=' + meta.albumId : '' });
+    } catch (e) {}
+  }
+}
 let _cast = { sender: null, dev: null, trackId: null, durationSec: 0, playing: false, paused: false };   // sesión Chromecast activa
 function castLight() { const s = _cast; return { kind: 'cast', playing: !!s.sender && s.playing && !s.paused, paused: !!s.paused, device: s.dev ? s.dev.name : null, deviceId: s.dev ? s.dev.id : null, trackId: s.trackId, durationSec: s.durationSec, positionSec: 0, advanced: false }; }
 function castTeardown() { if (_cast.sender) { try { _cast.sender.close(); } catch (e) {} } _cast = { sender: null, dev: null, trackId: null, durationSec: 0, playing: false, paused: false }; }
@@ -1152,7 +1168,7 @@ async function handleUpnp(req, res, u) {
         const dev = cast.find(d => d.id === body.deviceId);
         if (!dev || dev.kind !== 'chromecast') return sendJSON(res, { ok: false, error: 'por ahora solo se reproduce en Chromecast (AirPlay aún no)' });
         if (!dev.ip) return sendJSON(res, { ok: false, error: 'el Chromecast no anunció su IP todavía; reintenta' });
-        castTeardown(); if (_upnp.renderer) { try { await _upnp.renderer.stop(); } catch (e) {} _upnp.renderer = null; }
+        castTeardown(); await upnpGroupTeardown(); if (_upnp.renderer) { try { await _upnp.renderer.stop(); } catch (e) {} _upnp.renderer = null; }
         const ip = UPNP.lanIp(dev.ip), base = 'http://' + ip + ':' + PORT, seek = body.seekSec || 0;
         const sender = new CAST.CastSender(dev);
         await sender.connect();
@@ -1172,12 +1188,26 @@ async function handleUpnp(req, res, u) {
       await r.setUriAndPlay({ url: base + '/api/stream?track=' + body.track_id, mime: meta.mime, title: meta.title, artist: meta.artist, album: meta.album, durationSec: meta.durationSec, coverUrl: meta.albumId ? base + '/api/cover?rg=' + meta.albumId : '' });
       if (seek) { try { await r.seek(seek); } catch (e) {} }
       _upnp = { renderer: r, dev, trackId: body.track_id, nextTrackId: null, nextUrl: '', durationSec: meta.durationSec, playing: true, paused: false };
+      // grupo multi-sala: arranca los miembros secundarios (mismo stream, mismo seek), best-effort
+      await upnpGroupTeardown();
+      if (Array.isArray(body.groupDeviceIds) && body.groupDeviceIds.length) {
+        for (const gid of body.groupDeviceIds) {
+          if (!gid || gid === dev.id) continue;
+          const gd = items.find(d => d.id === gid); if (!gd || !gd.ip) continue;
+          try {
+            const gbase = 'http://' + UPNP.lanIp(gd.ip) + ':' + PORT, gr = new UPNP.UpnpRenderer(gd);
+            await gr.setUriAndPlay({ url: gbase + '/api/stream?track=' + body.track_id, mime: meta.mime, title: meta.title, artist: meta.artist, album: meta.album, durationSec: meta.durationSec, coverUrl: meta.albumId ? gbase + '/api/cover?rg=' + meta.albumId : '' });
+            if (seek) { try { await gr.seek(seek); } catch (e) {} }
+            _upnpGroup.push({ renderer: gr, dev: gd });
+          } catch (e) {}
+        }
+      }
       if (body.next_track_id) { try { await upnpPrimeNext(body.next_track_id); } catch (e) {} }   // ceba la siguiente → gapless
-      logPlay({ track_id: body.track_id, source: 'upnp', zone: dev.name });
+      logPlay({ track_id: body.track_id, source: 'upnp', zone: dev.name + (_upnpGroup.length ? ' +' + _upnpGroup.length : '') });
       return sendJSON(res, { ok: true, state: upnpLight() });
     }
     if (sub === 'setnext') { if (_cast.sender) return sendJSON(res, { ok: false });   // Chromecast no cebamos siguiente (no hay gapless propio aquí)
-      const ok = await upnpPrimeNext(body.track_id || null); return sendJSON(res, { ok }); }
+      const ok = await upnpPrimeNext(body.track_id || null); await upnpGroupPrimeNext(body.track_id || null); return sendJSON(res, { ok }); }
     // ── sesión Chromecast activa: las mutaciones van al CastSender ──
     if (_cast.sender) {
       const C = _cast.sender;
@@ -1188,11 +1218,11 @@ async function handleUpnp(req, res, u) {
       if (sub === 'volume') { const pct = body.pct != null ? Number(body.pct) : (body.v != null ? Math.round(Number(body.v) * 100) : null); if (pct != null) { try { await C.setVolume(pct); } catch (e) {} } return sendJSON(res, { ok: true, state: castLight() }); }
     }
     const R = _upnp.renderer;
-    if (sub === 'pause') { if (R) { try { await R.pause(); } catch (e) {} _upnp.paused = true; _upnp.playing = false; } return sendJSON(res, { ok: true, state: upnpLight() }); }
-    if (sub === 'resume') { if (R) { try { await R.play(); } catch (e) {} _upnp.paused = false; _upnp.playing = true; } return sendJSON(res, { ok: true, state: upnpLight() }); }
-    if (sub === 'stop') { if (R) { try { await R.stop(); } catch (e) {} } _upnp = { renderer: null, dev: _upnp.dev, trackId: null, nextTrackId: null, nextUrl: '', durationSec: 0, playing: false, paused: false }; return sendJSON(res, { ok: true, state: upnpLight() }); }
-    if (sub === 'seek') { const sec = Number(body.sec) || 0; if (R) { try { await R.seek(sec); } catch (e) {} } return sendJSON(res, { ok: true, state: upnpLight() }); }
-    if (sub === 'volume') { const pct = body.pct != null ? Number(body.pct) : (body.v != null ? Math.round(Number(body.v) * 100) : null); if (R && pct != null) { try { await R.setVolume(pct); } catch (e) {} } return sendJSON(res, { ok: true, state: upnpLight() }); }
+    if (sub === 'pause') { if (R) { try { await R.pause(); } catch (e) {} _upnp.paused = true; _upnp.playing = false; } await upnpGroupEach(r => r.pause()); return sendJSON(res, { ok: true, state: upnpLight() }); }
+    if (sub === 'resume') { if (R) { try { await R.play(); } catch (e) {} _upnp.paused = false; _upnp.playing = true; } await upnpGroupEach(r => r.play()); return sendJSON(res, { ok: true, state: upnpLight() }); }
+    if (sub === 'stop') { if (R) { try { await R.stop(); } catch (e) {} } await upnpGroupTeardown(); _upnp = { renderer: null, dev: _upnp.dev, trackId: null, nextTrackId: null, nextUrl: '', durationSec: 0, playing: false, paused: false }; return sendJSON(res, { ok: true, state: upnpLight() }); }
+    if (sub === 'seek') { const sec = Number(body.sec) || 0; if (R) { try { await R.seek(sec); } catch (e) {} } await upnpGroupEach(r => r.seek(sec)); return sendJSON(res, { ok: true, state: upnpLight() }); }
+    if (sub === 'volume') { const pct = body.pct != null ? Number(body.pct) : (body.v != null ? Math.round(Number(body.v) * 100) : null); if (pct != null) { if (R) { try { await R.setVolume(pct); } catch (e) {} } await upnpGroupEach(r => r.setVolume(pct)); } return sendJSON(res, { ok: true, state: upnpLight() }); }
     res.writeHead(404); res.end('{}');
   } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }

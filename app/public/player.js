@@ -51,6 +51,7 @@ window.player = (function () {
   let nativePos = 0, nativeBusy = false, nativeMiss = 0, nativePollTimer = null, nativeVolTimer = null, nativeEqTimer = null, nativeStartedIdx = -1;
   // ── salida de RED (UPnP/DLNA, p. ej. Eversolo): otra zona-servidor; el servidor controla el renderer ──
   let upnpMode = !!zone.upnp, upnpDeviceId = zone.upnpDeviceId || '', upnpDevName = zone.upnpName || '';
+  let upnpGroupIds = [], activeGroupId = null;   // grupo multi-sala: ids de los miembros secundarios + id del grupo activo
   let upnpPos = 0, upnpBusy = false, upnpMiss = 0, upnpPollTimer = null, upnpVolTimer = null, upnpStartedIdx = -1;
   // ecualizador + crossfade (persistentes)
   let eqOn = false, eqGains = [0, 0, 0, 0, 0, 0, 0];
@@ -603,6 +604,7 @@ window.player = (function () {
   function nativeDspApply() { clearTimeout(nativeDspTimer); nativeDspTimer = setTimeout(() => { njson('peq', { on: peqOn, bands: peqBands }).catch(() => {}); njson('conv', { on: convOn, file: convFile }).catch(() => {}); }, 200); }
   function setNativeMode(on) {
     on = !!on; if (on === nativeMode) return;
+    if (on) clearGroup();   // el motor nativo no participa en grupos de red
     const wasPlaying = playing, posSec = posMs() / 1000;
     if (upnpMode) { upnpStop(); upnpMode = false; zone.upnp = false; }   // zonas mutuamente excluyentes
     if (nativeMode) nativeStop(); else { cancelFade(); decks.forEach(d => d.el.pause()); }
@@ -640,6 +642,7 @@ window.player = (function () {
     if (c.playable === false) { playing = false; upnpStartedIdx = -1; render(); return; }
     upnpBusy = true; playing = true; loggedIdx = idx; upnpMiss = 0; upnpStartedIdx = idx; upnpPos = (opts && opts.seekSec) || 0; trackStarted(); render();
     const body = { track_id: c.trackId, deviceId: upnpDeviceId || null, zone: upnpDevName || zone.name };
+    if (upnpGroupIds.length) body.groupDeviceIds = upnpGroupIds.slice();   // multi-sala: reproducir también en los secundarios
     const nx = q[i + 1]; if (nx && nx.playable !== false) body.next_track_id = nx.trackId;   // ceba la siguiente → gapless
     if (opts && opts.seekSec) body.seekSec = opts.seekSec;
     ujson('play', body).then(j => {
@@ -659,6 +662,7 @@ window.player = (function () {
   function upnpVolumeApply() { clearTimeout(upnpVolTimer); upnpVolTimer = setTimeout(() => { ujson('volume', { v: vol }).catch(() => {}); }, 300); }
   function setUpnpMode(on, deviceId, name) {
     on = !!on;
+    if (!on) clearGroup();   // volver a un único equipo / salir de red deshace el grupo
     if (deviceId !== undefined) { upnpDeviceId = deviceId || ''; zone.upnpDeviceId = upnpDeviceId; }
     if (name) { upnpDevName = name; zone.upnpName = name; }
     const deviceChange = on && upnpMode && deviceId !== undefined;
@@ -681,15 +685,57 @@ window.player = (function () {
   }
   function zoneMatches(z) { const c = currentOutput(); return z.kind === c.kind && (z.deviceId || '') === (c.deviceId || '') && (z.kind !== 'native' || !!z.exclusive === !!c.exclusive); }
   function saveCurrentZone(name) { const o = currentOutput(); zones.push({ id: Date.now(), name: name || zone.name || 'Zona', kind: o.kind, deviceId: o.deviceId, deviceName: o.deviceName, exclusive: o.exclusive }); persistZones(); renderZPanel(); }
-  function deleteZone(zid) { zones = zones.filter(z => String(z.id) !== String(zid)); persistZones(); renderZPanel(); }
+  function deleteZone(zid) { if (String(activeGroupId) === String(zid)) clearGroup(); zones = zones.filter(z => String(z.id) !== String(zid)); persistZones(); renderZPanel(); }
+  function clearGroup() { upnpGroupIds = []; activeGroupId = null; }
   // transfiere la reproducción en curso (cola+posición+estado) a una zona guardada
   function applyZone(z) {
     if (!z) return;
+    if (z.kind === 'group') return applyGroup(z);
+    clearGroup();
     if (z.kind === 'native') { setNativeMode(true); if ((nativeDeviceId || '') !== (z.deviceId || '')) setNativeDevice(z.deviceId || ''); if (!!nativeExclusive !== !!z.exclusive) setNativeExclusive(!!z.exclusive); }
     else if (z.kind === 'upnp') { setUpnpMode(true, z.deviceId || '', z.deviceName || ''); }
     else { if (upnpMode) setUpnpMode(false); else if (nativeMode) setNativeMode(false); setZoneDevice(z.deviceId || '', z.deviceName || ''); }
     if (z.name) { zone.name = z.name; persistZone(); updateZoneBtn(); }
     if (zpanel && zpanel.style.display === 'block') renderZPanel();
+  }
+  // ── Grupo multi-sala: reproducir en el primario + los secundarios a la vez (fan-out UPnP en el server) ──
+  function applyGroup(z) {
+    const members = (z.members || []).filter(m => m && m.deviceId);
+    if (members.length < 2) { clearGroup(); if (members[0]) applyZone({ kind: 'upnp', deviceId: members[0].deviceId, deviceName: members[0].deviceName, name: z.name }); return; }
+    upnpGroupIds = members.slice(1).map(m => m.deviceId);   // secundarios
+    activeGroupId = z.id;
+    if (z.name) zone.name = z.name;
+    setUpnpMode(true, members[0].deviceId, members[0].deviceName);   // primario; upnpPlay añadirá groupDeviceIds
+    persistZone(); updateZoneBtn();
+    if (zpanel && zpanel.style.display === 'block') renderZPanel();
+  }
+  function saveGroup(name, memberZones) {
+    const members = memberZones.map(z => ({ deviceId: z.deviceId, deviceName: z.deviceName || z.name }));
+    const g = { id: Date.now(), name: (name || 'Grupo').trim() || 'Grupo', kind: 'group', member: 'upnp', members };
+    zones.push(g); persistZones(); renderZPanel(); return g;
+  }
+  // Diálogo «Agrupar zonas» (estilo Roon dialog_group_zones): elige ≥2 zonas de red del mismo tipo.
+  function openGroupDialog() {
+    const upnpZones = zones.filter(z => z.kind === 'upnp');
+    let wrap = document.getElementById('groupdlg'); if (wrap) wrap.remove();
+    wrap = document.createElement('div'); wrap.id = 'groupdlg';
+    wrap.setAttribute('style', 'position:fixed;inset:0;z-index:92;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:18px');
+    const rows = upnpZones.map(z => `<label class="grpick" style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid var(--border);cursor:pointer"><input type="checkbox" class="grpchk" data-id="${z.id}"><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(z.name)} <span style="color:var(--muted);font-size:11px">· red</span></span></label>`).join('');
+    wrap.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;max-width:420px;width:100%;max-height:82vh;overflow:auto;padding:16px 18px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:600;font-size:16px;display:inline-flex;align-items:center;gap:7px">${ic('zonegroup', 18)}Agrupar zonas</span><span id="grpx" style="cursor:pointer;color:var(--text-2);display:inline-flex">${ic('close', 18)}</span></div>
+      <div style="font-size:12px;color:var(--text-2);margin-bottom:10px">Elige dos o más zonas de red para que suenen <b>a la vez</b>. Solo zonas de red del mismo tipo; la sincronía es aproximada (cada equipo descarga por su cuenta).</div>
+      <input id="grpname" placeholder="Nombre del grupo" value="Grupo" style="width:100%;margin-bottom:8px">
+      <div>${rows || '<div style="color:var(--text-2);font-size:13px">Necesitas al menos dos zonas de red activadas.</div>'}</div>
+      <div id="grpmsg" style="font-size:12px;color:#c0392b;margin-top:6px;display:none"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px"><button id="grpcancel" style="padding:6px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer">Cancelar</button><button id="grpsave" style="padding:6px 14px;background:var(--accent);color:#fff;border:none;border-radius:8px;cursor:pointer">Crear grupo</button></div></div>`;
+    document.body.appendChild(wrap);
+    wrap.addEventListener('click', e => { if (e.target === wrap || e.target.closest('#grpx') || e.target.closest('#grpcancel')) wrap.remove(); });
+    const sv = document.getElementById('grpsave'); if (sv) sv.onclick = () => {
+      const ids = [...wrap.querySelectorAll('.grpchk:checked')].map(c => +c.dataset.id);
+      if (ids.length < 2) { const m = document.getElementById('grpmsg'); m.style.display = 'block'; m.textContent = 'Elige al menos dos zonas de red.'; return; }
+      const mem = ids.map(id => zones.find(z => z.id === id)).filter(Boolean);
+      const g = saveGroup((document.getElementById('grpname').value || 'Grupo'), mem); wrap.remove(); applyGroup(g);
+    };
   }
   // ¿este dispositivo (cualquier salida descubierta) ya está guardado como zona?
   function zoneSavedId(kind, deviceId, exclusive) { const z = zones.find(x => x.kind === kind && (x.deviceId || '') === (deviceId || '') && (kind !== 'native' || !!x.exclusive === !!exclusive)); return z ? z.id : null; }
@@ -836,7 +882,7 @@ window.player = (function () {
 
   // ── selector de salida / zona (popover anclado a la barra) ──
   let zpanel = null;
-  const zoneLabel = () => nativeMode ? esc(zone.name || 'Este equipo') + ' · nativo' : upnpMode ? esc(upnpDevName || 'Red') : esc(zone.name || 'Este equipo');
+  const zoneLabel = () => activeGroupId ? esc(zone.name || 'Grupo') + ' · grupo' : nativeMode ? esc(zone.name || 'Este equipo') + ' · nativo' : upnpMode ? esc(upnpDevName || 'Red') : esc(zone.name || 'Este equipo');
   function updateZoneBtn() { const b = document.querySelector('#nowbar [data-act="zone"]'); if (b) b.innerHTML = ic('zone', 16) + '<span style="overflow:hidden;text-overflow:ellipsis">' + zoneLabel() + '</span>'; }
   function ensureZPanel() {
     if (zpanel) return;
@@ -856,15 +902,20 @@ window.player = (function () {
     try { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); s.getTracks().forEach(t => t.stop()); } catch (e) {}
     renderZPanel();
   }
-  function setZoneDevice(id, label) { zone.deviceId = id || ''; zone.label = label || ''; persistZone(); ensureGraph(); applySink(); renderZPanel(); }
+  function setZoneDevice(id, label) { clearGroup(); zone.deviceId = id || ''; zone.label = label || ''; persistZone(); ensureGraph(); applySink(); renderZPanel(); }
   async function renderZPanel() {
     ensureZPanel();
     let h = '<div style="font-weight:600;margin-bottom:8px">Salida y zona</div>';
     // zonas guardadas: transferir la reproducción en curso de un toque
     h += '<div style="margin-bottom:10px">';
-    if (zones.length) h += zones.map(z => { const on = zoneMatches(z); const tag = z.kind === 'native' ? 'nativo' + (z.exclusive ? ' · excl.' : '') : z.kind === 'upnp' ? 'red' : 'navegador'; return `<div class="zpreset" data-zone="${z.id}" title="Transferir aquí" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer;${on ? 'background:var(--accent-bg);color:var(--accent)' : ''}"><span style="width:16px;display:inline-flex;justify-content:center">${on ? ic('check', 15) : ic('zone', 15)}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(z.name)} <span style="color:var(--muted);font-size:11px">· ${tag}</span></span><span class="zpresetdel" data-zone="${z.id}" title="Quitar zona" style="color:var(--text-2);display:inline-flex">${ic('close', 14)}</span></div>`; }).join('');
+    if (zones.length) h += zones.map(z => {
+      const grp = z.kind === 'group'; const on = grp ? activeGroupId === z.id : (!activeGroupId && zoneMatches(z));
+      const tag = grp ? 'grupo · ' + ((z.members || []).length) + ' equipos' : z.kind === 'native' ? 'nativo' + (z.exclusive ? ' · excl.' : '') : z.kind === 'upnp' ? 'red' : 'navegador';
+      return `<div class="zpreset" data-zone="${z.id}" title="${grp ? 'Reproducir en todo el grupo' : 'Transferir aquí'}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer;${on ? 'background:var(--accent-bg);color:var(--accent)' : ''}"><span style="width:16px;display:inline-flex;justify-content:center">${on ? ic('check', 15) : ic(grp ? 'zonegroup' : 'zone', 15)}</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(z.name)} <span style="color:var(--muted);font-size:11px">· ${tag}</span></span><span class="zpresetdel" data-zone="${z.id}" title="${grp ? 'Deshacer grupo' : 'Quitar zona'}" style="color:var(--text-2);display:inline-flex">${ic('close', 14)}</span></div>`; }).join('');
     else h += '<div style="font-size:11.5px;color:var(--text-2)">Sin zonas guardadas. Configura una salida abajo y guárdala para transferir la música de un toque.</div>';
-    h += `<div data-act="zonesave" style="margin-top:6px;color:var(--accent);cursor:pointer;font-size:12px;display:inline-flex;align-items:center;gap:5px">${ic('plus', 13)}Guardar la zona actual</div>`;
+    h += `<div style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap"><span data-act="zonesave" style="color:var(--accent);cursor:pointer;font-size:12px;display:inline-flex;align-items:center;gap:5px">${ic('plus', 13)}Guardar la zona actual</span>`;
+    if (zones.filter(z => z.kind === 'upnp').length >= 2) h += `<span data-act="groupzones" title="Agrupar varias zonas de red para que suenen a la vez" style="color:var(--accent);cursor:pointer;font-size:12px;display:inline-flex;align-items:center;gap:5px">${ic('zonegroup', 13)}Agrupar zonas</span>`;
+    h += '</div>';
     h += '</div><div style="border-top:1px solid var(--border);margin:0 -14px 10px"></div>';
     h += '<label style="display:block;font-size:11px;color:var(--text-2);margin-bottom:3px">Nombre de la zona</label>';
     h += `<input id="zname" value="${esc(zone.name)}" style="width:100%;margin-bottom:10px">`;
@@ -1112,12 +1163,13 @@ window.player = (function () {
     const zdel = e.target.closest('#zonepanel .zpresetdel'); if (zdel) { e.stopPropagation(); deleteZone(zdel.dataset.zone); return; }
     const zp = e.target.closest('#zonepanel .zpreset'); if (zp) { const z = zones.find(x => String(x.id) === String(zp.dataset.zone)); if (z) applyZone(z); return; }
     if (e.target.closest('#zonepanel [data-act="zonesave"]')) { const nm = (prompt('Nombre de la zona:', zone.name || 'Zona') || '').trim(); if (nm) saveCurrentZone(nm); return; }
+    if (e.target.closest('#zonepanel [data-act="groupzones"]')) { openGroupDialog(); return; }
     const zd = e.target.closest('#zonepanel .zdev'); if (zd) { setZoneDevice(zd.dataset.id, zd.dataset.label); return; }
     if (e.target.closest('#zonepanel [data-act="unlock"]')) { unlockLabels(); return; }
     if (e.target.closest('#zonepanel [data-act="ntoggle"]')) { setNativeMode(!nativeMode); return; }
     const nd = e.target.closest('#zonepanel .ndev'); if (nd) { setNativeDevice(nd.dataset.id); return; }
     if (e.target.matches('#zonepanel [data-act="nexcl"]')) { setNativeExclusive(e.target.checked); return; }
-    const ud = e.target.closest('#zonepanel .udev'); if (ud) { if (ud.dataset.cast === '0') { try { (window.toast || window.alert)('Detectado, pero reproducir en AirPlay aún no está soportado (protocolo propietario).'); } catch (x) {} return; } setUpnpMode(true, ud.dataset.id, ud.dataset.name); return; }
+    const ud = e.target.closest('#zonepanel .udev'); if (ud) { if (ud.dataset.cast === '0') { try { (window.toast || window.alert)('Detectado, pero reproducir en AirPlay aún no está soportado (protocolo propietario).'); } catch (x) {} return; } clearGroup(); setUpnpMode(true, ud.dataset.id, ud.dataset.name); return; }
     if (e.target.closest('#zonepanel [data-act="uoff"]')) { setUpnpMode(false); return; }
     const vl = e.target.closest('#zonepanel .vollim'); if (vl) { setVolLimit(+vl.dataset.db); renderZPanel(); return; }
     const rg = e.target.closest('#eqpanel [data-rg]'); if (rg) { setRgMode(rg.dataset.rg); return; }

@@ -505,5 +505,22 @@ botón **«Activar»** (antes solo un pin discreto). Al pulsarlo, `enableZone()`
 nombre del propio aparato, sin preguntar** (UX simple), y queda arriba en «zonas guardadas» = siempre en el
 selector de la barra. Ya activado → «✓ Activado» (toca para desactivar). Tocar la fila sigue reproduciendo
 ahí al momento. Probado: «Activar» → zona persistida en `escucharrr.zones` y visible en el selector.
-Pendiente de paridad (no hecho): agrupar zonas (multi-sala) y el `device_setup` completo (exclusivo/DSD/MQA
-por zona ya existen para el motor nativo, no para red).
+### Agrupar zonas / multi-sala (HECHO para red, con matices)
+RE de `dialog_group_zones` (filas `group_zones_zone_row`, `Ungroup`, `group_zones_incompatible_zones`, y el
+aviso «It is only possible to group zones with other zones of the same type»): Roon agrupa **zonas del mismo
+tipo** en una zona sincronizada; la clave es el transporte con reloj (RAAT) que da sincronía sample-exact —
+**propietario, no replicable** (ver [[roon-analysis]]).
+
+→ escucharrr: grupo multi-sala para **zonas de RED (UPnP/DLNA)**. UI: botón **«Agrupar zonas»** en el panel
+de Salida (si hay ≥2 zonas de red activadas) → diálogo estilo `dialog_group_zones` (casillas, nombre, mínimo
+2). El grupo se guarda como zona `kind:'group'` y sale en el selector con icono propio y «grupo · N equipos».
+Al elegirlo, el cliente reproduce en el **primario + los secundarios** (`groupDeviceIds`); el **servidor hace
+fan-out** del transporte (play/pause/stop/seek/volumen/gapless-next) a todos los `UpnpRenderer`
+(`_upnpGroup`, best-effort, cada mutación en try/catch para no tumbar al primario). Salir a un único equipo /
+nativo / navegador deshace el grupo. **Sincronía APROXIMADA**: cada equipo descarga `/api/stream` por su
+cuenta; no es sample-exact (eso necesitaría RAAT). **Probado**: UI/modelo end-to-end (crear/guardar grupo,
+aparecer en el selector, el `play` envía `deviceId` + `groupDeviceIds`). **NO verificado contra hardware
+real** (no había dispositivos de red en la sesión) — probar con los equipos del usuario (Eversolo/WiiM…).
+
+Pendiente: `device_setup` completo por zona de red (exclusivo/DSD/MQA ya existen para el motor nativo),
+agrupar Chromecast (usan grupos propios de Google Cast, no este fan-out), y deriva/resync entre miembros.

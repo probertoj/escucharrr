@@ -22,6 +22,7 @@
     'volume-mute': '<path d="M4 9.5v5h3.5L13 19V5L7.5 9.5z" fill="currentColor" stroke="none"/><path d="M16.5 9.5l5 5M21.5 9.5l-5 5"/>',
     eq: '<path d="M6 4v5M6 13v7M12 4v3M12 11v9M18 4v9M18 17v3"/><circle cx="6" cy="11" r="2"/><circle cx="12" cy="9" r="2"/><circle cx="18" cy="15" r="2"/>',
     zone: '<rect x="6" y="3" width="12" height="18" rx="2.5"/><circle cx="12" cy="14" r="3.6"/><circle cx="12" cy="7" r="1.1"/>',
+    zonegroup: '<rect x="3" y="6" width="10" height="14" rx="2.2"/><circle cx="8" cy="14" r="2.5"/><circle cx="8" cy="9" r="1"/><path d="M16 6.5h1.8A2.2 2.2 0 0 1 20 8.7v9.1a2.2 2.2 0 0 1-2.2 2.2H16"/>',
     lyrics: '<path d="M5 7h14M5 12h14M5 17h9"/>',
     queue: '<path d="M4 7h11M4 12h11M4 17h7"/><path d="M18 14.5 22 17l-4 2.5z" fill="currentColor" stroke="none"/>',
     shuffle: '<path d="M4 7h4l9 10h3"/><path d="M4 17h4l9-10h3"/><path d="M18 4l3 3-3 3M18 14l3 3-3 3"/>',
