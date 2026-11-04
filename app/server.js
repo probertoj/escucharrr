@@ -203,10 +203,11 @@ function buildQ(db) { return {
   coverPref: db.prepare(`SELECT value FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='cover_pref'`),   // preferencia de fuente de portada (Roon: use_file/use_meta/use_best/clear)
   flagGet: db.prepare(`SELECT 1 FROM flag WHERE subject_type=? AND subject_id=? AND flag=? LIMIT 1`),
   // ficheros FLAC del álbum, para extraer el arte embebido (como Roon lee de los propios ficheros)
-  filesForAlbum: db.prepare(`SELECT DISTINCT lf.path FROM local_file lf
+  filesForAlbum: db.prepare(`SELECT lf.path FROM local_file lf
      JOIN track tr ON (tr.id=lf.track_id OR tr.recording_id=lf.recording_id)
      JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
-     WHERE rel.release_group_id=? AND lf.format='FLAC' LIMIT 5`),
+     WHERE rel.release_group_id=? AND lf.format IN ('FLAC','MP3','M4A','AAC')
+     ORDER BY CASE lf.format WHEN 'FLAC' THEN 0 ELSE 1 END LIMIT 8`),
   albumIdOf: db.prepare(`SELECT rel.release_group_id aid FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE tr.id=?`),
   spotifyLocal: db.prepare(`SELECT rg.id, rg.title, (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) artist, (SELECT barcode FROM "release" rel WHERE rel.release_group_id=rg.id AND rel.barcode IS NOT NULL LIMIT 1) barcode FROM release_group rg`),
   spotifySet: db.prepare(`UPDATE release_group SET spotify_album_id=?, spotify_url=? WHERE id=?`),
