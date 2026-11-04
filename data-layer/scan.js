@@ -117,6 +117,20 @@ function folderMeta(dir) {   // "Artista - Álbum" (con espacios o pegado) → {
   if (parts.length >= 2) { const artist = _stripRel(parts[0]), album = _stripRel(parts.slice(1).join(' ')); if (artist.length >= 2 && album) return { artist, album }; }
   return { artist: null, album: _stripRel(base) || _clean(base) };
 }
+// ── Multi-disco (estilo Roon): varias subcarpetas CD1/CD2 (o un marcador "CDn" en el título) son DISCOS de
+// UN álbum, no álbumes distintos. Detectamos la carpeta de disco (→ el álbum es la carpeta padre) y quitamos
+// el "CDn/Disc n" del final del título para que todos los discos resuelvan al MISMO release_group (medium por disco). ──
+const _DISC_DIR_RE = /^(?:cd|dis[ck]|disco|disque|volume|vol)\s*\.?\s*0*(\d{1,2})$/i;                       // carpeta "CD1", "Disc 2", "Vol. 1"…
+const _DISC_TITLE_RE = /[\s\-–—_]*[\[(]?\s*(?:cd|dis[ck]|disco|disque)\s*\.?\s*0*(\d{1,2})\s*[)\]]?\s*$/i;   // "… CD1", "… (Disc 2)" al final del título
+function discInfo(dir, rawAlbum) {
+  let discFolder = null, albumDir = dir;
+  const dm = _DISC_DIR_RE.exec(path.basename(dir));
+  if (dm) { discFolder = parseInt(dm[1], 10) || null; albumDir = path.dirname(dir); }   // la carpeta es un disco → el álbum es la de arriba
+  let album = String(rawAlbum || ''), titleDisc = null;
+  const tm = _DISC_TITLE_RE.exec(album);
+  if (tm) { const base = album.slice(0, tm.index).trim(); if (base.length >= 2) { titleDisc = parseInt(tm[1], 10) || null; album = base; } }   // quita "CDn" solo si queda un título con sentido
+  return { albumDir, discFolder, album: album || String(rawAlbum || ''), titleDisc };
+}
 function titleFromName(file, artistName) {
   let n = path.basename(file).replace(/\.[^.]+$/, '');
   n = n.replace(/^\s*\d{1,3}\s*[-._)\s]\s*/, '');        // nº de pista inicial
@@ -247,15 +261,22 @@ try {
     // Se agrupa TODO el álbum bajo «Various Artists» (si no, cada pista con distinto ARTIST crearía su
     // propio release_group). El crédito de cada PISTA conserva su artista real (abajo, tcid).
     const isComp = /^\s*(1|true|yes|y)\s*$/i.test(String(t.COMPILATION || '')) || /^\s*(various\s*artists|varios\s*artistas|v\.?\s*a\.?|varios|verschiedene(\s*interpreten)?|multi[\s-]?artist)\s*$/i.test(String(t.ALBUMARTIST || '').trim());
-    // derivación desde carpeta/fichero cuando faltan etiquetas
-    const fm = (!t.ALBUM || (!t.ALBUMARTIST && !t.ARTIST && !isComp)) ? folderMeta(dir) : { artist: null, album: null };
-    const album = t.ALBUM || fm.album || path.basename(dir);
+    // Multi-disco: si el fichero está en una carpeta de disco (CD1/CD2…), el álbum es la carpeta padre.
+    const bnDir = path.basename(dir);
+    const discDirM = _DISC_DIR_RE.exec(bnDir);
+    const albumDir = discDirM ? path.dirname(dir) : dir;      // directorio del ÁLBUM (no el del disco)
+    const discFolder = discDirM ? (parseInt(discDirM[1], 10) || null) : null;
+    // derivación desde carpeta/fichero cuando faltan etiquetas (sobre el directorio del ÁLBUM)
+    const fm = (!t.ALBUM || (!t.ALBUMARTIST && !t.ARTIST && !isComp)) ? folderMeta(albumDir) : { artist: null, album: null };
+    const rawAlbum = t.ALBUM || fm.album || path.basename(albumDir);
+    const di = discInfo(albumDir, rawAlbum);                  // quita "CDn/Disc n" del final del título
+    const album = di.album;
     let artistName = t.ALBUMARTIST || t.ARTIST || fm.artist;
-    if (!artistName && !isComp) { const gp = path.dirname(dir); if (nrm(gp) !== nrm(ROOT) && path.basename(gp)) artistName = _clean(path.basename(gp)); }   // carpeta abuela = artista (si no es la raíz)
+    if (!artistName && !isComp) { const gp = path.dirname(albumDir); if (nrm(gp) !== nrm(ROOT) && path.basename(gp)) artistName = _clean(path.basename(gp)); }   // carpeta abuela del álbum = artista
     artistName = isComp ? 'Various Artists' : (artistName || 'Artista desconocido');
     const title = t.TITLE || titleFromName(file, artistName);
     const trackNo = parseInt(t.TRACKNUMBER, 10) || (ok + 1);
-    const discNo = parseInt(t.DISCNUMBER, 10) || 1;
+    const discNo = parseInt(t.DISCNUMBER, 10) || discFolder || di.titleDisc || 1;   // tag > carpeta de disco > marcador del título > 1
     const identified = !!(t.ALBUM && (t.ARTIST || t.ALBUMARTIST) && t.TITLE);   // "identificado" POR ETIQUETAS (Inspector)
     const haveGraph = !!(album && title);                                        // crea el álbum/pista aunque falten tags
     // identificadores embebidos (convención Picard) + ISRC + AcoustID
