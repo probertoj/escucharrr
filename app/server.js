@@ -206,7 +206,7 @@ function buildQ(db) { return {
   filesForAlbum: db.prepare(`SELECT lf.path FROM local_file lf
      JOIN track tr ON (tr.id=lf.track_id OR tr.recording_id=lf.recording_id)
      JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
-     WHERE rel.release_group_id=? AND lf.format IN ('FLAC','MP3','M4A','AAC')
+     WHERE rel.release_group_id=? AND lf.format IN ('FLAC','MP3','M4A','AAC','AIFF','AIF','OGG','OGA','OPUS')
      ORDER BY CASE lf.format WHEN 'FLAC' THEN 0 ELSE 1 END LIMIT 8`),
   albumIdOf: db.prepare(`SELECT rel.release_group_id aid FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE tr.id=?`),
   spotifyLocal: db.prepare(`SELECT rg.id, rg.title, (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) artist, (SELECT barcode FROM "release" rel WHERE rel.release_group_id=rg.id AND rel.barcode IS NOT NULL LIMIT 1) barcode FROM release_group rg`),
@@ -1523,7 +1523,7 @@ function tryEmbeddedCover(res, id) {   // arte embebido en los FLAC (cacheado en
       let pic = null;
       for (const f of Q.filesForAlbum.all(id)) {   // arte embebido según el formato del fichero
         const fx = path.extname(f.path).slice(1).toLowerCase();
-        try { pic = fx === 'flac' ? flacPicture(f.path) : fx === 'mp3' ? TAGS.mp3Picture(f.path) : (fx === 'm4a' || fx === 'aac') ? TAGS.mp4Picture(f.path) : null; } catch (e) { pic = null; }
+        try { pic = fx === 'flac' ? flacPicture(f.path) : fx === 'mp3' ? TAGS.mp3Picture(f.path) : (fx === 'm4a' || fx === 'aac') ? TAGS.mp4Picture(f.path) : (fx === 'aiff' || fx === 'aif') ? TAGS.aiffPicture(f.path) : (fx === 'ogg' || fx === 'oga' || fx === 'opus') ? TAGS.oggPicture(f.path) : null; } catch (e) { pic = null; }
         if (pic) break;
       }
       if (pic) {

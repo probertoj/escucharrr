@@ -51,11 +51,9 @@ function id3TextPair(buf) {
 const ID3_TEXT = { TIT2: 'TITLE', TPE1: 'ARTIST', TPE2: 'ALBUMARTIST', TALB: 'ALBUM', TRCK: 'TRACKNUMBER', TPOS: 'DISCNUMBER', TCON: 'GENRE', TSRC: 'ISRC', TDRC: 'DATE', TYER: 'DATE', TDRL: 'DATE', TDAT: '_DATE2' };
 const TXXX_MAP = { 'MUSICBRAINZ ALBUM ID': 'MUSICBRAINZ_ALBUMID', 'MUSICBRAINZ RELEASE GROUP ID': 'MUSICBRAINZ_RELEASEGROUPID', 'MUSICBRAINZ RELEASE TRACK ID': 'MUSICBRAINZ_TRACKID', 'ACOUSTID ID': 'ACOUSTID_ID', 'ACOUSTID FINGERPRINT': 'ACOUSTID_FINGERPRINT' };
 
-// Lee la cabecera ID3v2 y devuelve { tags, apic, end } (end = byte donde acaba el ID3 → inicio del audio)
-function readId3v2(fd) {
-  const h = Buffer.alloc(10); if (fs.readSync(fd, h, 0, 10, 0) < 10 || h.toString('latin1', 0, 3) !== 'ID3') return { tags: {}, apic: null, end: 0 };
-  const ver = h[3], flags = h[5], size = synchsafe(h.subarray(6, 10));
-  const body = Buffer.alloc(size); fs.readSync(fd, body, 0, size, 10);
+// Analiza el CUERPO de un ID3v2 (bytes tras la cabecera de 10) → { tags, apic }. Compartido por MP3
+// (cabecera al principio del fichero) y AIFF (chunk 'ID3 ').
+function id3ParseBody(body, ver, flags) {
   const tags = {}; let apic = null; let p = 0;
   if (flags & 0x40) { const es = ver >= 4 ? synchsafe(body.subarray(p, p + 4)) : body.readUInt32BE(p); p += es; }   // extended header
   const idLen = ver === 2 ? 3 : 4, hdrLen = ver === 2 ? 6 : 10;
@@ -77,7 +75,21 @@ function readId3v2(fd) {
     } catch (e) {}
     p += fsize;
   }
-  return { tags, apic, end: 10 + size };
+  return { tags, apic };
+}
+// ID3v2 desde un buffer completo (cabecera incluida): para el chunk 'ID3 ' de AIFF.
+function id3FromBuffer(buf) {
+  if (!buf || buf.length < 10 || buf.toString('latin1', 0, 3) !== 'ID3') return { tags: {}, apic: null };
+  const ver = buf[3], flags = buf[5], size = synchsafe(buf.subarray(6, 10));
+  return id3ParseBody(buf.subarray(10, Math.min(buf.length, 10 + size)), ver, flags);
+}
+// Lee la cabecera ID3v2 al principio del fichero (MP3) y devuelve { tags, apic, end } (end = inicio del audio).
+function readId3v2(fd) {
+  const h = Buffer.alloc(10); if (fs.readSync(fd, h, 0, 10, 0) < 10 || h.toString('latin1', 0, 3) !== 'ID3') return { tags: {}, apic: null, end: 0 };
+  const ver = h[3], flags = h[5], size = synchsafe(h.subarray(6, 10));
+  const body = Buffer.alloc(size); fs.readSync(fd, body, 0, size, 10);
+  const r = id3ParseBody(body, ver, flags);
+  return { tags: r.tags, apic: r.apic, end: 10 + size };
 }
 // APIC: enc(1) · mime(latin1, NUL) · type(1) · desc(enc, NUL) · imagen
 function parseApic(frame, isV2) {
@@ -231,4 +243,111 @@ function mp4Picture(file) {
 function sniffMime(b) { if (b[0] === 0xff && b[1] === 0xd8) return 'image/jpeg'; if (b[0] === 0x89 && b[1] === 0x50) return 'image/png'; if (b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') return 'image/webp'; if (b[0] === 0x47 && b[1] === 0x49) return 'image/gif'; return null; }
 function mimeExt(m) { return ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' })[m] || 'jpg'; }
 
-module.exports = { readMp3, readMp4, mp3Picture, mp4Picture };
+// ── Vorbis comments (OGG Vorbis / Opus; mismo formato que el bloque VORBIS_COMMENT de FLAC) ──
+const VORBIS_KEYS = new Set(['TITLE', 'ALBUM', 'ARTIST', 'ALBUMARTIST', 'TRACKNUMBER', 'DISCNUMBER', 'DATE', 'GENRE', 'ISRC', 'MUSICBRAINZ_TRACKID', 'MUSICBRAINZ_ALBUMID', 'MUSICBRAINZ_RELEASEGROUPID', 'ACOUSTID_ID', 'ACOUSTID_FINGERPRINT']);
+function parseVorbisComments(b, start) {
+  const tags = {}; let pic = null; let p = start;
+  const u32 = () => { const v = b.readUInt32LE(p); p += 4; return v; };
+  try {
+    if (p + 4 > b.length) return { tags, pic };
+    const vlen = u32(); p += vlen;                      // vendor string
+    if (p + 4 > b.length) return { tags, pic };
+    const count = u32();
+    for (let i = 0; i < count && p + 4 <= b.length; i++) {
+      const l = u32(); if (p + l > b.length) break;
+      const s = b.toString('utf8', p, p + l); p += l;
+      const eq = s.indexOf('='); if (eq <= 0) continue;
+      const key = s.slice(0, eq).toUpperCase(), val = s.slice(eq + 1);
+      if (key === 'METADATA_BLOCK_PICTURE') { if (!pic) { try { pic = parseFlacPictureBody(Buffer.from(val, 'base64')); } catch (e) {} } }
+      else if (key === 'COVERART' && !pic) { try { const d = Buffer.from(val, 'base64'); const m = sniffMime(d) || 'image/jpeg'; pic = { mime: m, ext: mimeExt(m), data: d }; } catch (e) {} }
+      else if (VORBIS_KEYS.has(key)) { if (key === 'GENRE') { if (!tags.GENRE) tags.GENRE = mapGenre(val); } else if (key === 'TRACKNUMBER' || key === 'DISCNUMBER') tags[key] = String(val).split('/')[0]; else if (!tags[key]) tags[key] = val; }
+    }
+  } catch (e) {}
+  return { tags, pic };
+}
+// Cuerpo de un bloque PICTURE de FLAC (lo mismo que hay en METADATA_BLOCK_PICTURE codificado en base64)
+function parseFlacPictureBody(b) {
+  let p = 0; const u = () => { const v = b.readUInt32BE(p); p += 4; return v; };
+  u();                                                  // picture type
+  const ml = u(); const mime = b.toString('latin1', p, p + ml).toLowerCase(); p += ml;
+  const dl = u(); p += dl;                              // description
+  p += 16;                                              // width/height/depth/colors
+  const il = u(); if (p + il > b.length) return null;
+  const data = b.subarray(p, p + il);
+  const m = /^image\//.test(mime) ? mime : (sniffMime(data) || 'image/jpeg');
+  return { mime: m, ext: mimeExt(m), data: Buffer.from(data) };
+}
+// ── OGG (Vorbis/Opus): reensambla los primeros paquetes (un solo bitstream lógico, típico en audio) ──
+function oggPackets(buf, maxPackets) {
+  const packets = []; let p = 0, cur = null;
+  while (p + 27 <= buf.length && packets.length < maxPackets) {
+    if (buf.toString('latin1', p, p + 4) !== 'OggS') break;
+    const nseg = buf[p + 26], segStart = p + 27, dataStart = segStart + nseg;
+    if (dataStart > buf.length) break;
+    let off = dataStart;
+    for (let i = 0; i < nseg; i++) {
+      const len = buf[segStart + i];
+      if (off + len > buf.length) return packets;        // paquete fuera del buffer leído: devolvemos lo que hay
+      cur = cur ? Buffer.concat([cur, buf.subarray(off, off + len)]) : Buffer.from(buf.subarray(off, off + len));
+      off += len;
+      if (len < 255) { packets.push(cur); cur = null; if (packets.length >= maxPackets) break; }
+    }
+    p = off;
+  }
+  return packets;
+}
+function oggLastGranule(fd, size) {                       // última granulepos (total de muestras) para la duración
+  const n = Math.min(size, 65536); const tail = Buffer.alloc(n); fs.readSync(fd, tail, 0, n, size - n);
+  for (let i = tail.length - 27; i >= 0; i--) { if (tail[i] === 0x4f && tail.toString('latin1', i, i + 4) === 'OggS') { try { return Number(tail.readBigUInt64LE(i + 6)); } catch (e) { return 0; } } }
+  return 0;
+}
+function oggScan(file, headBytes, wantPic) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const head = Buffer.alloc(Math.min(size, headBytes)); fs.readSync(fd, head, 0, head.length, 0);
+    const pkts = oggPackets(head, 3);
+    const info = { sampleRate: null, channels: null, bits: null, durationMs: null }; let tags = {}, pic = null, isOpus = false, preSkip = 0, gotComments = false;
+    for (const pk of pkts) {
+      if (pk.length >= 12 && pk[0] === 1 && pk.toString('latin1', 1, 7) === 'vorbis') { info.channels = pk[11]; info.sampleRate = pk.readUInt32LE(12); }
+      else if (pk.length >= 7 && pk[0] === 3 && pk.toString('latin1', 1, 7) === 'vorbis') { const r = parseVorbisComments(pk, 7); tags = r.tags; pic = r.pic; gotComments = true; }
+      else if (pk.length >= 19 && pk.toString('latin1', 0, 8) === 'OpusHead') { isOpus = true; info.channels = pk[9]; preSkip = pk.readUInt16LE(10); info.sampleRate = pk.readUInt32LE(12) || 48000; }
+      else if (pk.length >= 8 && pk.toString('latin1', 0, 8) === 'OpusTags') { const r = parseVorbisComments(pk, 8); tags = r.tags; pic = r.pic; gotComments = true; }
+    }
+    if (!wantPic) { const g = oggLastGranule(fd, size); if (g > 0) { if (isOpus) info.durationMs = Math.round(Math.max(0, g - preSkip) / 48000 * 1000); else if (info.sampleRate) info.durationMs = Math.round(g / info.sampleRate * 1000); } }
+    return { info, tags, pic, gotComments };
+  } finally { fs.closeSync(fd); }
+}
+function readOgg(file) { const r = oggScan(file, 1 << 20, false); return { info: r.info, tags: r.tags }; }   // 1MB: cubre comentarios con carátula grande
+function oggPicture(file) { return oggScan(file, 1 << 20, true).pic || null; }
+
+// ── AIFF (IFF big-endian): COMM (info) + chunk 'ID3 ' (etiquetas/carátula, convención iTunes) ──
+function read80BitFloat(b, off) {                        // sample rate en IEEE-754 80-bit extendido (big-endian)
+  const exp = (((b[off] & 0x7f) << 8) | b[off + 1]);
+  let mant = 0; for (let i = 0; i < 8; i++) mant = mant * 256 + b[off + 2 + i];
+  if (exp === 0 && mant === 0) return 0;
+  const v = mant * Math.pow(2, exp - 16383 - 63);
+  return (b[off] & 0x80) ? -v : v;
+}
+function readAiff(file) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const magic = Buffer.alloc(12); if (fs.readSync(fd, magic, 0, 12, 0) < 12 || magic.toString('latin1', 0, 4) !== 'FORM' || !/^AIF[FC]$/.test(magic.toString('latin1', 8, 12))) return null;
+    const info = { sampleRate: null, channels: null, bits: null, durationMs: null }; let tags = {}, apic = null;
+    const readAt = (pos, len) => { const b = Buffer.alloc(len); const n = fs.readSync(fd, b, 0, len, pos); return n === len ? b : b.subarray(0, n); };
+    let off = 12;
+    while (off + 8 <= size) {
+      const chdr = readAt(off, 8); if (chdr.length < 8) break;
+      const id = chdr.toString('latin1', 0, 4), sz = chdr.readUInt32BE(4), dataPos = off + 8;
+      if (id === 'COMM') { const c = readAt(dataPos, Math.min(sz, 64)); if (c.length >= 18) { info.channels = c.readUInt16BE(0); const frames = c.readUInt32BE(2); info.bits = c.readUInt16BE(6); const sr = read80BitFloat(c, 8); info.sampleRate = Math.round(sr) || null; if (sr > 0) info.durationMs = Math.round(frames / sr * 1000); } }
+      else if (id === 'ID3 ' || id === 'id3 ') { const c = readAt(dataPos, Math.min(sz, 1 << 20)); const r = id3FromBuffer(c); tags = r.tags; apic = r.apic; }
+      if (sz <= 0) break;
+      off = dataPos + sz + (sz & 1);                     // los chunks se alinean a byte par
+    }
+    return { info, tags, apic };
+  } finally { fs.closeSync(fd); }
+}
+function aiffPicture(file) { try { const r = readAiff(file); return (r && r.apic) || null; } catch (e) { return null; } }
+
+module.exports = { readMp3, readMp4, readOgg, readAiff, mp3Picture, mp4Picture, oggPicture, aiffPicture };

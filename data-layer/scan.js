@@ -180,7 +180,7 @@ function walk(dir, out) {
     const f = path.join(dir, e.name);
     let isDir = false; try { isDir = e.isDirectory(); } catch (x) {}
     if (isDir) walk(f, out);
-    else if (/\.(flac|wav|dsf|dff|mp3|m4a|aac)$/i.test(e.name)) { out.push(f); seenPaths.add(nrm(f)); }   // sin pérdida + MP3/M4A/AAC
+    else if (/\.(flac|wav|dsf|dff|mp3|m4a|aac|aiff|aif|ogg|oga|opus)$/i.test(e.name)) { out.push(f); seenPaths.add(nrm(f)); }   // sin pérdida + MP3/M4A/AAC/AIFF/OGG/Opus
   }
 }
 const files = []; walk(path.resolve(ROOT), files);
@@ -215,7 +215,8 @@ try {
   for (const file of files) {
     const ext = path.extname(file).slice(1).toLowerCase();
     const parseOne = () => ext === 'flac' ? readFlac(file) : ext === 'dsf' ? readDsf(file) : ext === 'dff' ? readDff(file)
-      : ext === 'mp3' ? TAGS.readMp3(file) : (ext === 'm4a' || ext === 'aac') ? TAGS.readMp4(file) : readWav(file);
+      : ext === 'mp3' ? TAGS.readMp3(file) : (ext === 'm4a' || ext === 'aac') ? TAGS.readMp4(file)
+      : (ext === 'aiff' || ext === 'aif') ? TAGS.readAiff(file) : (ext === 'ogg' || ext === 'oga' || ext === 'opus') ? TAGS.readOgg(file) : readWav(file);
     let parsed = null, perr = null;
     for (let i = 0; i < 2 && !parsed; i++) { try { parsed = parseOne(); } catch (e) { perr = e; if (i === 0) sleepSync(200); } }   // un reintento (SMB transitorio)
     if (!parsed && perr) { console.warn('  error leyendo', path.basename(file), perr.message); try { insSkip.run(file, 'error al leer: ' + (perr.code || perr.message)); } catch (x) {} }
