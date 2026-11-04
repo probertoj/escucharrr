@@ -38,13 +38,19 @@ async function fetchCoverFor(db, { id, mbid, appDir, size = 500 }) {
   const prov = db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at)
      VALUES('release_group',?,'cover',?,?,datetime('now'))
      ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source=excluded.source, source_ref=excluded.source_ref, fetched_at=datetime('now')`);
-  if (r.status === 404 || (r.status === 200 && !r.buf)) { prov.run(id, 'none', page); return { found: false, miss: true }; }
-  if (r.status !== 200 || !r.buf) return { found: false, status: r.status };   // transitorio → reintentable
+  if (r.status === 404 || (r.status === 200 && !r.buf)) {   // CAA no tiene carátula → marcador negativo (si la BD está ocupada, reintentable)
+    try { prov.run(id, 'none', page); return { found: false, miss: true }; } catch (e) { return { found: false, status: 'db' }; }
+  }
+  if (r.status !== 200 || !r.buf) return { found: false, status: r.status || 'net' };   // transitorio → reintentable
   const ext = EXT[r.mime] || 'jpg';
   const rel = path.join('cache', 'covers', `${id}.${ext}`).replace(/\\/g, '/');   // relativa a app/
   try { fs.writeFileSync(path.join(appDir, rel), r.buf); } catch (e) { return { found: false, status: 'write' }; }
-  db.prepare("UPDATE release_group SET cover_path=?, cover_mime=?, updated_at=datetime('now') WHERE id=?").run(rel, r.mime || 'image/jpeg', id);
-  prov.run(id, 'coverartarchive', page);
+  // Escrituras en BD tolerantes a bloqueo (SQLITE_BUSY con otro escritor): si fallan, es transitorio y
+  // reintentable — el fichero ya está, solo falta apuntarlo. No dejamos el error propagar (atascaría la cola).
+  try {
+    db.prepare("UPDATE release_group SET cover_path=?, cover_mime=?, updated_at=datetime('now') WHERE id=?").run(rel, r.mime || 'image/jpeg', id);
+    prov.run(id, 'coverartarchive', page);
+  } catch (e) { return { found: false, status: 'db' }; }
   return { found: true, path: rel, mime: r.mime };
 }
 

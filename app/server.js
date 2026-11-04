@@ -297,8 +297,7 @@ async function handleLiderarrr(req, res, u) {
   if (sub === 'sync-identify' && req.method === 'POST') {   // adopta la identificación MusicBrainz ya hecha en Liderarrr
     try {
       const report = await syncLiderarrrIdentify();
-      // Tras adoptar MBIDs, baja en 2º plano las portadas que falten (CAA): los recién identificados no las tenían.
-      _spawnIngest([path.join(_DL, 'covers.js'), '--db', DB_PATH]).then(o => o && console.log('  [liderarrr] portadas:', o)).catch(() => {});
+      spawnCoversBackfill('liderarrr');   // baja en 2º plano las portadas que falten (una sola instancia)
       return sendJSON(res, { ok: true, report });
     } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
   }
@@ -1809,6 +1808,19 @@ const _coverTried = new Set();      // rg ids ya intentados en caliente (evita r
 const _coverQueue = [];             // cola de { id, mbid }
 let _coverActive = 0;
 const COVER_CONC = 3;
+// Backfill de portadas de TODA la biblioteca (covers.js) — UNA sola instancia a la vez. Sin esta guardia,
+// cada llamada al sync de Liderarrr lanzaba un proceso nuevo: varios a la vez saturan CAA/archive.org y la
+// BD (y llegaron a atascar la descarga perezosa). covers.js ya salta los álbumes con provenance 'cover'.
+let _coversBackfillRunning = false;
+function spawnCoversBackfill(tag) {
+  if (_coversBackfillRunning) { console.log('  [' + tag + '] backfill de portadas ya en marcha — no relanzo'); return false; }
+  _coversBackfillRunning = true;
+  _spawnIngest([path.join(_DL, 'covers.js'), '--db', DB_PATH])
+    .then(o => { if (o) console.log('  [' + tag + '] portadas:', o); sseBroadcast('library'); })
+    .catch(() => {})
+    .finally(() => { _coversBackfillRunning = false; });
+  return true;
+}
 function queueCoverFetch(id, mbid) {
   if (!mbid || _coverTried.has(id)) return;
   if (Q.coverTried.get(id)) { _coverTried.add(id); return; }   // ya consultado alguna vez (hubo o no portada)
