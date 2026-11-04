@@ -423,8 +423,10 @@ UI), tema claro/oscuro/auto (sin color de acento), eventos SSE de biblioteca (si
 1. **Mapeo y limpieza de géneros** — renombrar etiquetas crudas a un género canónico y ocultar ruido;
    convierte "sin clasificar" en algo accionable. Alto valor con una biblioteca de 25k álbumes de tags
    dispares. Roon `component_edit_genre_mappings`/`edit_genre_mapping_hide`. **P2**.
-2. **Reanálisis por álbum desde la UI** — botón que corre `analyze.js`/`waveform.js --rg` en segundo
-   plano para un disco (loudness/waveform), sin tocar el escaneo global. Roon `edit_album_reanalyze`. **P3**.
+2. ~~**Reanálisis por álbum desde la UI**~~ ✅ **HECHO** — botón «Reanalizar» en la ficha de disco (cuando hay
+   audio local) que encadena `analyze.js --rg --force` + `waveform.js --rg --force` en procesos aparte
+   (WAL + busy_timeout), sin tocar el escaneo global. `POST /api/album/reanalyze {rg}`; estado `reanalyzing`
+   en `/api/album` + SSE `library` al terminar. Roon `edit_album_reanalyze`.
 3. **Temas: color de acento (+ "del disco")** sobre el claro/oscuro/auto ya existente. Plexamp
    themes/skins/accent/palette. **P3**.
 4. **Notificaciones in-app (toasts)** para eventos de fondo: escaneo terminado, deseo **conseguido** vía

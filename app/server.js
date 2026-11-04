@@ -608,6 +608,8 @@ function album(id) {
   a.hidden = Q.flagGet.get('release_group', id, 'hidden') ? 1 : 0;
   a.versions = versionsOf(id, a.title);   // otras ediciones del mismo álbum en tu biblioteca
   a.tracks = Q.tracks.all(id);
+  a.has_audio = a.tracks.some(t => t.playable) ? 1 : 0;   // ¿hay ficheros locales que (re)analizar?
+  a.reanalyzing = _reanalyzing.has(id) ? 1 : 0;            // ¿corre ahora un reanálisis de loudness/waveform?
   a.credits = Q.credits.all(id).map(c => ({ role: c.role, instrument: c.instrument, artists: (c.artists || '').split(',') }));
   a.tags = Q.tagsOfAlbum.all(id).map(r => r.name);   // etiquetas de usuario
   const sp = Q.spotifyOf.get(id) || {};   // ¿este disco está en tu biblioteca de Spotify?
@@ -1545,6 +1547,7 @@ function watchConfig() {
   return { cfgPath, music, obsidianConfig, vault, obs };
 }
 function _spawnIngest(args) { return new Promise(r => { const p = cp.spawn(process.execPath, args, { cwd: _DL }); let o = ''; p.stdout.on('data', d => o += d); p.stderr.on('data', d => o += d); p.on('close', () => r(o.trim().split('\n').pop() || '')); }); }
+const _reanalyzing = new Set();   // release_group_ids con un reanálisis (loudness + waveform) en curso
 let _ingPending = new Set(), _ingTimer = null, _ingRunning = false;
 function _ingSchedule(kind) { _ingPending.add(kind); clearTimeout(_ingTimer); _ingTimer = setTimeout(_ingRun, 1500); }   // debounce 1.5 s
 // Sync INCREMENTAL de una sola nota (cuando cambia un .md en el vault): obsidian-sync --only,
@@ -1985,6 +1988,31 @@ async function handleIdentifyApply(req, res) {
   } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 
+// ── REANALIZAR un álbum desde la UI (estilo Roon edit_album_reanalyze) ───────────
+// POST /api/album/reanalyze {rg} → recalcula loudness/ReplayGain (analyze.js) y la barra
+// de onda (waveform.js) SOLO de ese disco, con --force, en procesos aparte (WAL + busy_timeout
+// sostienen al escritor extra). Fire-and-forget: responde al momento y avisa por SSE al terminar.
+async function handleReanalyze(req, res) {
+  try {
+    const b = await readBody(req);
+    const rg = parseInt(b.rg, 10);
+    if (!rg) { res.writeHead(400); return res.end(JSON.stringify({ ok: false, error: 'falta rg' })); }
+    if (_reanalyzing.has(rg)) return sendJSON(res, { ok: true, running: true, already: true });
+    _reanalyzing.add(rg);
+    sseBroadcast('library');   // refleja el estado «analizando» en la ficha al instante
+    (async () => {
+      try {
+        const lo = await _spawnIngest([path.join(_DL, 'analyze.js'), '--db', DB_PATH, '--rg', String(rg), '--force']);
+        if (lo) console.log('  [reanalyze] loudness rg', rg, '→', lo);
+        const wf = await _spawnIngest([path.join(_DL, 'waveform.js'), '--db', DB_PATH, '--rg', String(rg), '--force']);
+        if (wf) console.log('  [reanalyze] waveform rg', rg, '→', wf);
+      } catch (e) { console.log('  [reanalyze] error rg', rg, String(e.message)); }
+      finally { _reanalyzing.delete(rg); sseBroadcast('library'); }
+    })();
+    return sendJSON(res, { ok: true, running: true });
+  } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+}
+
 // ── Guardar la reseña/bio DE VUELTA en la nota de Obsidian (son .md) ──────────────
 // Preserva el frontmatter tal cual y reemplaza solo el cuerpo; escritura atómica
 // (fichero temporal + rename) dentro del vault; espeja el estado en la BD como hace el sync.
@@ -2110,6 +2138,7 @@ http.createServer((req, res) => {
   if (u.pathname === '/api/lyrics') return void getLyrics(parseInt(u.searchParams.get('track'), 10)).then(r => sendJSON(res, r)).catch(() => sendJSON(res, { found: false }));
   if (u.pathname === '/api/identify' && req.method === 'GET') return void handleIdentifySuggest(req, res, u);
   if (u.pathname === '/api/identify/apply' && req.method === 'POST') return void handleIdentifyApply(req, res);
+  if (u.pathname === '/api/album/reanalyze' && req.method === 'POST') return void handleReanalyze(req, res);
   if (u.pathname === '/api/playlists' || u.pathname === '/api/playlist' || u.pathname.startsWith('/api/playlist/')) return void handlePlaylists(req, res, u);
   if (u.pathname === '/api/smartlists' || u.pathname === '/api/smartlist' || u.pathname.startsWith('/api/smartlist/')) return void handleSmart(req, res, u);
   try {
