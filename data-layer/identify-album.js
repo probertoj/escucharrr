@@ -136,18 +136,8 @@ async function applyMbid(db, rgId, releaseMbid, opts = {}) {
   const mb = opts.mb || makeMb();
   const rel = await mb('release/' + releaseMbid + '?inc=release-groups');
   const rgMbid = rel['release-group'] && rel['release-group'].id;
-  // UNIQUE de release_group.mbid: ese release-group ya está en OTRO álbum de la biblioteca. Pasa cuando el
-  // mismo lanzamiento está partido en varios discos locales (recopilación de 2 CD = un solo release-group en
-  // MusicBrainz). En vez de reventar con el error SQL, avisamos de cuál es y proponemos unirlos.
-  if (rgMbid) {
-    const other = db.prepare('SELECT id, title FROM release_group WHERE mbid=? AND id!=?').get(rgMbid, rgId);
-    if (other) {
-      // De momento no se puede asignar el mismo MBID a dos álbumes (falta el modelo de «versiones» de Roon).
-      // Red de seguridad para no reventar con el error SQL crudo; el agrupado por versiones está en el roadmap.
-      const e = new Error('Esta edición ya está en tu biblioteca como «' + other.title + '» (el mismo lanzamiento de MusicBrainz). Aún no agrupamos copias como versiones (estilo Roon), así que de momento no puedo asignar el mismo MBID a dos álbumes.');
-      e.code = 'MBID_IN_USE'; e.other = other; throw e;
-    }
-  }
+  // Modelo de VERSIONES (estilo Roon): varias copias locales pueden compartir el MBID del release-group; ya no
+  // se rechaza. (El UNIQUE de release_group.mbid se quitó en la migración; se agrupan como versiones.)
   // UNIQUE de release.mbid: no pisar si esa edición ya está en otra release local.
   const relClash = db.prepare('SELECT id FROM "release" WHERE mbid=? AND release_group_id!=?').get(releaseMbid, rgId);
   const tx = db;

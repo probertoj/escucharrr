@@ -70,7 +70,13 @@ function renderAlbum(a){
   const clabel=c=>c.role==='instrumento'&&c.instrument?tInst(c.instrument):(c.role==='voz'&&c.instrument?'voz ('+tInst(c.instrument)+')':c.role);
   const credits=(a.credits||[]).length?`<div class="sec">Créditos</div><div class="credits">`+a.credits.map(c=>`<div class="c"><div class="role">${esc(clabel(c))}</div>${c.artists.map(esc).join(', ')}</div>`).join('')+`</div>`:'';
   // otras ediciones del mismo álbum en la biblioteca (deluxe/remaster/año/país…), estilo Roon
-  const versions=(a.versions||[]).length?`<div class="sec">Otras versiones <span style="color:var(--muted);font-size:14px;font-weight:400;font-family:var(--sans)">${a.versions.length}</span></div><div class="versions">`+a.versions.map(v=>`<a class="verrow" href="album.html?id=${v.id}"><span class="vt">${esc(v.title)}</span><span class="vm">${[v.format,v.year].filter(Boolean).map(esc).join(' · ')}</span></a>`).join('')+`</div>`:'';
+  // Versiones (estilo Roon): copias del mismo lanzamiento en tu biblioteca, con la «Principal» marcada.
+  const pbadge=`<span class="pbadge">Principal</span>`;
+  const curTracks=(a.tracks||[]).length;
+  const versions=(a.version_count>1)?`<div class="sec">Versiones <span style="color:var(--muted);font-size:14px;font-weight:400;font-family:var(--sans)">${a.version_count} en tu biblioteca</span></div><div class="versions">`
+    +`<div class="verrow cur"><span class="vt">Esta copia${a.is_primary?' '+pbadge:''}</span><span class="vm">${[a.format,curTracks?curTracks+' pistas':''].filter(Boolean).map(esc).join(' · ')}</span></div>`
+    +a.versions.map(v=>`<a class="verrow" href="album.html?id=${v.id}"><span class="vt">${esc(v.title)}${v.primary?' '+pbadge:''}</span><span class="vm">${[v.format,v.tracks?v.tracks+' pistas':'',v.year].filter(Boolean).map(esc).join(' · ')}</span></a>`).join('')
+    +`</div>`:'';
   // Más del artista (profundizar en su discografía) y artistas afines de tu biblioteca (profundizar en sonidos), estilo Roon.
   const artNm=esc(a.artist||'');
   const moreBy=(a.more_albums||[]).length?`<div class="sec">Más de ${a.artist_id?`<a href="artist.html?id=${a.artist_id}" style="color:inherit;text-decoration:none">${artNm}</a>`:artNm}</div><div class="shelf">`+a.more_albums.map(al=>`<a class="shcard" href="album.html?id=${al.id}" title="${esc(al.title)}"><div class="cv"><img src="/api/cover?rg=${al.id}" alt="" loading="lazy"></div><div class="nm">${esc(al.title)}</div><div class="yr">${al.year||''}</div></a>`).join('')+`</div>`:'';

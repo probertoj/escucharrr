@@ -12,6 +12,39 @@ function addCol(db, table, name, decl) {
   return true;
 }
 
+// Modelo de VERSIONES (estilo Roon): varias copias locales del mismo lanzamiento comparten el MBID del
+// release-group. El `UNIQUE` original en release_group.mbid lo prohibía (y reventaba al identificar). Aquí lo
+// quitamos reconstruyendo la tabla a partir de SU PROPIO `CREATE TABLE` (solo se borra el UNIQUE de mbid), de
+// modo que se preservan TODAS las columnas (incluidas las añadidas por migración) y los ids (las FKs apuntan a
+// release_group.id). Guardado: solo corre si el UNIQUE sigue ahí. Deja un índice NO único para buscar por mbid.
+function dropMbidUnique(db) {
+  const hasUniq = db.prepare('PRAGMA index_list(release_group)').all().some(i => i.origin === 'u' && i.unique);
+  if (!hasUniq) return false;
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='release_group'").get();
+  if (!row || !row.sql) return false;
+  let newSql = row.sql.replace(/CREATE TABLE\s+["`\[]?release_group["`\]]?/i, 'CREATE TABLE release_group_new');
+  newSql = newSql.replace(/(\bmbid\b\s+TEXT)\s+UNIQUE/i, '$1');
+  if (/\bmbid\b\s+TEXT\s+UNIQUE/i.test(newSql) || !/release_group_new/.test(newSql)) return false;   // la edición no salió → no tocar
+  const colList = db.prepare('PRAGMA table_info(release_group)').all().map(c => '"' + c.name + '"').join(',');
+  // Soltar vistas/triggers antes del rebuild (SQLite revalida los objetos del esquema al soltar/renombrar la
+  // tabla y fallaría porque referencian release_group); se recrean idénticos desde su propio SQL al terminar.
+  const objs = db.prepare("SELECT name, type, sql FROM sqlite_master WHERE type IN ('view','trigger') AND sql IS NOT NULL").all();
+  db.exec('PRAGMA foreign_keys=OFF');   // (no-op dentro de transacción, por eso va antes del BEGIN)
+  db.exec('BEGIN');
+  try {
+    for (const o of objs) db.exec('DROP ' + (o.type === 'view' ? 'VIEW' : 'TRIGGER') + ' IF EXISTS "' + o.name + '"');
+    db.exec(newSql);
+    db.exec(`INSERT INTO release_group_new (${colList}) SELECT ${colList} FROM release_group`);
+    db.exec('DROP TABLE release_group');
+    db.exec('ALTER TABLE release_group_new RENAME TO release_group');
+    db.exec('CREATE INDEX IF NOT EXISTS ix_rg_mbid ON release_group(mbid)');
+    for (const o of objs) db.exec(o.sql);   // recrear vistas/triggers idénticos
+    db.exec('COMMIT');
+  } catch (e) { try { db.exec('ROLLBACK'); } catch (_) {} try { db.exec('PRAGMA foreign_keys=ON'); } catch (_) {} throw e; }
+  try { db.exec('PRAGMA foreign_keys=ON'); } catch (_) {}
+  return true;
+}
+
 // Añade las columnas de identificación (ISRC / AcoustID / fingerprint) si faltan.
 function migrate(db) {
   // WAL + espera: permite 1 escritor + varios lectores a la vez (servidor + watcher + herramientas).
@@ -41,6 +74,7 @@ function migrate(db) {
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_isrc ON recording(isrc)');
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_acoustid ON recording(acoustid)');
   db.exec('CREATE INDEX IF NOT EXISTS ix_file_size ON local_file(size_bytes)');   // para reconciliar movimientos/renombrados por identidad
+  if (dropMbidUnique(db)) added.push('release_group.mbid: UNIQUE quitado (modelo de versiones, estilo Roon)');
   // v_album.title ahora prioriza el título editado por el usuario (user_edit field='title') sobre rg.title.
   // Recreamos la vista en BD existentes (CREATE VIEW IF NOT EXISTS no la actualizaría). El título original
   // queda como orig_title: ensureRg sigue casando por rg.title, así que un reescaneo NO duplica el álbum.
@@ -71,4 +105,4 @@ LEFT JOIN tier t ON t.key = rt.tier_key`);
   return added;
 }
 
-module.exports = { migrate };
+module.exports = { migrate, dropMbidUnique };

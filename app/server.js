@@ -68,6 +68,10 @@ function initAppSchema(d) {
     `CREATE INDEX IF NOT EXISTS ix_flag_subject ON flag(subject_type, subject_id)`,
     `CREATE INDEX IF NOT EXISTS ix_rating_subject ON rating(subject_type, subject_id)`,
   ]) { try { d.exec(ix); } catch (e) {} }
+  // Modelo de versiones (estilo Roon): quita el UNIQUE de release_group.mbid si sigue puesto (una sola vez).
+  // El servidor no pasa por migrate.js, así que lo aplicamos aquí también. Recrea las vistas por dentro.
+  // require perezoso: initAppSchema se llama antes de los require de módulo de más abajo.
+  try { require('../data-layer/migrate').dropMbidUnique(d); } catch (e) { console.error('  [migrate] dropMbidUnique:', e.message); }
   // v_album.title prioriza el título editado por el usuario (user_edit field='title') sobre rg.title, y expone
   // orig_title. El escaneo corre migrate.js, pero el servidor puede arrancar solo: recrea aquí la vista si está
   // en la forma antigua (CREATE VIEW IF NOT EXISTS no la actualizaría). rg.title queda intacto → ensureRg no duplica.
@@ -215,7 +219,6 @@ async function syncLiderarrrIdentify() {
                 artists_scanned: 0, artists_adopted: 0, artists_already: 0, artists_no_local: 0, artists_conflict: 0, total: 0, diag: null };
   const idx = lidOwnedIndex();   // matchKey(artista,título) → rg_id local (cacheado)
   const getRgMbid = db.prepare('SELECT mbid FROM release_group WHERE id=?');
-  const rgByMbid = db.prepare('SELECT id FROM release_group WHERE mbid=?');
   const setRgMbid = db.prepare("UPDATE release_group SET mbid=?, updated_at=datetime('now') WHERE id=?");
   const provUp = db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at)
       VALUES(?,?,'mbid','liderarrr',?,datetime('now'))
@@ -250,8 +253,7 @@ async function syncLiderarrrIdentify() {
       if (!rgId) { rep.albums_no_local++; continue; }
       const cur = getRgMbid.get(rgId);
       if (cur && cur.mbid) { rep.albums_already++; continue; }          // ya identificado (tuyo o previo) → no tocar
-      const owner = rgByMbid.get(mb);
-      if (owner && owner.id !== rgId) { rep.albums_conflict++; continue; }   // ese MBID ya está en otro álbum local → UNIQUE
+      // Modelo de versiones: adoptamos el mbid aunque OTRO álbum local ya lo tenga (copias = versiones).
       try { setRgMbid.run(mb, rgId); provUp.run('release_group', rgId, mb); rep.albums_adopted++; } catch (e) { rep.albums_conflict++; }
     }
     if (albums.length < LIMIT) break;
@@ -328,6 +330,8 @@ async function spotifyAccessToken() {
 function buildQ(db) { return {
   genresOf: db.prepare(`SELECT group_concat(g.name,'|') gs FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id WHERE rgg.release_group_id=?`),
   formatOf: db.prepare(`SELECT rel.format f FROM "release" rel WHERE rel.release_group_id=? LIMIT 1`),
+  rgsByMbid: db.prepare(`SELECT id, title, substr(first_release,1,4) year FROM release_group WHERE mbid=?`),   // versiones: mismo release-group
+  trackCountOf: db.prepare(`SELECT COUNT(*) n FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE rel.release_group_id=?`),
   // Lista de biblioteca: columnas base baratas. listen_later/has_audio/played/géneros/formato/tags
   // se resuelven en conjunto (ver libraryList), no con subconsultas correladas por fila.
   library: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.tier_rank,
@@ -748,16 +752,24 @@ function baseTitle(t) {
   s = s.replace(/[^a-z0-9]+/g, ' ').trim();
   return s;
 }
-function versionsOf(id, title) {
-  if (VER_DISC_RE.test(title || '')) return [];
-  const base = baseTitle(title); if (base.length < 2) return [];
-  const art = Q.albumMainArtist.get(id); if (!art) return [];
-  const out = [];
-  for (const c of Q.rgsByArtistName.all(art.name)) {
-    if (c.id === id || VER_DISC_RE.test(c.title) || baseTitle(c.title) !== base) continue;
-    out.push({ id: c.id, title: c.title, year: c.year || null, format: (Q.formatOf.get(c.id) || {}).f || null });
+const _FMT_RANK = { FLAC: 0, ALAC: 1, WAV: 2, AIFF: 3, AIF: 3, APE: 4, WV: 5, DSF: 1, DFF: 1, M4A: 6, AAC: 7, OGG: 8, OGA: 8, OPUS: 9, MP3: 10 };
+function formatRank(f) { const r = _FMT_RANK[String(f || '').toUpperCase()]; return r == null ? 50 : r; }
+// Grupo de VERSIONES (estilo Roon): copias locales del mismo lanzamiento. Señal fuerte = mismo MBID de
+// release-group; para no identificados, heurística de título (mismo artista + título base). Marca la «Primary»
+// (más pistas → mejor formato → id más bajo). Devuelve TODO el grupo (incluido el actual), enriquecido.
+function versionGroup(id, mbid, title) {
+  const ids = new Map();
+  if (mbid) for (const c of Q.rgsByMbid.all(mbid)) ids.set(c.id, c);
+  const art = Q.albumMainArtist.get(id);
+  if (art && !VER_DISC_RE.test(title || '')) {
+    const base = baseTitle(title);
+    if (base.length >= 2) for (const c of Q.rgsByArtistName.all(art.name)) if (!VER_DISC_RE.test(c.title) && baseTitle(c.title) === base) ids.set(c.id, c);
   }
-  return out.sort((x, y) => String(y.year || '').localeCompare(String(x.year || '')) || x.title.localeCompare(y.title));
+  ids.set(id, ids.get(id) || { id, title, year: null });
+  const list = [...ids.values()].map(c => ({ id: c.id, title: c.title, year: c.year || null, format: (Q.formatOf.get(c.id) || {}).f || null, tracks: (Q.trackCountOf.get(c.id) || {}).n || 0 }));
+  list.sort((a, b) => b.tracks - a.tracks || formatRank(a.format) - formatRank(b.format) || a.id - b.id);
+  if (list.length) list[0].primary = true;
+  return list;
 }
 function album(id) {
   const a = Q.album.get(id); if (!a) return null;
@@ -781,7 +793,10 @@ function album(id) {
   a.mbid_source = a.mbid ? ((prov.find(x => x.field === 'mbid') || {}).source || null) : null;   // 'liderarrr' | 'user-identify' | … (para el distintivo de procedencia)
   a.cover_pref = (Q.coverPref.get(id) || {}).value || 'auto';   // fuente de portada elegida (auto/file/download/none)
   a.hidden = Q.flagGet.get('release_group', id, 'hidden') ? 1 : 0;
-  a.versions = versionsOf(id, a.title);   // otras ediciones del mismo álbum en tu biblioteca
+  const _grp = versionGroup(id, a.mbid, a.title);   // copias del mismo lanzamiento = versiones (estilo Roon)
+  a.version_count = _grp.length;
+  a.is_primary = (_grp.find(v => v.id === id) || {}).primary ? 1 : 0;
+  a.versions = _grp.filter(v => v.id !== id).map(v => ({ id: v.id, title: v.title, year: v.year, format: v.format, tracks: v.tracks, primary: v.primary ? 1 : 0 }));
   a.tracks = Q.tracks.all(id);
   a.has_audio = a.tracks.some(t => t.playable) ? 1 : 0;   // ¿hay ficheros locales que (re)analizar?
   a.reanalyzing = _reanalyzing.has(id) ? 1 : 0;            // ¿corre ahora un reanálisis de loudness/waveform?
