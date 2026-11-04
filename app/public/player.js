@@ -1316,6 +1316,12 @@ window.player = (function () {
   document.addEventListener('keydown', function (e) {
     if (kbTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
     var k = e.key, len;
+    if (k === 'Escape') {   // cerrar «Ahora suena» a pantalla completa (o un panel abierto) y volver atrás
+      let closed = false;
+      if (npfs && npfs.style.display === 'flex') { toggleNpFs(); closed = true; }
+      else { [typeof eqpanel !== 'undefined' && eqpanel, typeof zpanel !== 'undefined' && zpanel, typeof lypanel !== 'undefined' && lypanel, typeof dsppanel !== 'undefined' && dsppanel].forEach(p => { if (p && p.style.display === 'block') { p.style.display = 'none'; closed = true; } }); }
+      if (closed) e.preventDefault(); return;
+    }
     if (k === ' ' || k === 'Spacebar') { e.preventDefault(); toggle(); }
     else if (k === 'ArrowRight' && e.shiftKey) { e.preventDefault(); next(); }
     else if (k === 'ArrowLeft' && e.shiftKey) { e.preventDefault(); prev(); }
