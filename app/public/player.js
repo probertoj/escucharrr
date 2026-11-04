@@ -25,15 +25,19 @@ window.player = (function () {
   // lo que cambia es que la POSICIÓN del slider (0–1) mapea perceptualmente a dB desde el suelo
   // hasta 0 dB (unidad), con el extremo inferior en silencio real. Así el arrastre va fino: cada
   // tramo del recorrido cambia los dB por igual, en vez de amontonar todo el cambio audible arriba.
-  const VOL_FLOOR_DB = -40;                                   // suelo del fader (−40 dB → silencio). Más suave que −60: evita la «zona muerta» en el cuarto inferior (al 25% ≈ −30 dB, aún audible). Ajusta este número para cambiar el tacto del volumen.
-  // Tope de volumen (soft limit) estilo Roon (`volume_soft_limit` / presets `zone_settings_negN_db`):
-  // dB máximo del fader; 0 = sin límite. El recorrido va de VOL_FLOOR_DB (silencio) al tope.
+  // Curva de volumen = POTENCIA: gain = tope · pos^VOL_EXP. A diferencia de un fader en dB con suelo, no
+  // tiene «zona muerta» abajo (baja suave hasta silencio en pos 0) y es audible en todo el recorrido, pero
+  // sigue dando más resolución perceptual que el lineal. VOL_EXP es el único mando del tacto: ↑ = más
+  // suave/graduado abajo, ↓ = más lineal. VOL_FLOOR_DB solo acota el tope de volumen (soft limit).
+  const VOL_EXP = 2;
+  const VOL_FLOOR_DB = -40;                                   // límite inferior del TOPE de volumen (no de la curva)
   let volLimitDb = 0; try { const n = parseFloat(localStorage.getItem('escucharrr.vollimit')); if (n <= 0 && n > VOL_FLOOR_DB) volLimitDb = n; } catch (e) {}
   const topDb = () => volLimitDb;
-  const dbToLin = db => db <= VOL_FLOOR_DB ? 0 : Math.pow(10, db / 20);
+  const dbToLin = db => db <= -120 ? 0 : Math.pow(10, db / 20);
   const linToDb = v => v <= 0 ? -Infinity : 20 * Math.log10(v);
-  const posToVol = p => { p = Math.max(0, Math.min(1, p)); return p <= 0 ? 0 : dbToLin(VOL_FLOOR_DB + (topDb() - VOL_FLOOR_DB) * p); };
-  const volToPos = v => { if (v <= 0) return 0; const db = linToDb(v), t = topDb(); return db <= VOL_FLOOR_DB ? 0 : db >= t ? 1 : (db - VOL_FLOOR_DB) / (t - VOL_FLOOR_DB); };
+  const capLin = () => volLimitDb < 0 ? dbToLin(volLimitDb) : 1;                        // ganancia máxima (tope); 1 = sin tope
+  const posToVol = p => { p = Math.max(0, Math.min(1, p)); return capLin() * Math.pow(p, VOL_EXP); };
+  const volToPos = v => { const c = capLin(); if (v <= 0 || c <= 0) return 0; return Math.min(1, Math.pow(v / c, 1 / VOL_EXP)); };
   const volDbLabel = v => { if (v <= 0) return '−∞ dB'; const db = linToDb(v); return (db > 0.05 ? '+' : db < -0.05 ? '−' : '') + Math.abs(db).toFixed(1) + ' dB'; };
   try { const s = JSON.parse(localStorage.getItem(KEY)); if (s) { q = s.q || []; idx = (s.idx == null ? -1 : s.idx); } } catch (e) {}
   // zona de salida: nombre + dispositivo (base para multi-sala al estilo Roon; hoy = salida de este equipo)
@@ -472,7 +476,7 @@ window.player = (function () {
         </div>
         <div style="display:flex;align-items:center;justify-content:center;gap:20px;color:var(--text-2);margin-top:9px">
           <span data-act="mute" style="cursor:pointer;display:inline-flex" title="Silenciar (M)">${ic(volIcon(), 18)}</span>
-          <input data-act="vol" type="range" min="0" max="1" step="0.01" value="${volToPos(vol)}" title="Volumen · ${volDbLabel(vol)} (↑↓)" style="width:120px;accent-color:var(--accent)">
+          <input data-act="vol" class="vfader" type="range" min="0" max="1" step="0.01" value="${volToPos(vol)}" title="Volumen · ${volDbLabel(vol)} (↑↓)" style="width:150px;--vp:${(volToPos(vol) * 100).toFixed(1)}%">
           <span data-act="eq" title="Ecualizador y crossfade" style="cursor:pointer;display:inline-flex;${eqOn || xfade > 0 ? 'color:var(--accent)' : ''}">${ic('eq', 18)}</span>
           <span data-act="zone" title="Salida / zona" style="cursor:pointer;display:inline-flex;${nativeMode || upnpMode ? 'color:var(--accent)' : ''}">${ic('zone', 18)}</span>
         </div>
@@ -525,7 +529,7 @@ window.player = (function () {
          </div>
        </div>
        <span data-act="mute" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Silenciar (M)">${ic(volIcon(), 17)}</span>
-       <input data-act="vol" type="range" min="0" max="1" step="0.01" value="${volToPos(vol)}" title="Volumen · ${volDbLabel(vol)} (↑↓)" style="width:72px;accent-color:var(--accent)">
+       <input data-act="vol" class="vfader" type="range" min="0" max="1" step="0.01" value="${volToPos(vol)}" title="Volumen · ${volDbLabel(vol)} (↑↓)" style="width:116px;--vp:${(volToPos(vol) * 100).toFixed(1)}%">
        <span data-act="lyrics" title="${lyHasFor((cur() || {}).trackId) ? 'Letra disponible (L)' : 'Letra (L)'}" style="cursor:pointer;display:inline-flex;color:${lyHasFor((cur() || {}).trackId) ? 'var(--accent)' : 'var(--text-2)'}">${ic('lyrics', 17)}</span>
        <span data-act="eq" title="Ecualizador y crossfade" style="cursor:pointer;display:inline-flex;color:${eqOn || xfade > 0 ? 'var(--accent)' : 'var(--text-2)'}">${ic('eq', 17)}</span>
        <span data-act="zone" title="Salida / zona" style="cursor:pointer;font-size:12px;color:${nativeMode || upnpMode ? 'var(--accent)' : 'var(--text-2)'};display:inline-flex;align-items:center;gap:5px;max-width:160px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${ic('zone', 16)}<span style="overflow:hidden;text-overflow:ellipsis">${zoneLabel()}</span></span>
@@ -783,13 +787,15 @@ window.player = (function () {
   function setVol(v, opts) { vol = Math.max(0, Math.min(1, v)); const cap = dbToLin(topDb()); if (vol > cap) vol = cap; applyVol(); if (irEl) irEl.volume = vol; if (nativeMode) nativeVolumeApply(); else if (upnpMode) upnpVolumeApply(); volFeedback(); if (opts && opts.norender) refreshVolUi(); else render(); }
   // Pequeño ajuste en dB (teclas ±, rueda del ratón): mueve el fader en pasos de dB iguales,
   // como el `volume_step`/`whole_volume_step` de Roon, no en saltos de amplitud.
-  function nudgeVol(dDb) { const p = volToPos(vol), np = Math.max(0, Math.min(1, p + dDb / -VOL_FLOOR_DB)); setVol(np <= 0 && dDb < 0 ? 0 : posToVol(np)); }
+  function nudgeVol(dPos) { const np = Math.max(0, Math.min(1, volToPos(vol) + dPos)); setVol(posToVol(np)); }   // paso en POSICIÓN del fader (teclas/rueda)
   // Refresco ligero del volumen SIN reconstruir la barra (vital al arrastrar: reconstruir el <input>
   // en cada evento 'input' cortaba el arrastre nativo y lo hacía ir a tirones).
+  let _lastVolIcon = null;
   function refreshVolUi() {
-    document.querySelectorAll('[data-act="mute"]').forEach(el => { el.innerHTML = ic(volIcon(), el.closest('#npfs') ? 18 : 17); });
-    const p = volToPos(vol);
-    document.querySelectorAll('[data-act="vol"]').forEach(el => { if (el !== document.activeElement && Math.abs(parseFloat(el.value) - p) > 1e-4) el.value = p; el.title = 'Volumen · ' + volDbLabel(vol) + ' (↑↓)'; });
+    const ico = volIcon();
+    if (ico !== _lastVolIcon) { _lastVolIcon = ico; document.querySelectorAll('[data-act="mute"]').forEach(el => { el.innerHTML = ic(ico, el.closest('#npfs') ? 18 : 17); }); }   // solo reconstruye el SVG al cruzar umbral (no en cada píxel del arrastre)
+    const p = volToPos(vol), lbl = 'Volumen · ' + volDbLabel(vol) + ' (↑↓)';
+    document.querySelectorAll('[data-act="vol"]').forEach(el => { if (el !== document.activeElement && Math.abs(parseFloat(el.value) - p) > 1e-4) el.value = p; el.style.setProperty('--vp', (p * 100).toFixed(1) + '%'); el.title = lbl; });
   }
   // Lectura transitoria del volumen en dB que se auto-oculta (RE de Roon: `volume_feedback_panel`
   // + `volumefeedbacktimer`).
@@ -844,7 +850,7 @@ window.player = (function () {
          <span data-act="radiostop" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Parar la radio">${ic('close', 20)}</span>
        </div>
        <span data-act="mute" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Silenciar (M)">${ic(volIcon(), 17)}</span>
-       <input data-act="vol" type="range" min="0" max="1" step="0.01" value="${volToPos(vol)}" title="Volumen · ${volDbLabel(vol)} (↑↓)" style="width:72px;accent-color:var(--accent)">
+       <input data-act="vol" class="vfader" type="range" min="0" max="1" step="0.01" value="${volToPos(vol)}" title="Volumen · ${volDbLabel(vol)} (↑↓)" style="width:116px;--vp:${(volToPos(vol) * 100).toFixed(1)}%">
        <span data-act="zone" title="Salida / zona" style="cursor:pointer;font-size:12px;color:${nativeMode || upnpMode ? 'var(--accent)' : 'var(--text-2)'};display:inline-flex;align-items:center;gap:5px;max-width:160px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${ic('zone', 16)}<span style="overflow:hidden;text-overflow:ellipsis">${zoneLabel()}</span></span>
        <a href="radio.html" title="Radio" style="color:var(--text-2);text-decoration:none;display:inline-flex;align-items:center">${ic('radio', 16)}</a>`;
     emit();
@@ -1225,7 +1231,7 @@ window.player = (function () {
     const pa = e.target.closest('#dsppanel [data-act="preamp"]'); if (pa) { ensureGraph(); setPreamp(parseFloat(pa.value)); }
   });
   // Rueda del ratón sobre el fader = ajuste fino de ±1 dB (detalle «fino» estilo Roon).
-  document.addEventListener('wheel', e => { const v = e.target.closest('[data-act="vol"]'); if (!v) return; e.preventDefault(); nudgeVol(e.deltaY < 0 ? +1 : -1); }, { passive: false });
+  document.addEventListener('wheel', e => { const v = e.target.closest('[data-act="vol"]'); if (!v) return; e.preventDefault(); nudgeVol(e.deltaY < 0 ? +0.025 : -0.025); }, { passive: false });
 
   // ── scrubbing de la onda: arrastrar para buscar + burbuja de tiempo (hover y arrastre) ──
   function seekBoxFrom(t) { return t && t.closest ? t.closest('#nowbar [data-act="seek"], #npfs [data-act="seek"]') : null; }
@@ -1315,8 +1321,8 @@ window.player = (function () {
     else if (k === 'ArrowLeft' && e.shiftKey) { e.preventDefault(); prev(); }
     else if (k === 'ArrowRight') { e.preventDefault(); len = lenMs(); if (len) seekFrac(Math.min(1, (posMs() + 10000) / len)); }
     else if (k === 'ArrowLeft') { e.preventDefault(); len = lenMs(); if (len) seekFrac(Math.max(0, (posMs() - 10000) / len)); }
-    else if (k === 'ArrowUp') { e.preventDefault(); nudgeVol(+2); }
-    else if (k === 'ArrowDown') { e.preventDefault(); nudgeVol(-2); }
+    else if (k === 'ArrowUp') { e.preventDefault(); nudgeVol(+0.04); }
+    else if (k === 'ArrowDown') { e.preventDefault(); nudgeVol(-0.04); }
     else if (k === 'm' || k === 'M') { setVol(vol === 0 ? (parseFloat(localStorage.getItem(VKEY + '.last')) || 0.8) : (localStorage.setItem(VKEY + '.last', vol), 0)); }
     else if (k === 'f' || k === 'F') { if (cur()) toggleNpFs(); }
     else if (k === 'l' || k === 'L') { toggleLyPanel(); }
