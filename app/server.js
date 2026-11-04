@@ -724,11 +724,54 @@ function album(id) {
   a.reanalyzing = _reanalyzing.has(id) ? 1 : 0;            // ¿corre ahora un reanálisis de loudness/waveform?
   a.credits = Q.credits.all(id).map(c => ({ role: c.role, instrument: c.instrument, artists: (c.artists || '').split(',') }));
   a.tags = Q.tagsOfAlbum.all(id).map(r => r.name);   // etiquetas de usuario
+  // Más del artista (su discografía en tu biblioteca) — para profundizar, estilo Roon. Los «artistas
+  // similares» van aparte (carga perezosa vía Last.fm): el género local es demasiado grueso (85% de los
+  // álbumes tienen un solo género) para dar afinidad fiable.
+  a.more_albums = a.artist_id ? Q.artistAlbums.all(a.artist_id).filter(x => x.id !== id).slice(0, 14) : [];
   const sp = Q.spotifyOf.get(id) || {};   // ¿este disco está en tu biblioteca de Spotify?
   a.spotify_enabled = spotifyConfigured() && !!spotifyTok;
   a.spotify_saved = !!sp.spotify_album_id;
   a.spotify_url = sp.spotify_url || null;
   return a;
+}
+// ── Artistas similares vía Last.fm (editorial; el género local es demasiado grueso) ──
+// Solo necesita la API key pública de Last.fm (no sesión). Caché en memoria por artista.
+let _simCache = new Map();   // nombreNorm → { at, list }
+function lfmApiKey() { return (scrobCfg && scrobCfg.lastfm && scrobCfg.lastfm.apiKey) || ''; }
+async function lastfmSimilar(name) {
+  const key = lidNormName(name); if (!key) return [];
+  const c = _simCache.get(key); if (c && Date.now() - c.at < 6 * 3600e3) return c.list;
+  if (!lfmApiKey()) return null;   // null = Last.fm sin configurar (distinto de "sin resultados")
+  try {
+    const r = await scrobble.post('https://ws.audioscrobbler.com/2.0/', { form: true,
+      body: { method: 'artist.getsimilar', artist: name, api_key: lfmApiKey(), format: 'json', limit: 24, autocorrect: 1 } });
+    const j = JSON.parse(r.body || '{}');
+    const arr = (j.similarartists && j.similarartists.artist) || [];
+    const list = arr.map(x => ({ name: x.name, match: parseFloat(x.match) || 0 })).filter(x => x.name);
+    _simCache.set(key, { at: Date.now(), list });
+    return list;
+  } catch (e) { return []; }
+}
+// índice nombre normalizado → id de artista local (para marcar los que ya tienes)
+let _artIdx = { at: 0, map: null };
+function artistNameIndex() {
+  if (_artIdx.map && Date.now() - _artIdx.at < 15000) return _artIdx.map;
+  const m = new Map();
+  for (const a of db.prepare('SELECT id, name FROM artist').all()) { const k = lidNormName(a.name); if (k && !m.has(k)) m.set(k, a.id); }
+  _artIdx = { at: Date.now(), map: m }; return m;
+}
+async function handleAlbumSimilar(req, res, u) {
+  try {
+    const rg = parseInt(u.searchParams.get('rg'), 10);
+    const art = rg ? Q.albumMainArtist.get(rg) : null;
+    if (!art) return sendJSON(res, { ok: true, configured: !!lfmApiKey(), artists: [] });
+    const sim = await lastfmSimilar(art.name);
+    if (sim === null) return sendJSON(res, { ok: true, configured: false, artists: [] });
+    const idx = artistNameIndex();
+    const out = sim.map(s => { const id = idx.get(lidNormName(s.name)); return { name: s.name, id: id || null, owned: !!id }; });
+    out.sort((a, b) => (b.owned - a.owned));   // primero los que tienes
+    return sendJSON(res, { ok: true, configured: true, artists: out.slice(0, 16) });
+  } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 function libraryList() {
   const rows = Q.library.all();
@@ -2443,6 +2486,7 @@ http.createServer((req, res) => {
   try {
     if (u.pathname === '/api/stream') return streamAudio(req, res, parseInt(u.searchParams.get('track'), 10));
     if (u.pathname === '/api/cover') return serveCover(res, parseInt(u.searchParams.get('rg'), 10));
+    if (u.pathname === '/api/album/similar') return void handleAlbumSimilar(req, res, u);
     if (u.pathname === '/api/peaks') { const pk = peaksOf(parseInt(u.searchParams.get('track'), 10)); return pk ? sendJSON(res, { peaks: pk }) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/trackinfo') {   // espec técnico + loudness de la pista (ruta de señal / nerd stats)
       const t = parseInt(u.searchParams.get('track'), 10);

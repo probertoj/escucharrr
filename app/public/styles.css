@@ -129,7 +129,9 @@ input:focus,select:focus,button:focus-visible{outline:none;border-color:var(--ac
 .hero h1{font-size:33px;margin:3px 0 2px}
 .meta{display:flex;gap:10px 22px;flex-wrap:wrap;align-items:center;font-size:14px;margin:14px 0}
 .meta .k{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em;margin-right:5px}
-.about{background:var(--surface-2);border-radius:13px;padding:16px 20px;font-family:var(--serif);font-size:16.5px;line-height:1.6;margin:16px 0}
+/* Reseña integrada (estilo Roon): texto que fluye, sin caja; la procedencia es un pie discreto. */
+.about{font-family:var(--serif);font-size:16.5px;line-height:1.62;margin:16px 0 4px}
+.about .prov{font-family:var(--sans);font-size:12.5px;margin-bottom:7px}
 /* markdown renderizado de las notas de Obsidian (reseña/bio) */
 .about h1,.about h2,.about h3,.about h4{font-family:var(--serif);line-height:1.22;margin:14px 0 6px;letter-spacing:-.01em}
 .about h1{font-size:1.4em}.about h2{font-size:1.25em}.about h3{font-size:1.1em}.about h4{font-size:1em}
@@ -143,8 +145,28 @@ input:focus,select:focus,button:focus-visible{outline:none;border-color:var(--ac
 .abouttext>:first-child,.biotext>:first-child{margin-top:0}
 .abouttext>:last-child,.biotext>:last-child{margin-bottom:0}
 /* plegado de reseñas/bios largas (estilo Roon toggle_review) */
-.about .revtoggle{color:var(--accent);font-size:12.5px;cursor:pointer;margin-top:8px;font-family:var(--sans);font-weight:500}
+.about .revtoggle{color:var(--accent);font-size:12.5px;cursor:pointer;margin-top:8px;font-family:var(--sans);font-weight:500;text-align:center}
 .about .revtoggle:hover{text-decoration:underline}
+/* Botón de acción compacto (icono redondo) — botonera de disco limpia, estilo Roon */
+.iconbtn{width:38px;height:38px;flex:none;border-radius:50%;background:var(--surface-2);border:1px solid var(--border);color:var(--text-2);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;padding:0;transition:background .12s,color .12s,border-color .12s}
+.iconbtn:hover{background:var(--surface);color:var(--text);border-color:var(--muted)}
+.iconbtn:disabled{opacity:.5;cursor:default}
+.actions{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+/* Estantes horizontales: «Más de [artista]» y «Artistas similares» (para profundizar, estilo Roon) */
+.shelf{display:grid;grid-auto-flow:column;grid-auto-columns:138px;gap:17px;overflow-x:auto;overflow-y:hidden;padding:2px 2px 12px;scroll-snap-type:x proximity}
+.shelf::-webkit-scrollbar{height:8px}
+.shelf::-webkit-scrollbar-thumb{background:transparent;border-radius:999px;border:2px solid transparent;background-clip:padding-box}
+.shelf:hover::-webkit-scrollbar-thumb{background-color:var(--muted);background-clip:padding-box}
+.shcard{text-decoration:none;color:inherit;width:138px;scroll-snap-align:start}
+.shcard .cv{aspect-ratio:1;border-radius:10px;overflow:hidden;background:var(--surface-2);box-shadow:var(--shadow)}
+.shcard .cv img{width:100%;height:100%;object-fit:cover;display:block}
+.shcard.art .cv{border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:var(--serif);font-size:30px;font-weight:600;color:var(--text-2);box-shadow:none;border:1px solid var(--border)}
+.shcard .nm{font-size:13px;font-weight:600;margin-top:8px;line-height:1.25;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.shcard .yr{font-size:12px;color:var(--text-2);margin-top:1px}
+.shcard.art .nm,.shcard.art .yr{text-align:center}
+.shcard:hover .nm{color:var(--accent)}
+.shcard.art.notown .cv{opacity:.72;border-style:dashed}
+.shcard.art.notown .nm{color:var(--text-2)}
 .about.collapsed .abouttext,.about.collapsed .biotext{max-height:280px;overflow:hidden;-webkit-mask-image:linear-gradient(to bottom,#000 74%,transparent);mask-image:linear-gradient(to bottom,#000 74%,transparent)}
 .prov{font-family:var(--sans);font-size:12px;color:var(--text-2);margin-bottom:7px}
 /* selector de fuente de reseña (estilo Roon: tu reseña / Obsidian / editorial) */

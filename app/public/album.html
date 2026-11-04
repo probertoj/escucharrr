@@ -71,6 +71,9 @@ function renderAlbum(a){
   const credits=(a.credits||[]).length?`<div class="sec">Créditos</div><div class="credits">`+a.credits.map(c=>`<div class="c"><div class="role">${esc(clabel(c))}</div>${c.artists.map(esc).join(', ')}</div>`).join('')+`</div>`:'';
   // otras ediciones del mismo álbum en la biblioteca (deluxe/remaster/año/país…), estilo Roon
   const versions=(a.versions||[]).length?`<div class="sec">Otras versiones <span style="color:var(--muted);font-size:14px;font-weight:400;font-family:var(--sans)">${a.versions.length}</span></div><div class="versions">`+a.versions.map(v=>`<a class="verrow" href="album.html?id=${v.id}"><span class="vt">${esc(v.title)}</span><span class="vm">${[v.format,v.year].filter(Boolean).map(esc).join(' · ')}</span></a>`).join('')+`</div>`:'';
+  // Más del artista (profundizar en su discografía) y artistas afines de tu biblioteca (profundizar en sonidos), estilo Roon.
+  const artNm=esc(a.artist||'');
+  const moreBy=(a.more_albums||[]).length?`<div class="sec">Más de ${a.artist_id?`<a href="artist.html?id=${a.artist_id}" style="color:inherit;text-decoration:none">${artNm}</a>`:artNm}</div><div class="shelf">`+a.more_albums.map(al=>`<a class="shcard" href="album.html?id=${al.id}" title="${esc(al.title)}"><div class="cv"><img src="/api/cover?rg=${al.id}" alt="" loading="lazy"></div><div class="nm">${esc(al.title)}</div><div class="yr">${al.year||''}</div></a>`).join('')+`</div>`:'';
   app.innerHTML=`
     <div class="hero">
       <div style="flex:none"><div class="cov"><img src="/api/cover?rg=${a.id}&p=${encodeURIComponent(a.cover_pref||'auto')}" alt="" draggable="false" style="width:100%;height:100%;object-fit:cover;display:block"></div><div class="coverpref">${[['auto','Auto'],['file','Archivo'],['download','Descargada'],['none','Ninguna']].map(([v,l])=>`<span class="cpref${(a.cover_pref||'auto')===v?' on':''}" data-v="${v}" title="Fuente de la portada">${l}</span>`).join('')}</div></div>
@@ -79,7 +82,7 @@ function renderAlbum(a){
         <h1 style="display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap">${esc(a.title)}<button class="titleedit" title="Editar el título del álbum" aria-label="Editar título" style="flex:none;background:none;border:none;color:var(--text-2);cursor:pointer;padding:3px;display:inline-flex;align-items:center">${window.icon('edit',17)}</button></h1>
         ${(a.orig_title&&a.orig_title!==a.title)?`<div style="font-size:12px;color:var(--text-2);margin-top:-4px;margin-bottom:2px">Original: ${esc(a.orig_title)} · <a href="#" class="titlerevert" style="color:var(--accent)">revertir</a></div>`:''}
         <div style="font-size:15px">${artistLink}</div>
-        ${(a.tracks||[]).length?`<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn-accent" id="playalbum" style="display:inline-flex;align-items:center;gap:6px">${window.icon('play',15)}Reproducir</button><button id="radioalbum" title="Radio: reproduce y extiende con pistas afines de tu biblioteca" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('radio',15)}Radio</button><button id="mixalbum" title="Mezcla: una lista afín a este álbum" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('music',15)}Mezcla</button><button id="queuealbum" title="Añadir a la cola" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('queue',15)}A la cola</button><button id="nextalbum" title="Reproducir a continuación" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('next',15)}A continuación</button><button id="addalbum" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('plus',15)}Añadir a lista</button><button id="identifyalbum" title="${a.mbid?'Ya identificado con MusicBrainz — reidentificar':'Emparejar con MusicBrainz por nº de pistas y duraciones'}" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon(a.mbid?'check':'search',15)}${a.mbid?'Reidentificar':'Identificar'}</button>${a.has_audio?`<button id="reanalyzealbum" ${a.reanalyzing?'disabled':''} title="Recalcula el loudness/ReplayGain y la barra de onda de este álbum (en segundo plano, sin tocar el escaneo global)" style="cursor:${a.reanalyzing?'default':'pointer'};background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px;opacity:${a.reanalyzing?'.65':'1'}">${window.icon('refresh',15)}${a.reanalyzing?'Analizando…':'Reanalizar'}</button>`:''}<span id="retoslot"></span></div>`:''}
+        ${(a.tracks||[]).length?`<div class="actions"><button class="btn-accent" id="playalbum" style="display:inline-flex;align-items:center;gap:6px">${window.icon('play',15)}Reproducir</button><button class="iconbtn" id="radioalbum" title="Radio: reproduce y extiende con pistas afines de tu biblioteca">${window.icon('radio',17)}</button><button class="iconbtn" id="mixalbum" title="Mezcla: una lista afín a este álbum">${window.icon('music',17)}</button><button class="iconbtn" id="queuealbum" title="Añadir a la cola">${window.icon('queue',17)}</button><button class="iconbtn" id="nextalbum" title="Reproducir a continuación">${window.icon('next',17)}</button><button class="iconbtn" id="addalbum" title="Añadir a una lista">${window.icon('plus',17)}</button><button class="iconbtn" id="identifyalbum" title="${a.mbid?'Ya identificado con MusicBrainz — reidentificar':'Identificar con MusicBrainz (por nº de pistas y duraciones)'}">${window.icon(a.mbid?'check':'search',17)}</button>${a.has_audio?`<button class="iconbtn" id="reanalyzealbum" ${a.reanalyzing?'disabled':''} title="Recalcula el loudness/ReplayGain y la barra de onda de este álbum">${window.icon('refresh',17)}</button>`:''}<span id="retoslot"></span></div>`:''}
         <div class="meta">
           <span><span class="k">Tier</span> ${tier}</span>
           <span><span class="k">Valoración</span> ${stars}</span>
@@ -100,10 +103,33 @@ function renderAlbum(a){
     ${about}
     ${tracks}
     ${versions}
+    ${moreBy}
+    <div id="similarslot"></div>
     ${credits}`;
   renderTags(a.tags||[]);
   applyCollapse();
   maybeRetoBtn();
+  maybeSimilar();
+}
+// Artistas similares (vía Last.fm) — carga perezosa: no bloquea la ficha y degrada con elegancia.
+const _inits=n=>{const s=String(n||'').replace(/[^\p{L}\p{N} ]/gu,' ').trim().split(/\s+/).filter(Boolean).map(w=>w[0]).join('');return (s||'?').slice(0,2).toUpperCase();};
+async function maybeSimilar(){
+  const slot=document.getElementById('similarslot'); const a=window.ALB; if(!slot||!a) return;
+  let r; try{ r=await fetch('/api/album/similar?rg='+a.id).then(x=>x.json()); }catch(e){ return; }
+  if(!r||!r.ok) return;
+  const arts=(r.artists||[]);
+  if(!arts.length){
+    // Sin Last.fm no hay fuente fiable de afinidad (el género local es demasiado grueso). Nudge discreto.
+    if(r.configured===false) slot.innerHTML=`<div class="sec">Artistas similares</div><div style="color:var(--text-2);font-size:13.5px;background:var(--surface-2);border-radius:11px;padding:12px 15px">Conecta <b>Last.fm</b> en <a href="settings.html" style="color:var(--accent)">Ajustes → Servicios</a> (solo una API key gratuita) para ver artistas afines y profundizar en sonidos parecidos.</div>`;
+    return;
+  }
+  slot.innerHTML=`<div class="sec">Artistas similares</div><div class="shelf">`+arts.map(s=>{
+    const av=`<div class="cv">${esc(_inits(s.name))}</div>`;
+    const sub=s.owned?'en tu biblioteca':'descubrir';
+    return s.owned
+      ? `<a class="shcard art" href="artist.html?id=${s.id}" title="${esc(s.name)}">${av}<div class="nm">${esc(s.name)}</div><div class="yr">${sub}</div></a>`
+      : `<a class="shcard art notown" href="search.html?q=${encodeURIComponent(s.name)}" title="Buscar ${esc(s.name)}">${av}<div class="nm">${esc(s.name)}</div><div class="yr">${sub}</div></a>`;
+  }).join('')+`</div>`;
 }
 function load(){fetch('/api/album?id='+id).then(r=>r.json()).then(renderAlbum).catch(e=>app.innerHTML='error: '+e.message);}
 
@@ -118,7 +144,7 @@ async function maybeRetoBtn(){
   const slot=document.getElementById('retoslot'); if(!slot) return;
   if(LIDOK===null){ try{ const s=await fetch('/api/config/services').then(r=>r.json()); LIDOK=!!(s.liderarrr&&s.liderarrr.connected); }catch(e){ LIDOK=false; } }
   if(!LIDOK){ slot.innerHTML=''; return; }
-  slot.innerHTML=`<button id="retoalbum" title="Añadir este disco a un reto de escucha (Liderarrr)" style="cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px">${window.icon('challenge',15)}Añadir a reto</button>`;
+  slot.innerHTML=`<button class="iconbtn" id="retoalbum" title="Añadir este disco a un reto de escucha (Liderarrr)">${window.icon('challenge',17)}</button>`;
 }
 async function openReto(){
   const a=window.ALB; if(!a) return;
