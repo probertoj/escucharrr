@@ -71,6 +71,11 @@ function migrate(db) {
   if (addCol(db, 'local_file', 'scan_seq', 'INTEGER')) added.push('local_file.scan_seq');
   if (addCol(db, 'local_file', 'missing_since', 'TEXT')) added.push('local_file.missing_since');
   if (addCol(db, 'local_file', 'missing_count', 'INTEGER DEFAULT 0')) added.push('local_file.missing_count');
+  // Modelo de VERSIONES por carpeta (estilo Roon): cada copia física (carpeta de álbum) es un `release`
+  // distinto bajo el mismo release_group. source_dir = carpeta del álbum normalizada (clave de la copia).
+  // NULL en releases antiguos (pre-migración): se tratan como la única copia (primaria) hasta reescanear.
+  if (addCol(db, 'release', 'source_dir', 'TEXT')) added.push('release.source_dir');
+  db.exec('CREATE INDEX IF NOT EXISTS ix_release_rg_dir ON "release"(release_group_id, source_dir)');
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_isrc ON recording(isrc)');
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_acoustid ON recording(acoustid)');
   db.exec('CREATE INDEX IF NOT EXISTS ix_file_size ON local_file(size_bytes)');   // para reconciliar movimientos/renombrados por identidad

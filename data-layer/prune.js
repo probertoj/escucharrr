@@ -86,6 +86,37 @@ function pruneMissingFiles(db, roots, log, opts) {
   return n;
 }
 
+// Limpia copias/versiones y discos que ya no sostienen ningún fichero. Al reagrupar por carpeta (modelo de
+// versiones, estilo Roon) un reescaneo reasigna cada fichero al release/medio de SU carpeta; lo que queda del
+// reparto antiguo (una copia "fundida", o discos sobrantes dentro de una copia adoptada) se queda sin ficheros
+// y debe retirarse (si no, saldrían versiones o discos vacíos). Poda de ABAJO ARRIBA y conservadora: pista sin
+// fichero (ni en lista) → medio sin pistas → release sin medios. NOTA: las pistas SOLO las crea el escaneo a
+// partir de ficheros (el enriquecido no añade tracklist canónico), así que una pista sin fichero es siempre
+// resto del reparto viejo. Conserva el historial: desvincula play.track_id antes de borrar. Se ejecuta ANTES
+// de pruneGraph (que recoge grabaciones/álbumes ya huérfanos).
+function pruneEmptyReleases(db, log) {
+  const r = { track: 0, medium: 0, release: 0 };
+  db.exec('BEGIN');
+  try {
+    // 1) pistas sin fichero (directo o por grabación sin pista) y que no estén en ninguna lista.
+    const tracks = db.prepare(`
+      SELECT tr.id FROM track tr WHERE
+        NOT EXISTS (SELECT 1 FROM local_file   lf WHERE lf.track_id=tr.id OR (lf.recording_id=tr.recording_id AND lf.track_id IS NULL))
+        AND NOT EXISTS (SELECT 1 FROM playlist_item pi WHERE pi.track_id=tr.id OR pi.recording_id=tr.recording_id)`).all();
+    const nullPlay = db.prepare('UPDATE play SET track_id=NULL WHERE track_id=?');
+    const delTrack = db.prepare('DELETE FROM track WHERE id=?');
+    for (const t of tracks) { nullPlay.run(t.id); delTrack.run(t.id); r.track++; }
+    // 2) medios que se quedaron sin pistas.
+    r.medium = db.prepare('DELETE FROM medium WHERE NOT EXISTS (SELECT 1 FROM track tr WHERE tr.medium_id=medium.id)').run().changes;
+    // 3) releases que se quedaron sin medios.
+    r.release = db.prepare('DELETE FROM "release" WHERE NOT EXISTS (SELECT 1 FROM medium m WHERE m.release_id="release".id)').run().changes;
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  const tot = r.track + r.medium + r.release;
+  if (tot && log) log(`limpieza de copias: ${r.release} release(s), ${r.medium} disco(s), ${r.track} pista(s) sin fichero retirados`);
+  return r;
+}
+
 // Recoge la basura del grafo: borra entidades que ya no ancla nada que el usuario quiera
 // conservar. De arriba abajo (álbum → grabación → género/crédito/artista).
 function pruneGraph(db, log) {
@@ -203,4 +234,4 @@ function collapseBogusDiscs(db, log) {
   return fixed;
 }
 
-module.exports = { pruneMissingFiles, pruneGraph, collapseBogusDiscs, isUnder };
+module.exports = { pruneMissingFiles, pruneEmptyReleases, pruneGraph, collapseBogusDiscs, isUnder };

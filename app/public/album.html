@@ -21,6 +21,7 @@ const mmss=ms=>ms?`${Math.floor(ms/60000)}:${String(Math.round(ms%60000/1000)).p
 const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
 const id=+new URLSearchParams(location.search).get('id');
+let curRel=+new URLSearchParams(location.search).get('rel')||null;   // copia (release) seleccionada; si no, la primaria
 const TORD=['excel','si','ok','meh','no'];
 let rawAbout='';   // markdown crudo de la reseña EDITABLE (tuya/Obsidian) para el editor
 let reviews=[], reviewIdx=0;   // todas las fuentes de reseña + la seleccionada (selector estilo Roon)
@@ -73,9 +74,13 @@ function renderAlbum(a){
   // Versiones (estilo Roon): copias del mismo lanzamiento en tu biblioteca, con la «Principal» marcada.
   const pbadge=`<span class="pbadge">Principal</span>`;
   const curTracks=(a.tracks||[]).length;
+  // "Hacer principal": si la copia mostrada NO es la primaria y hay más de una copia física, ofrecer fijarla.
+  const makePrim=(!a.is_primary && a.copy_count>1 && a.release_id)?`<button class="makeprimary" data-rel="${a.release_id}" title="Fijar esta copia como la principal del álbum" style="margin-left:8px;background:none;border:1px solid var(--line);color:var(--text-2);border-radius:999px;padding:1px 9px;font-size:11px;cursor:pointer">Hacer principal</button>`:'';
+  // Enlace de cada versión: una COPIA de este álbum abre ?id&rel=; una versión hermana (otro álbum) abre ?id=.
+  const verHref=v=>v.copy?`album.html?id=${v.id}&rel=${v.rel}`:`album.html?id=${v.id}`;
   const versions=(a.version_count>1)?`<div class="sec">Versiones <span style="color:var(--muted);font-size:14px;font-weight:400;font-family:var(--sans)">${a.version_count} en tu biblioteca</span></div><div class="versions">`
-    +`<div class="verrow cur"><span class="vt">Esta copia${a.is_primary?' '+pbadge:''}</span><span class="vm">${[a.format,curTracks?curTracks+' pistas':''].filter(Boolean).map(esc).join(' · ')}</span></div>`
-    +a.versions.map(v=>`<a class="verrow" href="album.html?id=${v.id}"><span class="vt">${esc(v.title)}${v.primary?' '+pbadge:''}</span><span class="vm">${[v.format,v.tracks?v.tracks+' pistas':'',v.year].filter(Boolean).map(esc).join(' · ')}</span></a>`).join('')
+    +`<div class="verrow cur"><span class="vt">Esta copia${a.is_primary?' '+pbadge:''}${makePrim}</span><span class="vm">${[a.format,curTracks?curTracks+' pistas':''].filter(Boolean).map(esc).join(' · ')}</span></div>`
+    +a.versions.map(v=>`<a class="verrow" href="${verHref(v)}"><span class="vt">${esc(v.title)}${v.primary?' '+pbadge:''}</span><span class="vm">${[v.format,v.tracks?v.tracks+' pistas':'',v.year].filter(Boolean).map(esc).join(' · ')}</span></a>`).join('')
     +`</div>`:'';
   // Más del artista (profundizar en su discografía) y artistas afines de tu biblioteca (profundizar en sonidos), estilo Roon.
   const artNm=esc(a.artist||'');
@@ -137,7 +142,7 @@ async function maybeSimilar(){
       : `<a class="shcard art notown" href="search.html?q=${encodeURIComponent(s.name)}" title="Buscar ${esc(s.name)}">${av}<div class="nm">${esc(s.name)}</div><div class="yr">${sub}</div></a>`;
   }).join('')+`</div>`;
 }
-function load(){fetch('/api/album?id='+id).then(r=>r.json()).then(renderAlbum).catch(e=>app.innerHTML='error: '+e.message);}
+function load(){fetch('/api/album?id='+id+(curRel?'&rel='+curRel:'')).then(r=>r.json()).then(renderAlbum).catch(e=>app.innerHTML='error: '+e.message);}
 
 // ── «Añadir a reto» (solo si Liderarrr está conectado) — tira de su API de retos ──
 let LIDOK=null;   // null=sin comprobar, true/false=estado de conexión (cacheado)
@@ -329,9 +334,10 @@ function applyIdentify(mbid,btn){
 
 // Reproducir: encola el álbum y arranca (el player registra la escucha)
 document.addEventListener('click',e=>{
-  const pd=e.target.closest('#app .playdisc'); if(pd){const d=+pd.dataset.disc;const idx=albumTracks.findIndex(t=>t.disc===d);if(idx>=0)player.playAlbum(id,idx);return;}
-  const b=e.target.closest('.play'); if(b){player.playAlbum(id, +b.dataset.idx); return;}
-  if(e.target.closest('#playalbum')){player.playAlbum(id, 0);return;}
+  const mp=e.target.closest('.makeprimary'); if(mp){const rel=+mp.dataset.rel; mp.disabled=true; fetch('/api/album/make-primary',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rg:id,rel})}).then(r=>r.json()).then(j=>{ if(j.ok){ if(window.toast)toast('Copia principal fijada'); curRel=null; history.replaceState(null,'','album.html?id='+id); load(); } else { mp.disabled=false; toast(j.error||'error'); } }).catch(()=>{mp.disabled=false;toast('error');}); return;}
+  const pd=e.target.closest('#app .playdisc'); if(pd){const d=+pd.dataset.disc;const idx=albumTracks.findIndex(t=>t.disc===d);if(idx>=0)player.playAlbum(id,idx,(window.ALB||{}).release_id);return;}
+  const b=e.target.closest('.play'); if(b){player.playAlbum(id, +b.dataset.idx, (window.ALB||{}).release_id); return;}
+  if(e.target.closest('#playalbum')){player.playAlbum(id, 0, (window.ALB||{}).release_id);return;}
   if(e.target.closest('#radioalbum')){player.radioFrom(id);return;}
   if(e.target.closest('#mixalbum')){player.playMix('album',id);return;}
   if(e.target.closest('#queuealbum')||e.target.closest('#nextalbum')){ const a=window.ALB; if(!a)return; const tr=(a.tracks||[]).filter(t=>t.playable!==0).map(t=>({trackId:t.trackId,recording_id:t.recording_id,title:t.title,artist:a.artist,albumId:a.id,length_ms:t.length_ms,playable:t.playable!==0,gain_db:t.gain_db,peak_dbfs:t.peak_dbfs,album_gain_db:t.album_gain_db,album_peak_dbfs:t.album_peak_dbfs})); if(!tr.length)return; if(e.target.closest('#nextalbum'))player.addNext(tr); else player.enqueue(tr); if(window.toast)toast(e.target.closest('#nextalbum')?'Se reproducirá a continuación':'Añadido a la cola'); return; }

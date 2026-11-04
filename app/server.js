@@ -71,7 +71,9 @@ function initAppSchema(d) {
   // Modelo de versiones (estilo Roon): quita el UNIQUE de release_group.mbid si sigue puesto (una sola vez).
   // El servidor no pasa por migrate.js, así que lo aplicamos aquí también. Recrea las vistas por dentro.
   // require perezoso: initAppSchema se llama antes de los require de módulo de más abajo.
-  try { require('../data-layer/migrate').dropMbidUnique(d); } catch (e) { console.error('  [migrate] dropMbidUnique:', e.message); }
+  // migrate() es idempotente y añade columnas que faltan (incl. release.source_dir del modelo de versiones)
+  // y llama internamente a dropMbidUnique. Así el servidor tiene el esquema al día aunque aún no se haya escaneado.
+  try { require('../data-layer/migrate').migrate(d); } catch (e) { console.error('  [migrate]:', e.message); }
   // v_album.title prioriza el título editado por el usuario (user_edit field='title') sobre rg.title, y expone
   // orig_title. El escaneo corre migrate.js, pero el servidor puede arrancar solo: recrea aquí la vista si está
   // en la forma antigua (CREATE VIEW IF NOT EXISTS no la actualizaría). rg.title queda intacto → ensureRg no duplica.
@@ -370,6 +372,24 @@ function buildQ(db) { return {
      JOIN track tr ON tr.id=lf.track_id JOIN recording r ON r.id=tr.recording_id
      JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
      WHERE rel.release_group_id=? AND lf.path IS NOT NULL ORDER BY m.position, tr.position`),
+  // Versión acotada a UN release (una copia): reproducir/listar la copia primaria, no todas las versiones juntas.
+  albumFilePathsRel: db.prepare(`SELECT lf.path, COALESCE(tr.title, r.title) title FROM local_file lf
+     JOIN track tr ON tr.id=lf.track_id JOIN recording r ON r.id=tr.recording_id
+     JOIN medium m ON m.id=tr.medium_id
+     WHERE m.release_id=? AND lf.path IS NOT NULL ORDER BY m.position, tr.position`),
+  // Releases (copias físicas = versiones, estilo Roon) de un álbum, con nº de pistas y discos de cada uno.
+  releasesOfRg: db.prepare(`SELECT rel.id, rel.date, rel.format, rel.source_dir,
+       (SELECT COUNT(*) FROM medium m JOIN track t ON t.medium_id=m.id WHERE m.release_id=rel.id) tracks,
+       (SELECT COUNT(DISTINCT m.id) FROM medium m WHERE m.release_id=rel.id) discs
+     FROM "release" rel WHERE rel.release_group_id=? ORDER BY rel.id`),
+  // Metadatos de TODOS los releases (para elegir la copia primaria en bloque en la lista de biblioteca).
+  relMeta: db.prepare(`SELECT rel.id, rel.release_group_id rg, rel.date, rel.format,
+       (SELECT COUNT(*) FROM medium m JOIN track t ON t.medium_id=m.id WHERE m.release_id=rel.id) tracks,
+       (SELECT COUNT(DISTINCT m.id) FROM medium m WHERE m.release_id=rel.id) discs
+     FROM "release" rel`),
+  primaryOverrides: db.prepare(`SELECT subject_id rg, value rel FROM user_edit WHERE subject_type='release_group' AND field='primary_release'`),
+  primaryOverride: db.prepare(`SELECT value rel FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='primary_release'`),
+  albumTrackIdsRel: db.prepare(`SELECT tr.id FROM track tr JOIN medium m ON m.id=tr.medium_id WHERE m.release_id=? ORDER BY m.position, tr.position`),
   // Lista de biblioteca: columnas base baratas. listen_later/has_audio/played/géneros/formato/tags
   // se resuelven en conjunto (ver libraryList), no con subconsultas correladas por fila.
   library: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.tier_rank,
@@ -456,6 +476,21 @@ function buildQ(db) { return {
       (SELECT group_concat(DISTINCT a.name) FROM credit c JOIN artist a ON a.id=c.artist_id WHERE c.entity_type='work' AND c.entity_id=(SELECT work_id FROM recording WHERE id=tr.recording_id) AND c.role='composición') composers
      FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
      WHERE rel.release_group_id=? ORDER BY m.position,tr.position`),
+  // Igual que `tracks` pero acotado a UN release (una copia/versión concreta, estilo Roon): la página de álbum
+  // muestra las pistas de la copia primaria (o la seleccionada), no las de todas las versiones concatenadas.
+  tracksRel: db.prepare(`SELECT tr.id trackId, tr.recording_id, m.position disc, tr.position pos, tr.title, tr.length_ms,
+      (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=tr.artist_credit_id ORDER BY acn.position LIMIT 1) artist,
+      (SELECT acn.artist_id FROM artist_credit_name acn WHERE acn.artist_credit_id=tr.artist_credit_id ORDER BY acn.position LIMIT 1) artist_id,
+      EXISTS(SELECT 1 FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id) playable,
+      (SELECT lf.gain_db FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) gain_db,
+      (SELECT lf.peak_dbfs FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) peak_dbfs,
+      (SELECT lf.album_gain_db FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) album_gain_db,
+      (SELECT lf.album_peak_dbfs FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) album_peak_dbfs,
+      (SELECT work_id FROM recording WHERE id=tr.recording_id) work_id,
+      (SELECT w.title FROM work w WHERE w.id=(SELECT work_id FROM recording WHERE id=tr.recording_id)) work,
+      (SELECT group_concat(DISTINCT a.name) FROM credit c JOIN artist a ON a.id=c.artist_id WHERE c.entity_type='work' AND c.entity_id=(SELECT work_id FROM recording WHERE id=tr.recording_id) AND c.role='composición') composers
+     FROM track tr JOIN medium m ON m.id=tr.medium_id
+     WHERE m.release_id=? ORDER BY m.position,tr.position`),
   fileByTrack: db.prepare('SELECT path, format, gain_db FROM local_file WHERE track_id=? LIMIT 1'),
   fileByRec: db.prepare('SELECT path, format, gain_db FROM local_file WHERE recording_id=? LIMIT 1'),
   peaksByTrack: db.prepare('SELECT peaks FROM local_file WHERE track_id=? AND peaks IS NOT NULL LIMIT 1'),
@@ -792,6 +827,30 @@ function baseTitle(t) {
 }
 const _FMT_RANK = { FLAC: 0, ALAC: 1, WAV: 2, AIFF: 3, AIF: 3, APE: 4, WV: 5, DSF: 1, DFF: 1, M4A: 6, AAC: 7, OGG: 8, OGA: 8, OPUS: 9, MP3: 10 };
 function formatRank(f) { const r = _FMT_RANK[String(f || '').toUpperCase()]; return r == null ? 50 : r; }
+// ── Release PRIMARIO de un álbum (estilo Roon): varias copias/carpetas = varios `release`; una es la «Principal»
+// que la página de álbum muestra por defecto. Criterio: mejor formato (lossless>lossy) → más pistas → más reciente
+// → id más bajo. El usuario puede fijarla (user_edit 'primary_release'); esa manda. Un álbum con una sola copia
+// (o releases antiguos sin source_dir) devuelve esa copia — comportamiento idéntico al de antes del modelo.
+function cmpRelease(a, b) {
+  return formatRank(a.format) - formatRank(b.format)
+      || (b.tracks || 0) - (a.tracks || 0)
+      || String(b.date || '').localeCompare(String(a.date || ''))
+      || a.id - b.id;
+}
+function pickPrimaryRelease(rels, overrideRel) {
+  if (!rels || !rels.length) return null;
+  if (overrideRel) { const r = rels.find(x => x.id === overrideRel); if (r) return r.id; }
+  return rels.slice().sort(cmpRelease)[0].id;
+}
+function primaryReleaseId(rg) {
+  const ov = Q.primaryOverride.get(rg);
+  return pickPrimaryRelease(Q.releasesOfRg.all(rg), ov ? parseInt(ov.rel, 10) : null);
+}
+// Etiqueta corta de una copia (versión) para la lista: nombre de la carpeta (distingue copias) si lo hay, si no el formato.
+function copyLabel(r) {
+  if (r.source_dir) { const b = String(r.source_dir).split(/[\\/]/).filter(Boolean).pop(); if (b) return b; }
+  return r.format || 'Copia';
+}
 // Grupo de VERSIONES (estilo Roon): copias locales del mismo lanzamiento. Señal fuerte = mismo MBID de
 // release-group; para no identificados, heurística de título (mismo artista + título base). Marca la «Primary»
 // (más pistas → mejor formato → id más bajo). Devuelve TODO el grupo (incluido el actual), enriquecido.
@@ -809,7 +868,7 @@ function versionGroup(id, mbid, title) {
   if (list.length) list[0].primary = true;
   return list;
 }
-function album(id) {
+function album(id, relId) {
   const a = Q.album.get(id); if (!a) return null;
   a.genres = gmList((Q.genresOf.get(id).gs || '').split('|').filter(Boolean));
   a.format = (Q.formatOf.get(id) || {}).f || null;
@@ -831,11 +890,27 @@ function album(id) {
   a.mbid_source = a.mbid ? ((prov.find(x => x.field === 'mbid') || {}).source || null) : null;   // 'liderarrr' | 'user-identify' | … (para el distintivo de procedencia)
   a.cover_pref = (Q.coverPref.get(id) || {}).value || 'auto';   // fuente de portada elegida (auto/file/download/none)
   a.hidden = Q.flagGet.get('release_group', id, 'hidden') ? 1 : 0;
-  const _grp = versionGroup(id, a.mbid, a.title);   // copias del mismo lanzamiento = versiones (estilo Roon)
-  a.version_count = _grp.length;
-  a.is_primary = (_grp.find(v => v.id === id) || {}).primary ? 1 : 0;
-  a.versions = _grp.filter(v => v.id !== id).map(v => ({ id: v.id, title: v.title, year: v.year, format: v.format, tracks: v.tracks, primary: v.primary ? 1 : 0 }));
-  a.tracks = Q.tracks.all(id);
+  // Copias físicas (versiones por carpeta, estilo Roon): cada carpeta/formato es un `release` bajo este álbum.
+  // La página muestra la copia PRIMARIA por defecto (o la seleccionada por ?rel=); las demás van en "Versiones".
+  const rels = Q.releasesOfRg.all(id);
+  const ovRel = Q.primaryOverride.get(id);
+  const primId = pickPrimaryRelease(rels, ovRel ? parseInt(ovRel.rel, 10) : null);
+  const selRel = (relId && rels.some(r => r.id === relId)) ? relId : primId;
+  a.release_id = selRel;
+  const selMeta = rels.find(r => r.id === selRel) || null;
+  if (selMeta && selMeta.format) a.format = selMeta.format;   // formato de la copia mostrada
+  // versiones hermanas (otros release_groups con el mismo título base / mbid): otros álbumes "versión".
+  const sib = versionGroup(id, a.mbid, a.title).filter(v => v.id !== id)
+    .map(v => ({ id: v.id, title: v.title, year: v.year, format: v.format, tracks: v.tracks, primary: v.primary ? 1 : 0 }));
+  // otras COPIAS de este mismo álbum (distintas de la mostrada): se enlazan con ?id=<rg>&rel=<release>.
+  const copies = rels.filter(r => r.id !== selRel).map(r => ({
+    id, rel: r.id, title: copyLabel(r), year: r.date ? String(r.date).slice(0, 4) : null,
+    format: r.format, tracks: r.tracks, discs: r.discs, primary: r.id === primId ? 1 : 0, copy: 1 }));
+  a.versions = copies.concat(sib);
+  a.version_count = 1 + a.versions.length;                 // esta copia + las demás (copias + hermanas)
+  a.is_primary = (selRel && selRel === primId) ? 1 : 0;
+  a.copy_count = rels.length;                              // nº de copias físicas (carpetas) de este álbum
+  a.tracks = selRel ? Q.tracksRel.all(selRel) : Q.tracks.all(id);
   a.has_audio = a.tracks.some(t => t.playable) ? 1 : 0;   // ¿hay ficheros locales que (re)analizar?
   a.reanalyzing = _reanalyzing.has(id) ? 1 : 0;            // ¿corre ahora un reanálisis de loudness/waveform?
   a.credits = Q.credits.all(id).map(c => ({ role: c.role, instrument: c.instrument, artists: (c.artists || '').split(',') }));
@@ -898,7 +973,8 @@ async function handleAlbumAcoustid(req, res, u) {
     if (!rg) return sendJSON(res, { ok: false, error: 'falta rg' });
     if (!(await acoustidLib.fpcalcAvailable(acoustidFpcalc()))) return sendJSON(res, { ok: false, reason: 'fpcalc', error: 'Falta fpcalc (Chromaprint). Instálalo y, si hace falta, pon su ruta en Ajustes → Servicios.' });
     if (!acoustidKey()) return sendJSON(res, { ok: false, reason: 'key', error: 'Falta la API key de AcoustID (gratis en acoustid.org) — ponla en Ajustes → Servicios.' });
-    const tracks = Q.albumFilePaths.all(rg);
+    const _pr = primaryReleaseId(rg);
+    const tracks = _pr ? Q.albumFilePathsRel.all(_pr) : Q.albumFilePaths.all(rg);   // muestrea la copia primaria
     if (!tracks.length) return sendJSON(res, { ok: false, error: 'El álbum no tiene ficheros locales que analizar.' });
     const r = await acoustidLib.identifyAlbumByFingerprint(db, tracks, acoustidKey(), { mb: identifyAlbum.makeMb(), fpcalcPath: acoustidFpcalc() });
     if (!r.ok) return sendJSON(res, { ok: false, reason: r.reason, scanned: r.scanned || 0, error: r.reason === 'nomatch' ? 'AcoustID no reconoció el álbum (' + (r.scanned || 0) + ' pistas con huella válida).' : 'No se pudo identificar por huella.' });
@@ -920,7 +996,19 @@ function libraryList() {
   const channels = new Map(spec.map(r => [r.id, r.ch]));
   const samplerate = new Map(spec.map(r => [r.id, r.sr]));
   const pstats = new Map(Q.playStats.all().map(r => [r.id, r]));
-  const mediacount = new Map(Q.mediaCount.all().map(r => [r.id, r.mc]));
+  // nº de discos = los del release PRIMARIO de cada álbum (no la suma de todas las copias; si no, un álbum
+  // con 2 copias de 1 disco saldría como "multidisco"). Elegimos la copia primaria en bloque (mismo criterio
+  // que la página de álbum: override de usuario → mejor formato → más pistas → más reciente → id).
+  const relsByRg = new Map();
+  for (const r of Q.relMeta.all()) { let g = relsByRg.get(r.rg); if (!g) { g = []; relsByRg.set(r.rg, g); } g.push(r); }
+  const primOv = new Map(Q.primaryOverrides.all().map(o => [o.rg, parseInt(o.rel, 10)]));
+  const mediacount = new Map(), copycount = new Map();
+  for (const [rg, list] of relsByRg) {
+    copycount.set(rg, list.length);
+    const pid = pickPrimaryRelease(list, primOv.get(rg));
+    const p = list.find(x => x.id === pid);
+    mediacount.set(rg, p ? p.discs : 1);
+  }
   const added = new Map(Q.addedAll.all().map(r => [r.id, r.created_at]));
   const identified = new Set(Q.mbidIds.all().map(r => r.id));
   const played = new Set(Q.playedIds.all().map(r => r.id));
@@ -949,8 +1037,8 @@ function libraryList() {
     a.last_played = ps ? ps.lp : null;           // último play (faceta "last played" de Roon)
     a.added = added.get(a.id) || null;           // fecha de alta en la biblioteca (sort/facet "añadido")
     a.identified = identified.has(a.id) ? 1 : 0;  // tiene MBID (Inspector: identificado)
-    a.media_count = mediacount.get(a.id) || 1;    // nº de discos (Inspector: multidisco)
-    a.has_versions = 0;                           // se marca abajo (Inspector: con otras versiones)
+    a.media_count = mediacount.get(a.id) || 1;    // nº de discos del release primario (Inspector: multidisco)
+    a.has_versions = (copycount.get(a.id) || 1) > 1 ? 1 : 0;   // varias copias (carpetas) = versiones; +abajo las hermanas por título
   }
   // "con otras versiones": agrupa por artista + título base (misma lógica que versionsOf) y marca
   // los que tienen hermanos. Set-based en una pasada sobre las filas ya cargadas.
@@ -976,7 +1064,10 @@ const INSPECTOR_BUCKETS = {
   no_audio: { label: 'Sin audio local', hint: 'Álbum en el grafo sin ningún fichero reproducible (p. ej. tras perder el montaje).',
     where: `NOT EXISTS (SELECT 1 FROM "release" rel JOIN medium m ON m.release_id=rel.id JOIN track tr ON tr.medium_id=m.id JOIN local_file lf ON (lf.track_id=tr.id OR lf.recording_id=tr.recording_id) WHERE rel.release_group_id=a.id)` },
   multidisc: { label: 'Multidisco', hint: 'Más de un disco (box sets, dobles).',
-    where: `(SELECT COUNT(*) FROM "release" rel JOIN medium m ON m.release_id=rel.id WHERE rel.release_group_id=a.id) > 1` },
+    // discos del release con MÁS pistas (proxy de la copia primaria), no la suma de todas las copias/versiones.
+    where: `(SELECT COUNT(DISTINCT m.id) FROM medium m WHERE m.release_id=(
+        SELECT r2.id FROM "release" r2 WHERE r2.release_group_id=a.id
+        ORDER BY (SELECT COUNT(*) FROM medium mm JOIN track t ON t.medium_id=mm.id WHERE mm.release_id=r2.id) DESC, r2.date DESC, r2.id ASC LIMIT 1)) > 1` },
 };
 function inspectorCounts() {
   const rows = db.prepare('SELECT a.id, a.title, a.artist FROM v_album a').all();
@@ -1716,8 +1807,15 @@ function playlistItems(id) {
 }
 function plAdd(id, b) {
   let trackIds = [];
-  if (b.album_id) trackIds = Q.albumTrackIds.all(parseInt(b.album_id, 10)).map(r => r.id);
-  else if (Array.isArray(b.track_ids)) trackIds = b.track_ids.map(Number).filter(Boolean);
+  if (b.album_id) {
+    // Reproducir álbum = reproducir su copia PRIMARIA (o la indicada en b.rel), no todas las versiones juntas.
+    const rgId = parseInt(b.album_id, 10);
+    const rels = Q.releasesOfRg.all(rgId);
+    const ov = Q.primaryOverride.get(rgId);
+    let pr = (b.rel && rels.some(r => r.id === parseInt(b.rel, 10))) ? parseInt(b.rel, 10)
+      : pickPrimaryRelease(rels, ov ? parseInt(ov.rel, 10) : null);
+    trackIds = (pr ? Q.albumTrackIdsRel.all(pr) : Q.albumTrackIds.all(rgId)).map(r => r.id);
+  } else if (Array.isArray(b.track_ids)) trackIds = b.track_ids.map(Number).filter(Boolean);
   if (!trackIds.length) return 0;
   let pos = Q.plMaxPos.get(id).m;
   db.exec('BEGIN');
@@ -2665,6 +2763,15 @@ http.createServer((req, res) => {
   if (u.pathname.startsWith('/api/backup/')) return void handleBackup(req, res, u);
   if (u.pathname === '/api/history') return sendJSON(res, history(parseInt(u.searchParams.get('n'), 10), parseInt(u.searchParams.get('offset'), 10)));
   if (req.method === 'POST' && u.pathname === '/api/edit') return void handleEdit(req, res);
+  if (req.method === 'POST' && u.pathname === '/api/album/make-primary') return void (async () => {
+    try {
+      const b = await readBody(req); const rg = parseInt(b.rg, 10), rel = parseInt(b.rel, 10);
+      if (!rg || !rel) throw new Error('rg/rel requeridos');
+      if (!Q.releasesOfRg.all(rg).some(r => r.id === rel)) throw new Error('esa copia no pertenece a este álbum');
+      Q.edSetUserEdit.run('release_group', rg, 'primary_release', String(rel));   // la copia primaria la elige el usuario (gana sobre la heurística)
+      sseBroadcast('library'); return sendJSON(res, { ok: true, release_id: rel });
+    } catch (e) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: e.message })); }
+  })();
   if (req.method === 'POST' && u.pathname === '/api/obsidian/write') return void handleObsidianWrite(req, res);
   if (u.pathname.startsWith('/api/scrobble/')) return void handleScrobble(req, res, u);
   if (u.pathname === '/api/lyrics') return void getLyrics(parseInt(u.searchParams.get('track'), 10)).then(r => sendJSON(res, r)).catch(() => sendJSON(res, { found: false }));
@@ -2703,7 +2810,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/folders') return sendJSON(res, folderList({ root: u.searchParams.get('root'), path: u.searchParams.get('path') }));
     if (u.pathname === '/api/works') return sendJSON(res, { items: db.prepare(`SELECT w.id, w.title, w.type, (SELECT group_concat(DISTINCT a.name) FROM credit c JOIN artist a ON a.id=c.artist_id WHERE c.entity_type='work' AND c.entity_id=w.id AND c.role='composición') composer, (SELECT COUNT(DISTINCT tr.id) FROM recording r JOIN track tr ON tr.recording_id=r.id WHERE r.work_id=w.id) perf FROM work w ORDER BY w.title`).all() });
     if (u.pathname === '/api/skipped') { let total = 0, items = []; try { total = db.prepare('SELECT COUNT(*) n FROM skipped_file').get().n; items = db.prepare('SELECT path, reason FROM skipped_file ORDER BY path LIMIT 500').all(); } catch (e) {} return sendJSON(res, { total, items }); }
-    if (u.pathname === '/api/album') { const a = album(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
+    if (u.pathname === '/api/album') { const rel = parseInt(u.searchParams.get('rel'), 10) || null; const a = album(parseInt(u.searchParams.get('id'), 10), rel); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/search') return sendJSON(res, search(u.searchParams.get('q'), Math.min(parseInt(u.searchParams.get('n') || '20', 10) || 20, 100)));
     if (u.pathname === '/api/artist') { const a = artist(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/artist/discography') { artistDiscography(parseInt(u.searchParams.get('id'), 10)).then(r => sendJSON(res, r)).catch(e => sendJSON(res, { ok: false, error: String(e.message) })); return; }

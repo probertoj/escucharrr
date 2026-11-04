@@ -120,7 +120,10 @@ function folderMeta(dir) {   // "Artista - Álbum" (con espacios o pegado) → {
 // ── Multi-disco (estilo Roon): varias subcarpetas CD1/CD2 (o un marcador "CDn" en el título) son DISCOS de
 // UN álbum, no álbumes distintos. Detectamos la carpeta de disco (→ el álbum es la carpeta padre) y quitamos
 // el "CDn/Disc n" del final del título para que todos los discos resuelvan al MISMO release_group (medium por disco). ──
-const _DISC_DIR_RE = /^(?:cd|dis[ck]|disco|disque|volume|vol)\s*\.?\s*0*(\d{1,2})$/i;                       // carpeta "CD1", "Disc 2", "Vol. 1"…
+// Carpeta de disco: "CD1", "Disc 2", "Vol. 1", y también con texto descriptivo tras el número —muy común en
+// cajas— como "Disc 1 (Original Album)" o "CD2 - Bonus". El texto solo cuenta tras un separador (espacio/.-:(),
+// etc.), así que "Discovery" (sin dígito) y "Use Your Illusion II" (no empieza por cd/disc/vol) NO casan.
+const _DISC_DIR_RE = /^(?:cd|dis[ck]|disco|disque|volume|vol)\s*\.?\s*0*(\d{1,2})(?:[\s._\-–—:()\[\]].*)?$/i;
 const _DISC_TITLE_RE = /[\s\-–—_]*[\[(]?\s*(?:cd|dis[ck]|disco|disque)\s*\.?\s*0*(\d{1,2})\s*[)\]]?\s*$/i;   // "… CD1", "… (Disc 2)" al final del título
 function discInfo(dir, rawAlbum) {
   let discFolder = null, albumDir = dir;
@@ -148,8 +151,10 @@ const S = {
   insCreditName: db.prepare("INSERT INTO artist_credit_name(artist_credit_id,position,artist_id,name,join_phrase) VALUES(?,1,?,?,'')"),
   rgBy: db.prepare('SELECT id FROM release_group WHERE title=? AND artist_credit_id=?'),
   insRg: db.prepare('INSERT INTO release_group(title,artist_credit_id,primary_type,first_release) VALUES(?,?,?,?)'),
-  relByRg: db.prepare('SELECT id FROM "release" WHERE release_group_id=? LIMIT 1'),
-  insRel: db.prepare('INSERT INTO "release"(release_group_id,title,artist_credit_id,date,format) VALUES(?,?,?,?,?)'),
+  relByRgDir: db.prepare('SELECT id FROM "release" WHERE release_group_id=? AND source_dir=?'),   // la copia exacta (carpeta)
+  relUnclaimed: db.prepare('SELECT id FROM "release" WHERE release_group_id=? AND source_dir IS NULL LIMIT 1'),  // release antiguo (pre-versiones) a adoptar
+  claimRel: db.prepare('UPDATE "release" SET source_dir=? WHERE id=?'),
+  insRel: db.prepare('INSERT INTO "release"(release_group_id,title,artist_credit_id,date,format,source_dir) VALUES(?,?,?,?,?,?)'),
   medBy: db.prepare('SELECT id FROM medium WHERE release_id=? AND position=?'),
   insMed: db.prepare('INSERT INTO medium(release_id,position,format) VALUES(?,?,?)'),
   recBy: db.prepare('SELECT id FROM recording WHERE title=? AND artist_credit_id=?'),
@@ -184,7 +189,14 @@ const trySet = (stmt, ...a) => { try { stmt.run(...a); } catch (e) { if (!/UNIQU
 const ensureArtist = (name) => { const r = S.artistByName.get(name); return r ? r.id : Number(S.insArtist.run(name, name).lastInsertRowid); };
 const ensureCredit = (aid, name) => { const r = S.creditFor.get(aid, name); if (r) return r.id; const c = Number(S.insCredit.run().lastInsertRowid); S.insCreditName.run(c, aid, name); return c; };
 const ensureRg = (title, cid, year) => { const r = S.rgBy.get(title, cid); return r ? r.id : Number(S.insRg.run(title, cid, 'album', year).lastInsertRowid); };
-const ensureRel = (rg, title, cid, date, fmt) => { const r = S.relByRg.get(rg); return r ? r.id : Number(S.insRel.run(rg, title, cid, date, fmt).lastInsertRowid); };
+// Versiones por carpeta (estilo Roon): un `release` por copia física (carpeta de álbum). Clave = (rg, source_dir).
+// Si ya existe esa carpeta, se reutiliza; si no, se ADOPTA un release antiguo sin source_dir (migración, para no
+// dejarlo huérfano al reescanear la única copia); si tampoco, se crea uno nuevo (segunda copia = otra versión).
+const ensureRel = (rg, title, cid, date, fmt, srcDir) => {
+  const r = S.relByRgDir.get(rg, srcDir); if (r) return r.id;
+  const u = S.relUnclaimed.get(rg); if (u) { S.claimRel.run(srcDir, u.id); return u.id; }
+  return Number(S.insRel.run(rg, title, cid, date, fmt, srcDir).lastInsertRowid);
+};
 const ensureMed = (rel, pos, fmt) => { const r = S.medBy.get(rel, pos); return r ? r.id : Number(S.insMed.run(rel, pos, fmt).lastInsertRowid); };
 const ensureRec = (title, cid, len) => { const r = S.recBy.get(title, cid); return r ? r.id : Number(S.insRec.run(title, cid, len).lastInsertRowid); };
 const ensureGenre = (name) => { const r = S.genreBy.get(name); return r ? r.id : Number(S.insGenre.run(name).lastInsertRowid); };
@@ -292,7 +304,7 @@ try {
       const aid = ensureArtist(artistName), cid = ensureCredit(aid, artistName);
       const rg = ensureRg(album, cid, (t.DATE || '').slice(0, 4) || null);
       if (t.GENRE) S.linkGenre.run(rg, ensureGenre(t.GENRE.toLowerCase()));  // minúscula: convención común con MB/Discogs
-      const rel = ensureRel(rg, album, cid, t.DATE || null, fmtLabel);
+      const rel = ensureRel(rg, album, cid, t.DATE || null, fmtLabel, nrm(albumDir));   // una copia (versión) por carpeta de álbum
       const med = ensureMed(rel, discNo, fmtLabel);
       const tcid = t.ARTIST ? ensureCredit(ensureArtist(t.ARTIST), t.ARTIST) : cid;
       recId = ensureRec(title, tcid, inf.durationMs);
@@ -323,6 +335,7 @@ if (PRUNE) {
   // Poda tolerante a red: solo retira un fichero cuya carpeta se enumeró OK (okDirs) y que no se vio
   // (seenPaths), y aun así con lápida (missing_count >= umbral). Gated al montaje sano.
   prune.pruneMissingFiles(db, [path.resolve(ROOT)], (m) => console.log('  ' + m), { seenPaths, okDirs, mountHealthy, scanSeq: SCAN_SEQ, missThreshold: MISS_THRESHOLD, nrm });
+  prune.pruneEmptyReleases(db, (m) => console.log('  ' + m));   // retira copias (releases) sin ficheros tras reagrupar por carpeta
   prune.pruneGraph(db, (m) => console.log('  ' + m));
   prune.collapseBogusDiscs(db, (m) => console.log('  ' + m));   // repara "discos fantasma" de rips con TPOS=TRACKNUMBER
 }
