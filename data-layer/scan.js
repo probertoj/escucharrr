@@ -105,6 +105,25 @@ function readDff(file) {
 }
 // Etiqueta de formato legible para DSD según la tasa (como el "DSD64/128/256" de Roon).
 function dsdLabel(rate) { return rate >= 22579200 ? 'DSD512' : rate >= 11289600 ? 'DSD256' : rate >= 5644800 ? 'DSD128' : rate >= 2822400 ? 'DSD64' : 'DSD'; }
+// ── Fallback SIN ETIQUETAS: deriva artista/álbum/título de la carpeta y el nombre de fichero, para que
+// un álbum sin tags (descargas, rips crudos) APAREZCA agrupado por carpeta en vez de quedar invisible. ──
+const _RELJUNK = /\b(web|webrip|flac|mp3|m4a|aac|wav|ape|alac|vinyl|cd|cdrip|vbr|cbr|v0|v2|320|256|128|24bit|16bit|\d{2,3}\s?khz|hi-?res|lossless|scene|promo|advance|reissue|remaster(?:ed)?|deluxe|premaxxxing)\b/ig;
+const _clean = s => String(s || '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+const _stripRel = s => _clean(String(s || '').replace(/\[[^\]]*\]/g, ' ').replace(/\((?:19|20)\d{2}\)/g, ' ').replace(/\b(19|20)\d{2}\b/g, ' ').replace(_RELJUNK, ' ').replace(/\s*[-–]\s*$/, ''));
+function folderMeta(dir) {   // "Artista - Álbum" (con espacios o pegado) → {artist, album}; si no, solo álbum
+  const base = path.basename(dir);
+  let parts = base.split(/\s+[-–]\s+/);
+  if (parts.length < 2) parts = base.split(/(?<=[\p{L}\p{N}])-(?=\p{L})/u);
+  if (parts.length >= 2) { const artist = _stripRel(parts[0]), album = _stripRel(parts.slice(1).join(' ')); if (artist.length >= 2 && album) return { artist, album }; }
+  return { artist: null, album: _stripRel(base) || _clean(base) };
+}
+function titleFromName(file, artistName) {
+  let n = path.basename(file).replace(/\.[^.]+$/, '');
+  n = n.replace(/^\s*\d{1,3}\s*[-._)\s]\s*/, '');        // nº de pista inicial
+  n = n.replace(/[-_][a-z0-9]{5,8}$/i, '');              // hash de release al final (p. ej. -14ajwq)
+  if (artistName && artistName !== 'Artista desconocido') { const re = new RegExp('^' + artistName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*[-–_\\s]+', 'i'); n = n.replace(re, ''); }   // quita "Artista-" si va delante
+  return _clean(n) || path.basename(file);
+}
 
 // ── statements / helpers del grafo ────────────────────────────────────────────
 const S = {
@@ -223,16 +242,22 @@ try {
     if (!parsed) continue;
     const fmtLabel = (ext === 'dsf' || ext === 'dff') ? dsdLabel(parsed.info.sampleRate) : ext.toUpperCase();
     const st = fs.statSync(file), t = parsed.tags, inf = parsed.info;
-    const album = t.ALBUM || path.basename(path.dirname(file));
+    const dir = path.dirname(file);
     // Recopilación (Various Artists): flag COMPILATION/cpil/TCMP, o ALBUMARTIST = «Various Artists».
     // Se agrupa TODO el álbum bajo «Various Artists» (si no, cada pista con distinto ARTIST crearía su
     // propio release_group). El crédito de cada PISTA conserva su artista real (abajo, tcid).
     const isComp = /^\s*(1|true|yes|y)\s*$/i.test(String(t.COMPILATION || '')) || /^\s*(various\s*artists|varios\s*artistas|v\.?\s*a\.?|varios|verschiedene(\s*interpreten)?|multi[\s-]?artist)\s*$/i.test(String(t.ALBUMARTIST || '').trim());
-    const artistName = isComp ? 'Various Artists' : (t.ALBUMARTIST || t.ARTIST || 'Artista desconocido');
-    const title = t.TITLE || path.basename(file).replace(/\.[^.]+$/, '');
+    // derivación desde carpeta/fichero cuando faltan etiquetas
+    const fm = (!t.ALBUM || (!t.ALBUMARTIST && !t.ARTIST && !isComp)) ? folderMeta(dir) : { artist: null, album: null };
+    const album = t.ALBUM || fm.album || path.basename(dir);
+    let artistName = t.ALBUMARTIST || t.ARTIST || fm.artist;
+    if (!artistName && !isComp) { const gp = path.dirname(dir); if (nrm(gp) !== nrm(ROOT) && path.basename(gp)) artistName = _clean(path.basename(gp)); }   // carpeta abuela = artista (si no es la raíz)
+    artistName = isComp ? 'Various Artists' : (artistName || 'Artista desconocido');
+    const title = t.TITLE || titleFromName(file, artistName);
     const trackNo = parseInt(t.TRACKNUMBER, 10) || (ok + 1);
     const discNo = parseInt(t.DISCNUMBER, 10) || 1;
-    const identified = !!(t.ALBUM && (t.ARTIST || t.ALBUMARTIST) && t.TITLE);
+    const identified = !!(t.ALBUM && (t.ARTIST || t.ALBUMARTIST) && t.TITLE);   // "identificado" POR ETIQUETAS (Inspector)
+    const haveGraph = !!(album && title);                                        // crea el álbum/pista aunque falten tags
     // identificadores embebidos (convención Picard) + ISRC + AcoustID
     const recMbid = t.MUSICBRAINZ_TRACKID || null;          // MBID de la grabación
     const relMbid = t.MUSICBRAINZ_ALBUMID || null;          // MBID de la edición
@@ -242,7 +267,7 @@ try {
     const fingerprint = t.ACOUSTID_FINGERPRINT || null;
 
     let trackId = null, recId = null;
-    if (identified) {
+    if (haveGraph) {
       const aid = ensureArtist(artistName), cid = ensureCredit(aid, artistName);
       const rg = ensureRg(album, cid, (t.DATE || '').slice(0, 4) || null);
       if (t.GENRE) S.linkGenre.run(rg, ensureGenre(t.GENRE.toLowerCase()));  // minúscula: convención común con MB/Discogs
@@ -257,10 +282,10 @@ try {
       if (relMbid) trySet(S.setRelMbid, relMbid, rel);
       if (recMbid) trySet(S.setRecMbid, recMbid, recId);
       if (isrc || acoustid) S.setRecIsrc.run(isrc, acoustid, recId);
-      ident++;
+      if (identified) ident++;
     }
-    const matchBy = recMbid ? 'mb-tag' : (identified ? 'tags' : null);
-    const matchConf = recMbid ? 0.95 : (identified ? 0.7 : null);
+    const matchBy = recMbid ? 'mb-tag' : (identified ? 'tags' : (haveGraph ? 'folder' : null));
+    const matchConf = recMbid ? 0.95 : (identified ? 0.7 : (haveGraph ? 0.35 : null));
     const rec = reconcileMove(file, st.size, inf.durationMs, isrc, fingerprint);   // rebind si es un movimiento/renombrado
     if (rec === 'move') moved++; else if (rec === 'norm') normed++;
     S.insFile.run(file, fmtLabel, inf.sampleRate, inf.bits, inf.channels, inf.durationMs, st.size, String(st.mtimeMs), isrc, acoustid, fingerprint, trackId, recId, matchBy, matchConf, SCAN_SEQ);
