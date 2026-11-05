@@ -704,7 +704,12 @@ function buildQ(db) { return {
      WHERE acn.artist_id=? GROUP BY rgg.genre_id ORDER BY n DESC LIMIT 12`),
   // ── editar / unir artistas ──
   artistAlbumCount: db.prepare(`SELECT COUNT(DISTINCT rg.id) n FROM artist_credit_name acn JOIN release_group rg ON rg.artist_credit_id=acn.artist_credit_id WHERE acn.artist_id=?`),
-  artistDupes: db.prepare(`SELECT a.id, a.name, a.disambiguation, a.mbid FROM artist a WHERE a.id!=? AND lower(trim(a.name))=lower(trim(?)) ORDER BY a.name`),
+  // Duplicados: nombre NORMALIZADO igual (minúsculas, sin puntuación, guiones→espacio, espacios colapsados) para
+  // pillar variantes como «blink-182»/«blink 182», «Jay-Z»/«Jay Z», «R.E.M.»/«REM», espacios dobles o finales.
+  artistDupes: db.prepare(`SELECT a.id, a.name, a.disambiguation, a.mbid FROM artist a WHERE a.id!=?
+      AND replace(replace(trim(lower(replace(replace(replace(replace(a.name,'.',''),',',''),'-',' '),'  ',' '))),'  ',' '),'  ',' ')
+        = replace(replace(trim(lower(replace(replace(replace(replace(?,'.',''),',',''),'-',' '),'  ',' '))),'  ',' '),'  ',' ')
+      ORDER BY a.name`),
   artistSearch: db.prepare(`SELECT a.id, a.name, a.disambiguation FROM artist a WHERE a.id!=? AND a.name LIKE ? ORDER BY (lower(a.name)=lower(?)) DESC, a.name LIMIT 20`),
   // ── género ──
   genreAlbums: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
