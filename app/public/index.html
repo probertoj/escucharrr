@@ -49,7 +49,8 @@ body.selmode .card{cursor:pointer}
 </div>
 <div id="selbar">
   <span id="selcount" style="font-weight:600"></span>
-  <button id="selmerge" class="btn-accent" title="Fundir los seleccionados en un solo álbum">Combinar</button>
+  <button id="selmerge" class="btn-accent" title="Combinar como VERSIONES: el que más pistas tenga se queda y los demás cuelgan como ediciones">Combinar</button>
+  <button id="selfold" title="Fundir las PISTAS en un solo disco: para el mismo álbum partido en varios (p. ej. colaboraciones). Reúne todas las pistas en un tracklist">Fundir en 1 disco</button>
   <button id="selfav" title="Marcar como favoritos">♥ Favorito</button>
   <select id="seltier" title="Poner tier a los seleccionados"><option value="">Tier…</option><option value="excel">Excel</option><option value="si">Sí</option><option value="ok">Ok</option><option value="meh">Meh</option><option value="no">No</option></select>
   <button id="selclear">Deseleccionar</button>
@@ -250,6 +251,16 @@ selG('selmerge').onclick=async()=>{
   if(!confirm(msg))return;
   try{ const r=await fetch('/api/album/merge-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})}).then(x=>x.json());
     if(r.ok){ SELSET.clear(); SELMODE=false; selRepaint(); load(); undoToast('Combinados '+((r.count||0)+1)+' álbumes en uno', r.undoId); }
+    else if(window.toast)toast(r.error||'error'); }catch(e){ if(window.toast)toast('error: '+e.message); }
+};
+selG('selfold').onclick=async()=>{
+  const ids=[...SELSET]; if(ids.length<2){ if(window.toast)toast('Elige al menos 2 álbumes'); return; }
+  const sel=ALBUMS.filter(a=>SELSET.has(a.id)); const arts=[...new Set(sel.map(a=>a.artist))];
+  let msg='Fundir las PISTAS de '+ids.length+' álbumes en UN SOLO disco. Úsalo cuando sea el MISMO álbum partido (p. ej. colaboraciones que crearon varios discos). Las pistas se reúnen en un tracklist; si dos chocan en la misma posición, la segunda va al final. Reversible. Solo afecta a la app, no a tus ficheros.';
+  if(arts.length>1) msg='⚠ Son de artistas distintos ('+arts.slice(0,4).join(', ')+'). Para discos realmente diferentes usa «Combinar» (versiones), no esto.\n\n'+msg;
+  if(!confirm(msg))return;
+  try{ const r=await fetch('/api/album/fold',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})}).then(x=>x.json());
+    if(r.ok){ SELSET.clear(); SELMODE=false; selRepaint(); load(); undoToast('Fundidas las pistas de '+((r.folded||0)+1)+' álbumes en un disco', r.undoId); }
     else if(window.toast)toast(r.error||'error'); }catch(e){ if(window.toast)toast('error: '+e.message); }
 };
 

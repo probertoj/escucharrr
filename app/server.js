@@ -3224,10 +3224,134 @@ function handleUndoMerge(id) {
   const row = db.prepare('SELECT * FROM merge_undo WHERE id=?').get(id);
   if (!row) throw new Error('no se encuentra esa operación para deshacer');
   const payload = JSON.parse(row.payload);
-  const n = row.kind === 'artist' ? undoArtistMerge(payload) : undoAlbumMerge(payload);
+  const n = row.kind === 'artist' ? undoArtistMerge(payload) : row.kind === 'fold' ? undoFold(payload) : undoAlbumMerge(payload);
   db.prepare('DELETE FROM merge_undo WHERE id=?').run(id);
   sseBroadcast('library');
   return { kind: row.kind, restored: n };
+}
+// ── Fundir tracklists (distinto del merge, que deja VERSIONES/varias releases). Cuando un MISMO disco quedó
+// partido en varios release_groups (bug del escáner con «feat.»: Bunbury & Vega, Charli), esto reúne TODAS las
+// pistas en UNA sola release, combinando mediums por nº de disco. Si dos pistas chocan en (disco,posición), la
+// entrante va al final del disco (nada se pierde; el usuario puede renumerar con el editor de pista). ──
+function _reinsertWithId(tableToken, row) {
+  const cols = Object.keys(row), ph = cols.map(() => '?').join(',');
+  try { db.prepare(`INSERT OR IGNORE INTO ${tableToken}(${cols.map(c => '"' + c + '"').join(',')}) VALUES(${ph})`).run(...cols.map(c => row[c])); } catch (e) {}
+}
+function foldSnapshot(rgIds) {
+  const rgs = [], releases = [], mediums = [], tracks = [], subjects = {}, genres = {};
+  for (const id of rgIds) {
+    const rg = db.prepare('SELECT * FROM release_group WHERE id=?').get(id);
+    if (!rg) continue;
+    rgs.push(rg);
+    genres[id] = db.prepare('SELECT genre_id FROM release_group_genre WHERE release_group_id=?').all(id).map(r => r.genre_id);
+    subjects[id] = {};
+    for (const tb of _SUBJ_TABLES) { try { subjects[id][tb] = db.prepare(`SELECT * FROM ${tb} WHERE subject_type='release_group' AND subject_id=?`).all(id); } catch (e) { subjects[id][tb] = []; } }
+    for (const r of db.prepare('SELECT * FROM "release" WHERE release_group_id=?').all(id)) {
+      releases.push(r);
+      for (const m of db.prepare('SELECT * FROM medium WHERE release_id=?').all(r.id)) {
+        mediums.push(m);
+        for (const t of db.prepare('SELECT id, medium_id, position FROM track WHERE medium_id=?').all(m.id)) tracks.push(t);
+      }
+    }
+  }
+  return { rgs, releases, mediums, tracks, subjects, genres };
+}
+function foldAlbumsTx(keep, drops) {
+  const all = [keep, ...drops], ph = all.map(() => '?').join(',');
+  db.exec('BEGIN');
+  try {
+    // release destino = la del keep con más pistas (donde se reúne todo)
+    let tgt = db.prepare(`SELECT r.id FROM "release" r WHERE r.release_group_id=?
+      ORDER BY (SELECT COUNT(*) FROM medium m JOIN track t ON t.medium_id=m.id WHERE m.release_id=r.id) DESC, r.id LIMIT 1`).get(keep);
+    let targetRel = tgt ? tgt.id : null;
+    if (!targetRel) {                                   // el keep no tiene release: adopta la primera de cualquier involucrado
+      const any = db.prepare(`SELECT id FROM "release" WHERE release_group_id IN (${ph}) ORDER BY id LIMIT 1`).get(...all);
+      if (!any) { db.exec('COMMIT'); return; }
+      targetRel = any.id; db.prepare('UPDATE "release" SET release_group_id=? WHERE id=?').run(keep, targetRel);
+    }
+    const targetMediumFor = (pos) => {
+      const m = db.prepare('SELECT id FROM medium WHERE release_id=? AND position=?').get(targetRel, pos);
+      return m ? m.id : Number(db.prepare('INSERT INTO medium(release_id,position) VALUES(?,?)').run(targetRel, pos).lastInsertRowid);
+    };
+    const maxPos = (medId) => db.prepare('SELECT COALESCE(MAX(position),0) p FROM track WHERE medium_id=?').get(medId).p;
+    // mueve las pistas de todo medium que NO esté en la release destino, a la release destino (por disco)
+    const others = db.prepare(`SELECT m.id, m.position FROM medium m JOIN "release" r ON r.id=m.release_id
+      WHERE r.release_group_id IN (${ph}) AND m.release_id<>?`).all(...all, targetRel);
+    for (const m of others) {
+      const tmed = targetMediumFor(m.position);
+      for (const t of db.prepare('SELECT id, position FROM track WHERE medium_id=? ORDER BY position').all(m.id)) {
+        const clash = db.prepare('SELECT 1 FROM track WHERE medium_id=? AND position=?').get(tmed, t.position);
+        const pos = clash ? maxPos(tmed) + 1 : t.position;
+        db.prepare('UPDATE track SET medium_id=?, position=? WHERE id=?').run(tmed, pos, t.id);
+      }
+    }
+    // borra mediums ya vacíos y releases ya vacías (salvo la destino)
+    db.prepare(`DELETE FROM medium WHERE release_id IN (SELECT id FROM "release" WHERE release_group_id IN (${ph})) AND id NOT IN (SELECT medium_id FROM track) AND release_id<>?`).run(...all, targetRel);
+    db.prepare(`DELETE FROM "release" WHERE release_group_id IN (${ph}) AND id<>? AND id NOT IN (SELECT DISTINCT release_id FROM medium)`).run(...all, targetRel);
+    // migra datos de usuario de los drops al keep y borra los drops (igual que el merge)
+    for (const drop of drops) {
+      db.prepare('UPDATE "release" SET release_group_id=? WHERE release_group_id=?').run(keep, drop);
+      db.prepare('UPDATE OR IGNORE release_group_genre SET release_group_id=? WHERE release_group_id=?').run(keep, drop);
+      const mv = (sql) => { try { db.prepare(sql).run({ neu: keep, old: drop }); } catch (e) {} };
+      mv(`UPDATE OR IGNORE rating_tier SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old AND NOT EXISTS (SELECT 1 FROM rating_tier x WHERE x.subject_type='release_group' AND x.subject_id=$neu)`);
+      mv(`UPDATE OR IGNORE rating SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old AND NOT EXISTS (SELECT 1 FROM rating y WHERE y.subject_type='release_group' AND y.subject_id=$neu)`);
+      mv(`UPDATE OR IGNORE flag SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old`);
+      mv(`UPDATE OR IGNORE user_edit SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old`);
+      mv(`UPDATE OR IGNORE tag_item SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old`);
+      try { db.prepare(`UPDATE OR IGNORE obsidian_link SET subject_id=? WHERE subject_type='release_group' AND subject_id=?`).run(keep, drop); } catch (e) {}
+      for (const t of ['rating_tier', 'rating', 'flag', 'user_edit', 'tag_item', 'provenance', 'obsidian_link']) { try { db.prepare(`DELETE FROM ${t} WHERE subject_type='release_group' AND subject_id=?`).run(drop); } catch (e) {} }
+      try { db.prepare(`DELETE FROM search_fts WHERE subject_type='release_group' AND subject_id=?`).run(drop); } catch (e) {}
+      db.prepare('DELETE FROM release_group WHERE id=?').run(drop);
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+function undoFold(payload) {
+  db.exec('BEGIN');
+  try {
+    const rgIds = payload.rgs.map(r => r.id), inRg = rgIds.length ? rgIds.map(() => '?').join(',') : 'NULL';
+    // reinserta rgs/releases/mediums borrados con su id original (libre tras el borrado) y corrige la paternidad de los vivos
+    for (const rg of payload.rgs) if (!db.prepare('SELECT 1 FROM release_group WHERE id=?').get(rg.id)) _reinsertWithId('release_group', rg);
+    for (const rel of payload.releases) {
+      if (!db.prepare('SELECT 1 FROM "release" WHERE id=?').get(rel.id)) _reinsertWithId('"release"', rel);
+      else db.prepare('UPDATE "release" SET release_group_id=? WHERE id=?').run(rel.release_group_id, rel.id);
+    }
+    for (const m of payload.mediums) {
+      if (!db.prepare('SELECT 1 FROM medium WHERE id=?').get(m.id)) _reinsertWithId('medium', m);
+      else db.prepare('UPDATE medium SET release_id=?, position=? WHERE id=?').run(m.release_id, m.position, m.id);
+    }
+    for (const t of payload.tracks) db.prepare('UPDATE track SET medium_id=?, position=? WHERE id=?').run(t.medium_id, t.position, t.id);
+    // borra los mediums que creó el fold (no estaban en el snapshot) y que quedan vacíos tras restaurar las pistas
+    const relIds = payload.releases.map(r => r.id), medIds = payload.mediums.map(m => m.id);
+    if (relIds.length) db.prepare(`DELETE FROM medium WHERE release_id IN (${relIds.map(() => '?').join(',')})${medIds.length ? ` AND id NOT IN (${medIds.map(() => '?').join(',')})` : ''}`).run(...relIds, ...medIds);
+    // restaura exactamente géneros y datos de usuario por rg
+    for (const rg of payload.rgs) { try { db.prepare('DELETE FROM release_group_genre WHERE release_group_id=?').run(rg.id); } catch (e) {} for (const tb of _SUBJ_TABLES) { try { db.prepare(`DELETE FROM ${tb} WHERE subject_type='release_group' AND subject_id=?`).run(rg.id); } catch (e) {} } }
+    for (const id of Object.keys(payload.genres || {})) for (const gid of payload.genres[id]) { try { db.prepare('INSERT OR IGNORE INTO release_group_genre(release_group_id,genre_id) VALUES(?,?)').run(Number(id), gid); } catch (e) {} }
+    for (const id of Object.keys(payload.subjects || {})) for (const tb of _SUBJ_TABLES) _restoreRows(tb, payload.subjects[id][tb], Number(id));
+    for (const rg of payload.rgs) { try { db.prepare(`DELETE FROM search_fts WHERE subject_type='release_group' AND subject_id=?`).run(rg.id); } catch (e) {} try { db.prepare(`INSERT INTO search_fts(name,kind,subject_type,subject_id) VALUES(?,'album','release_group',?)`).run(rg.title, rg.id); } catch (e) {} }
+    db.exec('COMMIT');
+    return payload.rgs.length;
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+async function handleFoldAlbums(req, res) {
+  try {
+    const b = await readBody(req);
+    const ids = (Array.isArray(b.ids) ? b.ids : []).map(x => parseInt(x, 10)).filter(Boolean);
+    const uniq = [...new Set(ids)];
+    if (uniq.length < 2) { res.writeHead(400); return res.end(JSON.stringify({ ok: false, error: 'elige al menos dos álbumes para fundir' })); }
+    const live = uniq.filter(id => db.prepare('SELECT 1 FROM release_group WHERE id=?').get(id));
+    if (live.length < 2) { res.writeHead(404); return res.end(JSON.stringify({ ok: false, error: 'álbumes no encontrados' })); }
+    // keep = el que más pistas tiene (ahí se reúne todo)
+    const withCounts = live.map(id => ({ id, n: db.prepare(`SELECT COUNT(*) n FROM "release" r JOIN medium m ON m.release_id=r.id JOIN track t ON t.medium_id=m.id WHERE r.release_group_id=?`).get(id).n }));
+    withCounts.sort((a, b2) => b2.n - a.n || a.id - b2.id);
+    const keep = withCounts[0].id, drops = withCounts.slice(1).map(x => x.id);
+    const label = (db.prepare('SELECT title FROM release_group WHERE id=?').get(keep) || {}).title || '';
+    const snap = foldSnapshot(live);
+    foldAlbumsTx(keep, drops);
+    const undoId = Number(db.prepare(`INSERT INTO merge_undo(kind,keep_id,label,payload) VALUES('fold',?,?,?)`).run(keep, label, JSON.stringify(snap)).lastInsertRowid);
+    sseBroadcast('library');
+    sendJSON(res, { ok: true, keep, folded: drops.length, undoId });
+  } catch (e) { res.writeHead(500); res.end(JSON.stringify({ ok: false, error: String(e && e.message || e) })); }
 }
 async function handleMergeAlbums(req, res) {
   try {
@@ -3403,6 +3527,7 @@ http.createServer((req, res) => {
   if (req.method === 'POST' && u.pathname === '/api/edit') return void handleEdit(req, res);
   if (req.method === 'POST' && u.pathname === '/api/album/merge') return void handleMergeAlbums(req, res);
   if (req.method === 'POST' && u.pathname === '/api/album/merge-bulk') return void handleMergeBulk(req, res);
+  if (req.method === 'POST' && u.pathname === '/api/album/fold') return void handleFoldAlbums(req, res);
   if (req.method === 'POST' && u.pathname === '/api/album/cover') return void handleAlbumCover(req, res);
   if (req.method === 'POST' && u.pathname === '/api/merge/undo') return void (async () => {
     try { const b = await readBody(req); const r = handleUndoMerge(parseInt(b.id, 10)); return sendJSON(res, { ok: true, ...r }); }
