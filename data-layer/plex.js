@@ -31,7 +31,7 @@ function plexGet(cfg, apipath) {
       });
     });
     req.on('error', reject);
-    req.setTimeout(15000, () => req.destroy(new Error('timeout')));
+    req.setTimeout(30000, () => req.destroy(new Error('timeout')));
     req.end();
   });
 }
@@ -61,13 +61,26 @@ function normAlbumItem(m) {
 }
 
 // Todos los álbumes (type 9) de todas las secciones de música, con su fecha de edición si Plex la tiene.
-async function listMusicAlbums(cfg) {
+// PAGINADO (X-Plex-Container-Start/Size): una biblioteca grande puede tener decenas de miles de álbumes y
+// pedirlos de golpe son muchos MB y se pasa del timeout. onProgress(cargados,total) es opcional.
+async function listMusicAlbums(cfg, opts) {
+  const pageSize = (opts && opts.pageSize) || 800;
+  const onProgress = opts && opts.onProgress;
   const secs = await musicSections(cfg);
   const out = [];
   for (const s of secs) {
-    const r = await plexGet(cfg, '/library/sections/' + encodeURIComponent(s.key) + '/all?type=9');
-    const items = (r.body && r.body.MediaContainer && r.body.MediaContainer.Metadata) || [];
-    for (const m of items) { const a = normAlbumItem(m); if (a) out.push(a); }
+    let start = 0, total = Infinity;
+    for (;;) {
+      const r = await plexGet(cfg, '/library/sections/' + encodeURIComponent(s.key) +
+        '/all?type=9&X-Plex-Container-Start=' + start + '&X-Plex-Container-Size=' + pageSize);
+      const mc = (r.body && r.body.MediaContainer) || {};
+      const items = mc.Metadata || [];
+      if (mc.totalSize != null) total = mc.totalSize;
+      for (const m of items) { const a = normAlbumItem(m); if (a) out.push(a); }
+      start += items.length;
+      if (onProgress) try { onProgress(start, total); } catch (e) {}
+      if (!items.length || start >= total || start > 500000) break;
+    }
   }
   return out;
 }
