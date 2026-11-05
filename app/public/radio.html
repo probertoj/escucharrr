@@ -27,6 +27,8 @@
 .st .act a:hover,.st .act span:hover{background:var(--surface-2);color:var(--text)}
 .empty{color:var(--text-2);margin-top:20px}
 .hint{color:var(--text-2);font-size:12.5px;margin-top:4px}
+#btags .chip{cursor:pointer}
+#btags .btag.on{background:var(--accent);color:#fff;border-color:var(--accent)}
 </style>
 </head>
 <body>
@@ -41,6 +43,17 @@
   </div>
   <div id="rmsg"></div>
   <div class="hint">Pega la URL directa de un stream (SHOUTcast/Icecast MP3/AAC). El servidor lee los metadatos ICY y muestra qué suena. La radio se reproduce por la salida del navegador.</div>
+
+  <div class="sec" style="margin-top:26px;font-weight:700;font-size:15px">Explorar emisoras</div>
+  <div class="hint" style="margin-top:2px">Directorio público de radio-browser.info: miles de emisoras por categoría o nombre. «▶» la guarda en tus emisoras y la reproduce; «+» solo la guarda.</div>
+  <div class="addbox" style="margin-top:10px">
+    <input id="bq" placeholder="Buscar emisora por nombre…" style="flex:1;min-width:220px">
+    <button id="bgo">Buscar</button>
+  </div>
+  <div id="btags" class="chips" style="margin:10px 0 2px"></div>
+  <div class="stations" id="bresults"></div>
+
+  <div class="sec" style="margin-top:26px;font-weight:700;font-size:15px">Mis emisoras</div>
   <div class="stations" id="stations"></div>
 </div>
 
@@ -96,6 +109,34 @@ async function addStation(){
 }
 document.getElementById('radd').addEventListener('click',addStation);
 document.getElementById('rurl').addEventListener('keydown',e=>{if(e.key==='Enter')addStation();});
+
+// ── Explorar emisoras (directorio radio-browser.info) ──
+let BTAG='';
+function markTags(){document.querySelectorAll('.btag').forEach(b=>b.classList.toggle('on',b.dataset.tag===BTAG));}
+fetch('/api/radio/tags').then(r=>r.json()).then(j=>{if(j&&j.ok){document.getElementById('btags').innerHTML=(j.items||[]).map(t=>`<button class="chip btag" data-tag="${esc(t.name)}" title="${t.count} emisoras">${esc(t.name)}</button>`).join('');}}).catch(()=>{});
+async function browse(params){
+  const box=document.getElementById('bresults'); box.innerHTML='<div class="empty">Buscando…</div>';
+  let j; try{ j=await fetch('/api/radio/browse?'+new URLSearchParams(params)).then(r=>r.json()); }catch(e){ box.innerHTML='<div class="empty">No se pudo cargar el directorio.</div>'; return; }
+  if(!j.ok){ box.innerHTML='<div class="empty">'+esc(j.error||'No se pudo cargar.')+'</div>'; return; }
+  const its=j.items||[]; box._items=its;
+  if(!its.length){ box.innerHTML='<div class="empty">Sin resultados.</div>'; return; }
+  box.innerHTML=its.map((s,i)=>`<div class="st" data-i="${i}">
+    <span class="play" data-bact="play" data-i="${i}" title="Guardar y reproducir">${ic('play',20)}</span>
+    <div class="meta"><div class="nm">${esc(s.name)}</div><div class="sub"><span>${esc([s.country,s.codec&&s.codec.toUpperCase(),(s.bitrate?s.bitrate+'k':'')].filter(Boolean).join(' · ')||hostOf(s.url))}</span>${s.tags?`<span style="color:var(--muted)">${esc(s.tags.split(',').slice(0,3).join(' · '))}</span>`:''}</div></div>
+    <div class="act"><span data-bact="save" data-i="${i}" title="Guardar en mis emisoras">${ic('plus',16)}</span>${s.homepage?`<a href="${esc(s.homepage)}" target="_blank" rel="noopener" title="Web de la emisora">${ic('discover',16)}</a>`:''}</div></div>`).join('');
+}
+document.getElementById('bgo').addEventListener('click',()=>{BTAG='';markTags();const q=document.getElementById('bq').value.trim();if(q)browse({q});});
+document.getElementById('bq').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('bgo').click();});
+document.getElementById('btags').addEventListener('click',e=>{const b=e.target.closest('.btag');if(!b)return;BTAG=b.dataset.tag;markTags();browse({tag:BTAG});});
+async function saveStation(s){return fetch('/api/radio/station',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:s.name,url:s.url,homepage:s.homepage,favicon:s.favicon})}).then(r=>r.json());}
+document.getElementById('bresults').addEventListener('click',async e=>{
+  const el=e.target.closest('[data-bact]'); if(!el)return; const its=document.getElementById('bresults')._items||[]; const s=its[+el.dataset.i]; if(!s)return;
+  const j=await saveStation(s);
+  if(!j.ok){rmsg('No se pudo guardar: '+(j.error||''),false);return;}
+  STATIONS=j.stations||[]; render();
+  if(el.dataset.bact==='play'){ const st=STATIONS.find(x=>x.id===j.id)||{id:j.id,name:s.name,url:s.url}; try{window.player.playRadio(st);}catch(x){} setTimeout(render,150); rmsg('Reproduciendo «'+s.name+'»',true); }
+  else rmsg(j.existed?'Ya estaba en tus emisoras.':'Guardada «'+s.name+'».',true);
+});
 load();
 document.addEventListener('player:change',render);   // refresca el estado "sonando" al cambiar el player
 try{const es=new EventSource('/api/events');es.onmessage=e=>{try{const d=JSON.parse(e.data);if(d.type==='radio'){fetch('/api/radio/stations').then(r=>r.json()).then(j=>{if(j&&j.ok){(j.now||[]).forEach(n=>NOW[n.id]=n.title);render();}});}}catch(x){}};}catch(e){}

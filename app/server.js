@@ -2892,14 +2892,52 @@ function radioProxy(req, res, station) {
     req.on('close', cleanup); res.on('close', cleanup);
   }, err => { if (!res.headersSent) res.writeHead(502); try { res.end('error: ' + err.message); } catch (e) {} });
 }
+// Directorio de emisoras por internet (Roon: internetradio_browser). Fuente: radio-browser.info, API pública
+// gratuita y sin clave (no añade dependencias npm). Se prueban varios mirrors por si uno está caído.
+const RB_HOSTS = ['https://de2.api.radio-browser.info', 'https://nl1.api.radio-browser.info', 'https://at1.api.radio-browser.info'];
+async function rbFetch(path) {
+  let lastErr;
+  for (const h of RB_HOSTS) {
+    try {
+      const r = await fetch(h + path, { headers: { 'User-Agent': 'escucharrr/0.1 (+https://github.com/probertoj/escucharrr)' }, signal: AbortSignal.timeout(8000) });
+      if (r.ok) return await r.json();
+      lastErr = new Error('HTTP ' + r.status);
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('directorio no disponible');
+}
+function rbNorm(s) {
+  return { name: s.name, url: s.url_resolved || s.url, homepage: s.homepage || '', favicon: s.favicon || '', tags: s.tags || '', country: s.country || s.countrycode || '', codec: s.codec || '', bitrate: s.bitrate || 0, votes: s.votes || 0 };
+}
 async function handleRadio(req, res, u) {
   const sub = u.pathname.slice('/api/radio/'.length);
   try {
     if (req.method === 'GET' && sub === 'stations') return sendJSON(res, { ok: true, stations: Q.radioList.all(), now: radioInfo() });
+    if (req.method === 'GET' && sub === 'browse') {
+      const q = (u.searchParams.get('q') || '').trim(), tag = (u.searchParams.get('tag') || '').trim(), country = (u.searchParams.get('country') || '').trim();
+      const limit = Math.min(parseInt(u.searchParams.get('limit') || '60', 10) || 60, 100);
+      const p = new URLSearchParams({ limit: String(limit), order: 'votes', reverse: 'true', hidebroken: 'true' });
+      if (q) p.set('name', q);
+      if (tag) { p.set('tag', tag); p.set('tagExact', 'true'); }
+      if (country) p.set('countrycode', country.toUpperCase());
+      try {
+        const arr = await rbFetch('/json/stations/search?' + p.toString());
+        const seen = new Set(), items = [];
+        for (const s of (Array.isArray(arr) ? arr : [])) { const n = rbNorm(s); if (!n.url || seen.has(n.url)) continue; seen.add(n.url); items.push(n); }
+        return sendJSON(res, { ok: true, items });
+      } catch (e) { return sendJSON(res, { ok: false, error: 'No se pudo consultar el directorio de emisoras (' + String(e.message) + ').' }); }
+    }
+    if (req.method === 'GET' && sub === 'tags') {
+      try {
+        const arr = await rbFetch('/json/tags?order=stationcount&reverse=true&limit=60&hidebroken=true');
+        const items = (Array.isArray(arr) ? arr : []).map(t => ({ name: t.name, count: t.stationcount })).filter(t => t.name && t.name.length <= 22);
+        return sendJSON(res, { ok: true, items: items.slice(0, 36) });
+      } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+    }
     if (req.method === 'GET' && sub === 'stream') { const st = Q.radioGet.get(parseInt(u.searchParams.get('id'), 10)); if (!st) { res.writeHead(404); return res.end('{}'); } return radioProxy(req, res, st); }
     if (req.method === 'GET' && sub === 'nowplaying') { const id = parseInt(u.searchParams.get('id'), 10); const v = _radioNow.get(id); return sendJSON(res, { ok: true, title: v ? v.title : '', name: v ? v.name : '' }); }
     const body = req.method === 'POST' ? await readBody(req) : {};
-    if (sub === 'station') { const name = String(body.name || '').trim().slice(0, 120); const url = String(body.url || '').trim(); if (!name || !/^https?:\/\//i.test(url)) { res.writeHead(400); return res.end(JSON.stringify({ ok: false, error: 'Nombre y URL http(s) obligatorios' })); } const r = Q.radioAdd.run(name, url, String(body.homepage || '').trim() || null, String(body.favicon || '').trim() || null); return sendJSON(res, { ok: true, id: Number(r.lastInsertRowid), stations: Q.radioList.all() }); }
+    if (sub === 'station') { const name = String(body.name || '').trim().slice(0, 120); const url = String(body.url || '').trim(); if (!name || !/^https?:\/\//i.test(url)) { res.writeHead(400); return res.end(JSON.stringify({ ok: false, error: 'Nombre y URL http(s) obligatorios' })); } const ex = db.prepare('SELECT id FROM radio_station WHERE url=?').get(url); if (ex) return sendJSON(res, { ok: true, id: ex.id, existed: true, stations: Q.radioList.all() }); const r = Q.radioAdd.run(name, url, String(body.homepage || '').trim() || null, String(body.favicon || '').trim() || null); return sendJSON(res, { ok: true, id: Number(r.lastInsertRowid), stations: Q.radioList.all() }); }
     if (sub === 'station/delete') { const id = parseInt(body.id, 10); Q.radioDelete.run(id); _radioNow.delete(id); return sendJSON(res, { ok: true, stations: Q.radioList.all() }); }
     // pulgar abajo de la Radio: marca la grabación como bad_for_radio para que el motor la excluya (body.on===false la rehabilita)
     if (sub === 'thumbdown') { const rid = parseInt(body.recording_id, 10); if (!rid) { res.writeHead(400); return res.end(JSON.stringify({ ok: false, error: 'recording_id obligatorio' })); } if (body.on === false) Q.edDelFlag.run('recording', rid, 'bad_for_radio'); else Q.edSetFlag.run('recording', rid, 'bad_for_radio'); return sendJSON(res, { ok: true, bad: body.on !== false }); }
