@@ -107,22 +107,30 @@ function repairRenames(db, opts = {}) {
   const roots = (opts.roots || []).map(norm);
   const under = (p) => !roots.length || roots.some(r => norm(p).startsWith(r.endsWith('\\') ? r : r + '\\') || norm(p) === r);
 
-  // Clasifica cada fila en PRESENTE / HUÉRFANA / indeterminada. Huérfana = su carpeta ya no existe
-  // (renombrada) pero un ancestro SÍ se lee, o su carpeta se lee y el fichero no está. Indeterminada
-  // (error transitorio en la carpeta o ancestro) → se deja en paz (no se confunde con una caída del share).
+  // stat directo del fichero con reintentos. Devuelve: true=existe · false=ENOENT confirmado · null=transitorio.
+  // Sobre un share de CONSISTENCIA EVENTUAL un readdir puede devolver un listado incompleto (el fichero existe
+  // pero no sale en la lista). Por eso NO basta "no está en el listado": antes de declarar huérfano se confirma
+  // con un stat directo del propio fichero. Solo un ENOENT confirmado cuenta como ausente.
+  function fileGone(f) {
+    for (let i = 0; i < 3; i++) { try { fs.statSync(f); return false; } catch (e) { if (e.code === 'ENOENT') return true; if (i < 2) sleepSync(300 * (i + 1)); } }
+    return null;   // transitorio tras reintentos → no confirmar
+  }
+
+  // Clasifica cada fila en PRESENTE / HUÉRFANA / indeterminada. Huérfana = su fichero da ENOENT CONFIRMADO
+  // (stat directo), no un mero "no salió en el readdir". Indeterminada (error transitorio) → se deja en paz.
   const orphans = [];
   let indet = 0;
   for (const r of rows) {
     if (!under(r.path)) continue;
     const ownDir = path.dirname(r.path);
     const ents = listing(ownDir);
-    if (ents === null) { indet++; continue; }             // carpeta ilegible (transitorio) → no confirmar
     const base = path.basename(r.path).toLowerCase();
-    if (Array.isArray(ents)) {
-      if (ents.some(e => e.name.toLowerCase() === base)) continue;   // fichero presente → nada que hacer
-      orphans.push(r); continue;                          // carpeta OK pero el fichero no está → renombrado dentro de la carpeta
-    }
-    // ents === 'gone': la carpeta no existe (renombrada). Confirma que un ancestro se lee (si no, es caída).
+    if (Array.isArray(ents) && ents.some(e => e.name.toLowerCase() === base)) continue;   // sale en el listado → presente
+    // No sale en el listado (o la carpeta no existe/ilegible): CONFIRMA con stat directo antes de actuar.
+    const gone = fileGone(r.path);
+    if (gone === false) continue;                          // el fichero SÍ existe (listado obsoleto del share) → presente
+    if (gone === null) { indet++; continue; }              // transitorio → no confirmar (protección de caída/churn)
+    // ENOENT confirmado: es un huérfano real SI un ancestro se lee (si no, el montaje está caído).
     if (nearestReadableAncestor(path.dirname(ownDir), listing)) orphans.push(r); else indet++;
   }
 
