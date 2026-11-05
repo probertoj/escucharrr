@@ -28,6 +28,7 @@ nav.top a{color:var(--text-2)} nav.top a.on{color:var(--text);font-weight:600}
   <div class="metrics" id="metrics"></div>
 
   <div id="resumeSec" style="display:none"><div class="sec">Sigue escuchando</div><div class="row" id="resume"></div></div>
+  <div id="otdSec" style="display:none"><div class="sec" style="margin-top:22px">En este día <span id="otdDate" style="font-size:12px;color:var(--muted);font-weight:400"></span></div><div class="row" id="otd"></div></div>
   <div id="becauseSec" style="display:none"><div class="sec" style="margin-top:22px" id="becauseTitle">Porque escuchaste</div><div class="row" id="because"></div></div>
   <div id="novedadesSec" style="display:none">
     <div id="availSec" style="display:none"><div class="sec" style="margin-top:22px">Novedades para ti <span style="font-size:12px;color:var(--muted);font-weight:400">· ya disponibles</span></div><div class="row" id="novAvail"></div></div>
@@ -69,7 +70,7 @@ function bars(list, ids, base='album.html?id='){ if(!list.length)return '<div cl
 // saludo por hora del día + nombre OPCIONAL del usuario (configurable; sin nombre a fuego)
 function greetText(){ const h=new Date().getHours(); const g=h<6?'Buenas noches':h<13?'Buenos días':h<21?'Buenas tardes':'Buenas noches'; let n=''; try{ n=(localStorage.getItem('escucharrr.name')||'').trim(); }catch(e){} return g+(n?', '+esc(n):''); }
 function setGreet(){ const el=document.getElementById('greet'); if(!el) return; el.innerHTML=greetText(); el.style.cursor='pointer'; el.title='Pulsa para poner tu nombre'; el.onclick=()=>{ let cur=''; try{ cur=localStorage.getItem('escucharrr.name')||''; }catch(e){} const n=prompt('¿Cómo te llamas? (para el saludo; vacío = sin nombre)', cur); if(n!==null){ try{ localStorage.setItem('escucharrr.name', n.trim()); }catch(e){} setGreet(); } }; }
-function load(){fetch('/api/home').then(r=>r.json()).then(d=>{
+function load(){ const _day=new URLSearchParams(location.search).get('day'); fetch('/api/home'+(/^\d{2}-\d{2}$/.test(_day||'')?'?day='+_day:'')).then(r=>r.json()).then(d=>{
   setGreet();
   const c=d.counts;
   metrics.innerHTML=[['Artistas',c.artists],['Álbumes',c.albums],['Pistas',c.tracks],['Géneros',c.genres]]
@@ -81,6 +82,14 @@ function load(){fetch('/api/home').then(r=>r.json()).then(d=>{
   if(d.becauseArtist)document.getElementById('becauseTitle').textContent='Porque escuchaste '+d.becauseArtist;
   fillRow('because','becauseSec',d.because);
   fillRow('rediscover','rediscoverSec',d.rediscover);
+  // Aniversarios ("En este día"): álbumes editados tal día como hoy, con "hace N años".
+  (function(){ const sec=document.getElementById('otdSec'); const list=d.onThisDay||[];
+    if(!list.length){ sec.style.display='none'; return; }
+    const md=d.onThisDayDate||''; const dl=document.getElementById('otdDate');
+    if(dl&&/^\d{2}-\d{2}$/.test(md)){ try{ dl.textContent='· '+new Date('2001-'+md+'T00:00:00').toLocaleDateString('es',{day:'numeric',month:'long'}); }catch(e){} }
+    const otdCard=a=>{ const ya=+a.years_ago; const ann=ya===1?'hace 1 año':'hace '+ya+' años';
+      return `<a class="card" href="album.html?id=${a.id}"><div class="cov" style="position:relative;border-radius:10px;overflow:hidden;aspect-ratio:1">${cover(a.id)}<span class="badge" style="position:absolute;left:6px;top:6px;right:auto;background:var(--accent-bg);color:var(--accent)">${ann}</span>${a.tier_key?`<span class="badge" style="background:${TC[a.tier_key][0]};color:${TC[a.tier_key][1]}">${TN[a.tier_key]}</span>`:''}</div><div class="t">${esc(a.title)}</div><div class="s">${esc(a.artist)} · ${a.year||'—'}</div></a>`; };
+    document.getElementById('otd').innerHTML=list.map(otdCard).join(''); sec.style.display=''; })();
   const maxT=Math.max(1,...d.tiers.map(t=>t.n));
   tiers.innerHTML=d.tiers.map(t=>`<div class="tierbar"><span class="lab">${t.label}</span><div class="track"><div style="width:${Math.round(t.n/maxT*100)}%;height:100%;background:${(TC[t.key]||['#888'])[0]}"></div></div><span class="n">${t.n}</span></div>`).join('');
   document.getElementById('donut').innerHTML=donut(d.genres);

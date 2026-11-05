@@ -871,7 +871,7 @@ function albumsByGenreIds(gids, excludeArtist, n) {
   const args = excludeArtist ? [...gids, excludeArtist, n] : [...gids, n];
   return db.prepare(sql).all(...args);
 }
-function home() {
+function home(opts) {
   const base = {
     counts: { artists: Q.cArtists.get().n, albums: Q.cAlbums.get().n, tracks: Q.cTracks.get().n, genres: Q.cGenres.get().n },
     recent: Q.recent.all(),
@@ -892,6 +892,15 @@ function home() {
     const gids = Q.artistGenreIds.all(ta.aid).map(r => r.genre_id);
     base.becauseArtist = ta.artist;
     base.because = albumsByGenreIds(gids, ta.artist, 12);
+  }
+  // Aniversarios ("En este día", estilo Plexamp): álbumes cuyo mes-día de primera edición cae hoy.
+  {
+    const now = new Date();
+    const curYear = now.getFullYear();
+    const md = (opts && /^\d{2}-\d{2}$/.test(opts.day || '')) ? opts.day   // ?day=MM-DD para probar
+      : String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+    base.onThisDay = Q.discOnThisDay.all(curYear, md, curYear);
+    base.onThisDayDate = md;
   }
   return base;
 }
@@ -3212,7 +3221,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/discover') return sendJSON(res, discover({ day: u.searchParams.get('day'), notRecentDays: u.searchParams.get('nrdays') }));
     if (u.pathname === '/api/radio') { const seed = parseInt(u.searchParams.get('seed'), 10); const ex = (u.searchParams.get('exclude') || '').split(',').map(x => parseInt(x, 10)).filter(Boolean); return sendJSON(res, { tracks: seed ? radio(seed, ex, u.searchParams.get('n')) : [] }); }
     if (u.pathname === '/api/mix') { const al = parseInt(u.searchParams.get('album'), 10), ar = parseInt(u.searchParams.get('artist'), 10), tr = parseInt(u.searchParams.get('track'), 10), nn = u.searchParams.get('n'); const kind = al ? 'album' : ar ? 'artist' : tr ? 'track' : null; const kid = al || ar || tr; return sendJSON(res, { tracks: kind ? mix(kind, kid, nn) : [] }); }
-    if (u.pathname === '/api/home') return sendJSON(res, home());
+    if (u.pathname === '/api/home') return sendJSON(res, home({ day: u.searchParams.get('day') }));
     if (u.pathname === '/api/inspector') { const bk = u.searchParams.get('bucket'); return sendJSON(res, bk ? inspectorBucket(bk, u.searchParams.get('limit'), u.searchParams.get('offset')) : inspectorCounts()); }
     // SPA: una navegación a cualquier .html sirve el shell persistente (app.html); el router pide
     // el contenido real con ?__frag=1 (→ fichero raw). Así el reproductor nunca se recarga.
