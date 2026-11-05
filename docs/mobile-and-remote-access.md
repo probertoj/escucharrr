@@ -5,6 +5,14 @@ local a lo que corre en casa — **con Tailscale** y **sin un servicio así**. S
 ya es una web app servida por `app/server.js` (sin deps npm) y en [[roon-analysis]] (RAAT es propietario;
 el camino abierto a dispositivos es UPnP/DLNA/AirPlay/Chromecast, ya implementado).
 
+> **Estado (5 nov 2026, commit 59040bc):** el andamiaje PWA ya está implementado y verificado en vivo —
+> `manifest.webmanifest` (standalone, iconos SVG monocromos normal+maskable), `sw.js` que cachea SOLO el
+> shell (nunca `/api`, audio ni SSE), y el `<head>` del shell con manifest, theme-color claro/oscuro, metas
+> iOS y registro del SW. **Media Session API está integrada en `player.js` y verificada en vivo**: metadata
+> (título/artista/álbum/carátula) y `playbackState` siguen al reproductor real, con handlers play/pause/
+> prev/next/seek. Pendiente de verificar en navegador/móvil real: el **registro del service worker** (falla
+> en el panel embebido de pruebas pese a servirse el script 200) y el **pulido táctil** por vista.
+
 ## A. La versión móvil = PWA responsive, no una app nativa
 
 escucharrr ya es HTML/CSS/JS servido por el propio servidor; el móvil solo necesita apuntar el navegador

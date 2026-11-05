@@ -52,17 +52,18 @@ decodifica casi todo— y avisar en Settings que sin ffmpeg no hay DSD/transcode
    `127.0.0.1`**; exposición a LAN/remota **opt-in** (env `ESC_HOST`/ajuste) y SOLO con un **token/clave de
    acceso** exigido a las rutas que mutan o divulgan. No se cambia el bind a ciegas ahora porque el propio
    objetivo "versión móvil + acceso remoto" es habilitar el acceso desde fuera: se diseña junto.
-4. **Sin manejadores de proceso.** No hay `process.on('uncaughtException')` ni `'unhandledRejection')`.
-   En un .exe sin terminal que lo vigile, un error no capturado **mata la app**. → Añadir manejadores
-   top-level que registren y mantengan el servidor en pie (y, idealmente, un log a fichero en la carpeta de
-   la app). Se implementa en la fase de endurecimiento, con verificación de arranque en vivo.
+4. **Manejadores de proceso. [HECHO, commit 59040bc]** `server.js` registra ya
+   `process.on('uncaughtException')` y `'unhandledRejection'` que vuelcan a `app/escucharrr-error.log`
+   y mantienen el servidor en pie — un .exe sin terminal no muere por un error suelto. (Compromiso
+   consciente: seguir vivo tras un error no capturado; el log permite diagnosticar.)
 
 ## Checklist para "casi listo para probar standalone"
 
 - [ ] Lanzador (opción 1) para una prueba standalone inmediata; luego SEA (opción 2) para el `.exe` único.
 - [ ] Localizar/empaquetar ffmpeg; degradar si falta (aviso en Settings).
 - [ ] Bind por defecto a 127.0.0.1 + exposición opt-in con token (en el paso móvil/remoto).
-- [ ] `uncaughtException`/`unhandledRejection` + log a fichero.
+- [x] `uncaughtException`/`unhandledRejection` + log a fichero (`app/escucharrr-error.log`). HECHO.
+- [x] `Cache-Control: no-cache` en estáticos → las actualizaciones de shell/JS se recogen sin vaciar caché. HECHO.
 - [ ] Primer arranque sin BD: hoy `process.exit(1)` si no existe `escucharrr.db`. Para standalone, mejor
       **crear la BD vacía + migrar** y llevar directo al onboarding de "añade tu carpeta de música".
 - [ ] Abrir el navegador por defecto al arrancar (UX de doble-clic).
