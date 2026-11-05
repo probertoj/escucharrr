@@ -1,0 +1,10 @@
+{
+  "main": "app/server.js",
+  "output": "packaging/sea-prep.blob",
+  "disableExperimentalSEAWarning": true,
+  "useSnapshot": false,
+  "useCodeCache": false,
+  "assets": {
+    "schema.sql": "data-layer/schema.sql"
+  }
+}

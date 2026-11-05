@@ -22,6 +22,13 @@ app/*.corrupt-*
 app/*.bak-*
 # node
 node_modules/
+# log de errores del servidor (diagnóstico local; se regenera)
+app/escucharrr-error.log
+# empaquetado standalone: binarios portátiles (NO son fuente) + artefactos de SEA
+node/
+bin/
+packaging/sea-prep.blob
+escucharrr.exe
 # artefactos de compilación del motor nativo (el código fuente sí se versiona)
 engine/*.exe
 engine/*.obj

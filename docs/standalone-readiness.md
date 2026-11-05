@@ -59,14 +59,35 @@ decodifica casi todo— y avisar en Settings que sin ffmpeg no hay DSD/transcode
 
 ## Checklist para "casi listo para probar standalone"
 
-- [ ] Lanzador (opción 1) para una prueba standalone inmediata; luego SEA (opción 2) para el `.exe` único.
-- [ ] Localizar/empaquetar ffmpeg; degradar si falta (aviso en Settings).
+- [x] **Lanzador (opción 1)** para una prueba standalone inmediata: `escucharrr.cmd` en la raíz (busca
+      `node\node.exe` empaquetado o el del PATH, pone `ESC_OPEN_BROWSER=1`, detecta `bin\ffmpeg.exe`).
+      Guía completa + ruta a **SEA** (opción 2, `.exe` único) en [`../packaging/README.md`](../packaging/README.md). HECHO.
+- [x] **Localizar/empaquetar ffmpeg; degradar si falta.** `resolveFfmpeg()` al arrancar: `ESC_FFMPEG` →
+      `bin\ffmpeg.exe` → PATH. Sin ffmpeg, DSD devuelve 415 con aviso y el resto reproduce normal; Ajustes →
+      Audio muestra el estado. HECHO. (El motor nativo sigue usando su propia resolución.)
 - [ ] Bind por defecto a 127.0.0.1 + exposición opt-in con token (en el paso móvil/remoto).
 - [x] `uncaughtException`/`unhandledRejection` + log a fichero (`app/escucharrr-error.log`). HECHO.
 - [x] `Cache-Control: no-cache` en estáticos → las actualizaciones de shell/JS se recogen sin vaciar caché. HECHO.
-- [ ] Primer arranque sin BD: hoy `process.exit(1)` si no existe `escucharrr.db`. Para standalone, mejor
-      **crear la BD vacía + migrar** y llevar directo al onboarding de "añade tu carpeta de música".
-- [ ] Abrir el navegador por defecto al arrancar (UX de doble-clic).
-- [ ] QA de UX en vivo (pendiente; necesita la app corriendo tras el reescaneo).
+- [x] **Primer arranque sin BD:** ya NO hace `process.exit(1)`. `freshDb` crea la BD vacía, aplica
+      `data-layer/schema.sql` antes de las vistas, y la UI muestra un **banner de onboarding** (shell) que
+      lleva a Ajustes → Biblioteca. `ESC_DB` permite mover la BD a una carpeta escribible. HECHO.
+- [x] **Abrir el navegador por defecto al arrancar** (`maybeOpenBrowser`, opt-in `ESC_OPEN_BROWSER=1` que pone
+      el lanzador; `ESC_NO_BROWSER` lo anula). HECHO.
+- [x] **QA de UX en vivo** del empaquetado: verificado (ver abajo).
+
+## QA en vivo del empaquetado (5 nov 2026)
+
+Verificado con dos servidores: el real (`:7733`, BD poblada) y uno de primer arranque (`:7799`, `ESC_DB` a una
+BD vacía temporal, borrada al terminar — no se tocó la BD real):
+
+- **Sin regresión (BD real):** `/api/config` → `ffmpeg:true, empty:false, firstRun:false`; biblioteca carga; sin
+  banner; Ajustes → Audio muestra «ffmpeg: disponible (en el PATH)».
+- **Primer arranque (BD vacía):** el servidor NO aborta; log «primer arranque: … creando BD vacía»; `/api/config`
+  → `empty:true, firstRun:true`. El **banner de onboarding** aparece alineado en la columna de contenido
+  (corregido un solape con el menú lateral fijo), sobrio y sin emojis. Clic real en «Añadir carpeta de música»
+  → enruta (SPA) a `settings.html#biblioteca` con el selector de carpeta listo. «No ahora» lo oculta y no
+  reaparece al navegar. ffmpeg: fila de estado correcta.
+- **Pendiente de dispositivo/navegador real:** registro del service worker / instalación PWA (el panel embebido
+  no registra SW); y armar la carpeta portátil con `node.exe`/`ffmpeg.exe` reales para un `.exe` de doble clic.
 
 Relacionado: [[library-playback-coverage]] (cobertura funcional), versiones/escaneo endurecido.

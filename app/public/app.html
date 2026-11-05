@@ -16,6 +16,17 @@
 <link rel="apple-touch-icon" href="/icon.svg">
 <link rel="stylesheet" href="styles.css">
 <style id="pagestyle"></style>
+<style>
+/* Onboarding del primer arranque: banner sobrio (sin emojis, línea monocroma) mientras no haya biblioteca */
+#onboard{margin:14px 16px 0;padding:14px 16px;border:1px solid var(--border);border-radius:10px;background:var(--bg-2,transparent);display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+/* En escritorio el menú lateral es fijo (224px): desplaza el banner para que no quede debajo (igual que .wrap) */
+@media(min-width:920px){ #onboard{margin-left:248px} }
+#onboard .ob-t{font-weight:600;margin:0 0 2px}
+#onboard .ob-d{color:var(--text-2);font-size:13px;margin:0}
+#onboard .ob-sp{flex:1;min-width:12px}
+#onboard a.ob-cta{white-space:nowrap;text-decoration:none;border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-weight:600}
+#onboard button.ob-x{background:none;border:0;color:var(--text-2);cursor:pointer;padding:6px}
+</style>
 <script>
 // Registra el service worker tras la carga (no compite con los recursos críticos). Silencioso si falla
 // o si el navegador no lo soporta: la app funciona igual sin PWA.
@@ -89,6 +100,7 @@ if ('serviceWorker' in navigator) {
     if (window.escunav && escunav.syncActive) escunav.syncActive();
     window.scrollTo(0, 0);
     view.removeAttribute('aria-busy');
+    refreshOnboard();   // reevalúa el estado de "biblioteca vacía" al cambiar de vista (SPA, sin recargar)
     // ejecuta el/los script(s) de la página en su propio ámbito (sin colisiones de const/let globales)
     PAGE_SCOPE = true;
     for (var i = 0; i < scripts.length; i++) { try { (new Function(scripts[i]))(); } catch (e) { console.error('[route]', u.pathname, e); } }
@@ -116,12 +128,33 @@ if ('serviceWorker' in navigator) {
     navigate(u.pathname + u.search + u.hash);
   }
 
+  // Onboarding: si el servidor dice que aún no hay biblioteca, muestra un banner persistente del shell
+  // con enlace directo a Ajustes → Biblioteca. Se reevalúa al navegar (SPA) y se puede ocultar por sesión.
+  function refreshOnboard() {
+    var dismissed; try { dismissed = sessionStorage.getItem('esc.onboard.x') === '1'; } catch (e) { dismissed = false; }
+    fetch('/api/config').then(function (r) { return r.json(); }).then(function (c) {
+      var show = c && c.ok && c.empty && !dismissed;
+      var ex = document.getElementById('onboard');
+      if (!show) { if (ex) ex.remove(); return; }
+      if (ex) return;
+      var el = document.createElement('div'); el.id = 'onboard';
+      el.innerHTML = '<div><p class="ob-t">Aún no hay música en tu biblioteca</p>'
+        + '<p class="ob-d">escucharrr solo <b>lee</b> tus ficheros (nunca mueve ni renombra nada). Añade la carpeta donde tienes tu música y la indexará.</p></div>'
+        + '<span class="ob-sp"></span>'
+        + '<a class="ob-cta" href="settings.html#biblioteca">Añadir carpeta de música</a>'
+        + '<button class="ob-x" type="button" title="Ocultar">no ahora</button>';
+      el.querySelector('.ob-x').addEventListener('click', function () { try { sessionStorage.setItem('esc.onboard.x', '1'); } catch (e) {} el.remove(); }, { _shell: true });
+      document.body.insertBefore(el, view);
+    }).catch(function () {});
+  }
+
   function boot() {
     wrapAEL(document); wrapAEL(window);
     document.addEventListener('click', onClick, { _shell: true });           // intercepción de enlaces (persistente)
     window.addEventListener('popstate', function () { loadRoute(location.pathname + location.search + location.hash, false); }, { _shell: true });
     var start = location.pathname === '/' || location.pathname === '' ? '/index.html' : location.pathname;
     loadRoute(start + location.search + location.hash, false);
+    refreshOnboard();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();

@@ -40,9 +40,46 @@ function np() {
 }
 
 const PORT = process.env.PORT || 7733;
-const DB_PATH = path.join(__dirname, 'escucharrr.db');
+// Ruta de la BD: por defecto junto a la app, pero ESC_DB permite moverla a una carpeta escribible
+// (p. ej. %LOCALAPPDATA% en un standalone instalado en Archivos de programa). También facilita el QA.
+const DB_PATH = process.env.ESC_DB ? path.resolve(process.env.ESC_DB) : path.join(__dirname, 'escucharrr.db');
 const PUB = path.join(__dirname, 'public');
-if (!fs.existsSync(DB_PATH)) { console.error('No existe', DB_PATH, '\nGenera la BD con las herramientas de ../data-layer.'); process.exit(1); }
+
+// ffmpeg (opcional): sólo hace falta para transcodificar lo que el navegador no decodifica (DSD) y para el
+// motor nativo. Un standalone NO puede asumirlo en el PATH. Lo localizamos UNA vez al arrancar:
+//   1) ESC_FFMPEG (ruta explícita);  2) un ffmpeg(.exe) empaquetado en ./bin o ../bin;  3) el PATH del sistema.
+// Si no está, la app sigue viva: servimos el audio crudo (el navegador decodifica casi todo) y Ajustes lo avisa.
+function resolveFfmpeg() {
+  const exe = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+  const cand = [];
+  if (process.env.ESC_FFMPEG) cand.push(process.env.ESC_FFMPEG);
+  cand.push(path.join(__dirname, 'bin', exe), path.join(__dirname, '..', 'bin', exe));
+  for (const c of cand) { try { if (c && fs.existsSync(c)) return c; } catch (e) {} }
+  // En el PATH: probamos a ejecutarlo (barato y definitivo). Si responde, usamos el nombre pelado.
+  try { const r = cp.spawnSync('ffmpeg', ['-version'], { windowsHide: true, timeout: 4000 }); if (r && r.status === 0) return 'ffmpeg'; } catch (e) {}
+  return null;
+}
+const FFMPEG = resolveFfmpeg();
+
+// Abrir el navegador por defecto al arrancar (UX de doble-clic en el .exe/lanzador). Opt-IN con
+// ESC_OPEN_BROWSER=1 (lo pone el lanzador) para que un `node app/server.js` de desarrollo NO lo abra
+// en cada reinicio. ESC_NO_BROWSER lo fuerza a no abrir aunque el lanzador lo pida.
+function maybeOpenBrowser() {
+  if (process.env.ESC_OPEN_BROWSER !== '1') return;
+  if (process.env.ESC_NO_BROWSER === '1') return;
+  const url = 'http://localhost:' + PORT + '/';
+  try {
+    if (process.platform === 'win32') cp.spawn('cmd', ['/c', 'start', '', url], { windowsHide: true, detached: true, stdio: 'ignore' }).unref();
+    else if (process.platform === 'darwin') cp.spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+    else cp.spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
+  } catch (e) {}
+}
+
+// Primer arranque sin biblioteca: NO abortamos (un .exe de doble-clic no debe cerrarse con un error). Creamos
+// la BD vacía con el esquema canónico y arrancamos hacia el onboarding ("añade tu carpeta de música"). Ver
+// docs/standalone-readiness.md. freshDb marca este caso para aplicar schema.sql antes de las vistas.
+const freshDb = !fs.existsSync(DB_PATH);
+if (freshDb) console.log('primer arranque: aún no hay biblioteca; creando BD vacía en', DB_PATH);
 // Scrobbling local-first (Last.fm + ListenBrainz): cola en SQLite + drenador con reintentos.
 const scrobble = require('../data-layer/scrobble');
 const TAGS = require('../data-layer/tags');   // carátula embebida en MP3 (APIC) y M4A (covr)
@@ -115,6 +152,9 @@ LEFT JOIN tier t ON t.key = rt.tier_key`);
   } catch (e) {}
 }
 let db = new DatabaseSync(DB_PATH);
+// BD recién creada: aplica el esquema canónico (schema.sql, todo CREATE TABLE IF NOT EXISTS) ANTES de
+// initAppSchema, que crea vistas (v_album) sobre release_group. Idempotente: no toca una BD ya poblada.
+if (freshDb) { try { db.exec(fs.readFileSync(path.join(__dirname, '..', 'data-layer', 'schema.sql'), 'utf8')); } catch (e) { console.error('  [schema inicial]:', e.message); } }
 initAppSchema(db);
 const lyrics = require('../data-layer/lyrics');
 let scrobCfg = null;
@@ -1512,9 +1552,12 @@ function streamAudio(req, res, trackId) {
   // DSD (.dsf/.dff): los navegadores no lo decodifican → transcodificamos a FLAC al vuelo
   // (88.2 kHz 24-bit, familia de DSD64; sin Range/seek). El motor NATIVO sí lo toca directo (ffmpeg→PCM).
   if (ext === '.dsf' || ext === '.dff') {
+    // DSD necesita ffmpeg para que el navegador lo oiga. Sin ffmpeg degradamos con un aviso claro
+    // (415) en vez de spawnear y fallar en silencio — el resto de formatos siguen reproduciéndose.
+    if (!FFMPEG) { res.writeHead(415, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('Este fichero es DSD y necesita ffmpeg para reproducirse en el navegador. Instala ffmpeg o indícalo en Ajustes.'); }
     res.writeHead(200, { 'Content-Type': 'audio/flac', 'Cache-Control': 'no-cache' });
     if (req.method === 'HEAD') return res.end();
-    const ff = cp.spawn('ffmpeg', ['-nostdin', '-v', 'error', '-i', row.path, '-f', 'flac', '-ar', '88200', '-sample_fmt', 's32', '-'], { windowsHide: true });
+    const ff = cp.spawn(FFMPEG, ['-nostdin', '-v', 'error', '-i', row.path, '-f', 'flac', '-ar', '88200', '-sample_fmt', 's32', '-'], { windowsHide: true });
     ff.stdout.pipe(res); ff.stderr.resume();
     ff.on('error', () => { try { res.end(); } catch (e) {} });
     req.on('close', () => { try { ff.kill(); } catch (e) {} });
@@ -2233,7 +2276,10 @@ function writeObsidian(vault, albumsFolder) {
 }
 function configInfo() {
   const c = watchConfig();
-  return { active: !!c, folders: (c && c.music) || [], obsidian: (c && c.obs) ? { vault: c.vault, albumsFolder: c.obs.albumsFolder || '' } : null };
+  let empty = false; try { empty = !db.prepare('SELECT 1 FROM release_group LIMIT 1').get(); } catch (e) {}
+  return { active: !!c, folders: (c && c.music) || [], obsidian: (c && c.obs) ? { vault: c.vault, albumsFolder: c.obs.albumsFolder || '' } : null,
+    // standalone: estado del entorno para Ajustes y el onboarding del primer arranque.
+    ffmpeg: !!FFMPEG, ffmpegPath: FFMPEG && FFMPEG !== 'ffmpeg' ? FFMPEG : '', empty, firstRun: freshDb };
 }
 // Diálogo NATIVO de selección de carpeta de Windows (standalone en Win11): el servidor
 // corre en la máquina del usuario, así que abre un FolderBrowserDialog del Explorador y
@@ -2852,6 +2898,8 @@ http.createServer((req, res) => {
   } catch (e) { res.writeHead(500); res.end(String(e.message)); }
 }).listen(PORT, () => {
   console.log('escucharrr en http://localhost:' + PORT);
+  console.log('ffmpeg:', FFMPEG ? ('disponible (' + FFMPEG + ')') : 'NO encontrado — DSD/transcode desactivados (define ESC_FFMPEG o pon ffmpeg en el PATH)');
+  maybeOpenBrowser();
   startWatching();
   autoBackupIfStale();   // copia de seguridad "programada": una al arrancar si la última es antigua
   const svc = scrobble.enabledServices(scrobCfg || {});
