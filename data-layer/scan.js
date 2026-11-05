@@ -236,6 +236,11 @@ function statRetry(file, tries = 4) {   // stat de un fichero de red con reinten
 const okDirs = new Set();
 const seenPaths = new Set();
 const AUDIO_RE = /\.(flac|wav|dsf|dff|mp3|m4a|aac|aiff|aif|ogg|oga|opus)$/i;   // sin pérdida + MP3/M4A/AAC/AIFF/OGG/Opus
+// Extensiones que SON audio pero que aún no sabemos leer: se registran como "formato no soportado" para que el
+// usuario vea que esos ficheros existen pero no entraron (como "Skipped Files" de Roon), en vez de ignorarlos en
+// silencio. NO incluye audiolibros DRM (.m4p) ni material no musical (.cue/.log/.jpg): solo audio reproducible.
+const UNSUPPORTED_AUDIO_RE = /\.(wma|ape|wv|tak|tta|mpc|m4b|mka|spx|mp2|mp1|shn|caf|aifc|au|snd|ra|amr|alac)$/i;
+const skippedUnsup = new Set();   // evita duplicar un mismo fichero si su carpeta se re-visita en una pasada de recuperación
 const deferredDirs = [];        // carpetas ilegibles tras los reintentos cortos → se reintentan en pasadas posteriores
 let consecFail = 0;             // carpetas ilegibles CONSECUTIVAS: señal de que el montaje/red cayó
 // Enumera una carpeta; si falla tras los reintentos cortos, la DIFIERE (aún no la salta). Ante una racha de
@@ -260,6 +265,7 @@ function walk(dir, out) {
     let isDir = false; try { isDir = e.isDirectory(); } catch (x) {}
     if (isDir) walk(f, out);
     else if (AUDIO_RE.test(e.name)) { out.push(f); seenPaths.add(nrm(f)); }
+    else { const m = e.name.match(UNSUPPORTED_AUDIO_RE); if (m && !skippedUnsup.has(nrm(f))) { skippedUnsup.add(nrm(f)); try { insSkip.run(f, 'formato no soportado (.' + m[1].toLowerCase() + ')'); } catch (x) {} } }
   }
 }
 const files = []; walk(path.resolve(ROOT), files);
@@ -314,6 +320,9 @@ try {
     let parsed = null, perr = null;
     for (let i = 0; i < 2 && !parsed; i++) { try { parsed = parseOne(); } catch (e) { perr = e; if (i === 0) sleepSync(200); } }   // un reintento (SMB transitorio)
     if (!parsed && perr) { console.warn('  error leyendo', path.basename(file), perr.message); try { insSkip.run(file, 'error al leer: ' + (perr.code || perr.message)); } catch (x) {} }
+    // Fichero de formato soportado cuya cabecera no se pudo reconocer (corrupto o mal nombrado): el parser
+    // devuelve null sin lanzar. Antes desaparecía en silencio; ahora se registra para que se vea en "saltados".
+    else if (!parsed) { try { insSkip.run(file, 'cabecera no reconocida (.' + ext + ')'); } catch (x) {} }
     if (!parsed) continue;
     const fmtLabel = (ext === 'dsf' || ext === 'dff') ? dsdLabel(parsed.info.sampleRate) : ext.toUpperCase();
     const st = statRetry(file), t = parsed.tags, inf = parsed.info;

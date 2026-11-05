@@ -3460,7 +3460,19 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/tracks/facets') return sendJSON(res, trackFacets());
     if (u.pathname === '/api/folders') return sendJSON(res, folderList({ root: u.searchParams.get('root'), path: u.searchParams.get('path') }));
     if (u.pathname === '/api/works') return sendJSON(res, { items: db.prepare(`SELECT w.id, w.title, w.type, (SELECT group_concat(DISTINCT a.name) FROM credit c JOIN artist a ON a.id=c.artist_id WHERE c.entity_type='work' AND c.entity_id=w.id AND c.role='composición') composer, (SELECT COUNT(DISTINCT tr.id) FROM recording r JOIN track tr ON tr.recording_id=r.id WHERE r.work_id=w.id) perf FROM work w ORDER BY w.title`).all() });
-    if (u.pathname === '/api/skipped') { let total = 0, items = []; try { total = db.prepare('SELECT COUNT(*) n FROM skipped_file').get().n; items = db.prepare('SELECT path, reason FROM skipped_file ORDER BY path LIMIT 500').all(); } catch (e) {} return sendJSON(res, { total, items }); }
+    if (u.pathname === '/api/skipped') {
+      let total = 0, items = [], byReason = [];
+      try {
+        total = db.prepare('SELECT COUNT(*) n FROM skipped_file').get().n;
+        items = db.prepare('SELECT path, reason FROM skipped_file ORDER BY reason, path LIMIT 2000').all();
+        // Agrupa por CATEGORÍA (el texto antes de ": " o " (…)") para un resumen legible por motivo.
+        const cat = r => { const s = String(r || 'desconocido'); const i = s.search(/:| \(/); return (i >= 0 ? s.slice(0, i) : s).trim() || 'desconocido'; };
+        const m = new Map();
+        for (const row of db.prepare('SELECT reason, COUNT(*) n FROM skipped_file GROUP BY reason').all()) { const c = cat(row.reason); m.set(c, (m.get(c) || 0) + row.n); }
+        byReason = [...m.entries()].map(([reason, n]) => ({ reason, n })).sort((a, b) => b.n - a.n);
+      } catch (e) {}
+      return sendJSON(res, { total, items, byReason, shown: items.length });
+    }
     if (u.pathname === '/api/album') { const rel = parseInt(u.searchParams.get('rel'), 10) || null; const a = album(parseInt(u.searchParams.get('id'), 10), rel); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/search') return sendJSON(res, search(u.searchParams.get('q'), Math.min(parseInt(u.searchParams.get('n') || '20', 10) || 20, 100)));
     if (u.pathname === '/api/artist') { const a = artist(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }

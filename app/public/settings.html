@@ -484,12 +484,30 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
   function loadBackups() { fetch('/api/backup/list').then(r => r.json()).then(j => { if (j.ok) { BACKUPS = j.backups || []; renderBackups(); } }).catch(() => { const box = document.getElementById('bklist'); if (box) box.textContent = 'No se pudo cargar.'; }); }
   loadBackups();
-  // ficheros saltados en el último escaneo (errores de lectura, p. ej. SMB del NAS)
+  // ficheros saltados en el último escaneo (errores de lectura SMB, formatos no soportados…), agrupados por motivo.
   fetch('/api/skipped').then(r => r.json()).then(j => {
     const cnt = document.getElementById('skipcount'), box = document.getElementById('skiplist'); if (!box) return;
     cnt.textContent = j.total ? '(' + j.total + ')' : '';
-    if (!j.total) { box.innerHTML = '<span style="color:var(--text-2)">Ninguno — todas las carpetas se leyeron bien.</span>'; return; }
-    box.innerHTML = (j.items || []).map(s => `<div style="padding:2px 0;border-bottom:1px solid var(--border)"><span style="color:var(--text-2)">${esc(s.path)}</span> <span style="color:var(--muted)">· ${esc(s.reason || '')}</span></div>`).join('') + (j.total > (j.items || []).length ? `<div style="color:var(--muted);margin-top:6px">…y ${j.total - j.items.length} más</div>` : '');
+    if (!j.total) { box.innerHTML = '<span style="color:var(--text-2)">Ninguno — todo lo que hay en tus carpetas se leyó y se reconoció.</span>'; return; }
+    const cat = r => { const s = String(r || 'desconocido'); const i = s.search(/:| \(/); return (i >= 0 ? s.slice(0, i) : s).trim() || 'desconocido'; };
+    const items = j.items || [], byReason = (j.byReason && j.byReason.length) ? j.byReason : [{ reason: 'saltados', n: j.total }];
+    // una sección colapsable por categoría; dentro, las rutas de ESTA categoría (de la muestra traída)
+    box.innerHTML = byReason.map((g, gi) => {
+      const mine = items.filter(s => cat(s.reason) === g.reason);
+      const rows = mine.map(s => `<div style="padding:2px 0 2px 14px;border-bottom:1px solid var(--border)"><span style="color:var(--text-2)">${esc(s.path)}</span><span style="color:var(--muted)"> · ${esc(s.reason || '')}</span></div>`).join('');
+      const more = g.n > mine.length ? `<div style="color:var(--muted);padding:3px 0 0 14px">…y ${g.n - mine.length} más de esta categoría</div>` : '';
+      return `<div class="skipgrp" data-g="${gi}" style="margin-bottom:4px">
+        <div class="skiphdr" style="cursor:pointer;padding:4px 0;font-weight:600;user-select:none">
+          <span class="skiparrow" style="display:inline-block;width:12px;color:var(--muted)">▸</span>${esc(g.reason)} <span style="color:var(--muted);font-weight:400">· ${g.n}</span>
+        </div>
+        <div class="skipbody" style="display:none">${rows}${more}</div>
+      </div>`;
+    }).join('');
+    box.querySelectorAll('.skiphdr').forEach(h => h.addEventListener('click', () => {
+      const body = h.nextElementSibling, arr = h.querySelector('.skiparrow'), open = body.style.display !== 'none';
+      body.style.display = open ? 'none' : 'block'; arr.textContent = open ? '▸' : '▾';
+    }));
+    if (byReason.length === 1) box.querySelector('.skiphdr').click();   // un solo motivo: ábrelo ya
   }).catch(() => { const box = document.getElementById('skiplist'); if (box) box.textContent = 'No se pudo cargar.'; });
   document.getElementById('bknow').addEventListener('click', async () => { const b = document.getElementById('bknow'); b.disabled = true; b.textContent = 'Creando…'; try { const r = await fetch('/api/backup/now', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(x => x.json()); if (r.ok) { BACKUPS = r.backups || []; renderBackups(); bkMsg('Copia creada: ' + fmtBk(r.file), true); } else bkMsg('No se pudo crear: ' + (r.error || ''), false); } catch (e) { bkMsg('No se pudo contactar con el servidor.', false); } b.disabled = false; b.textContent = 'Crear copia'; });
   document.getElementById('bklist').addEventListener('click', async e => {
