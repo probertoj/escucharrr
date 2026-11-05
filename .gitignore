@@ -11,6 +11,8 @@ app/.lastfm-token
 # Spotify (app propia + token OAuth del usuario)
 app/spotify.json
 app/.spotify-token
+# AcoustID (clave propia del usuario + ruta de fpcalc)
+app/acoustid.json
 # carátulas cacheadas en local (Cover Art Archive); se re-descargan con covers.js
 app/cache/
 # impulsos de convolución (WAV propios de la máquina del usuario)

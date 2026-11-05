@@ -2406,6 +2406,24 @@ async function handleConfig(req, res, u) {
     if (sub === 'folders') { writeWatchFolders(Array.isArray(body.folders) ? body.folders : []); startWatching(); if (watchConfig() && watchConfig().music.length) _ingSchedule('music'); return sendJSON(res, { ok: true, ...configInfo() }); }
     if (sub === 'obsidian') { writeObsidian(String(body.vault || '').trim(), String(body.albumsFolder || '').trim()); startWatching(); _ingSchedule('vault'); return sendJSON(res, { ok: true, ...configInfo() }); }
     if (sub === 'rescan') { const r = await rescanNow(Array.isArray(body.what) ? body.what : ['music', 'vault']); return sendJSON(res, { ok: true, ...r }); }
+    // Reparar renombrados/movimientos SIN re-escanear toda la biblioteca: rebind por identidad de contenido
+    // (tamaño) de los ficheros huérfanos (carpeta renombrada) a su nueva ruta, y fusión de duplicados. Solo
+    // BD; disco en solo-lectura. Se ejecuta como proceso hijo (como el escaneo) para no bloquear el servidor.
+    if (sub === 'repair') {
+      const c = watchConfig(); const roots = (c && c.music) || [];
+      if (!roots.length) return sendJSON(res, { ok: false, error: 'No hay carpetas configuradas.' });
+      const args = [path.join(_DL, 'rebind.js'), '--db', DB_PATH, '--apply'];
+      for (const r of roots) args.push('--root', r);
+      const out = await new Promise((resolve) => {
+        const p = cp.spawn(process.execPath, args, { cwd: _DL });
+        let so = '', se = '';
+        p.stdout.on('data', (d) => (so += d)); p.stderr.on('data', (d) => (se += d));
+        p.on('error', (e) => resolve({ ok: false, error: String(e.message) }));
+        p.on('close', () => { try { resolve(JSON.parse(so.trim().split('\n').pop())); } catch (e) { resolve({ ok: false, error: 'salida no parseable: ' + se.slice(-200) }); } });
+      });
+      if (out.ok) sseBroadcast('library');
+      return sendJSON(res, out);
+    }
     res.writeHead(404); res.end('{}');
   } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }
