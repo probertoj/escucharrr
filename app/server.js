@@ -10,6 +10,19 @@ const fs = require('fs');
 const path = require('path');
 const cp = require('child_process');
 
+// Manejadores de proceso: en un .exe sin terminal que lo vigile, un error no capturado MATARÍA la app.
+// Los registramos cuanto antes: vuelcan a un log en la carpeta de la app (para diagnosticar sin consola)
+// y mantienen el servidor en pie. Es un compromiso consciente para un reproductor que no debe morir solo;
+// ver docs/standalone-readiness.md.
+const ERR_LOG = path.join(__dirname, 'escucharrr-error.log');
+function logFatal(kind, err) {
+  const line = '[' + new Date().toISOString() + '] ' + kind + ': ' + ((err && err.stack) || err) + '\n';
+  try { fs.appendFileSync(ERR_LOG, line); } catch (e) {}
+  try { console.error(line.trim()); } catch (e) {}
+}
+process.on('uncaughtException', (err) => logFatal('uncaughtException', err));
+process.on('unhandledRejection', (reason) => logFatal('unhandledRejection', reason));
+
 // Motor de audio NATIVO (opcional): salida WASAPI local controlada por el
 // servidor — el "core" posee la zona, la UI es un mando (modelo Roon). Si el
 // binario no está compilado, las rutas /api/native/* lo avisan sin romper nada.
@@ -1484,7 +1497,7 @@ function discover(opts) {
   };
 }
 
-const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.webmanifest': 'application/manifest+json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 const AUDIO_MIME = { '.flac': 'audio/flac', '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.opus': 'audio/ogg', '.aiff': 'audio/aiff', '.aif': 'audio/aiff', '.dsf': 'audio/x-dsf', '.dff': 'audio/x-dff' };
 
 // Streaming del fichero real con soporte de Range (necesario para seek y para que
@@ -1894,7 +1907,10 @@ async function handlePlaylists(req, res, u) {
 function sendFile(res, file) {
   const p = path.join(PUB, file);
   if (!p.startsWith(PUB) || !fs.existsSync(p)) { res.writeHead(404); res.end('no'); return; }
-  res.writeHead(200, { 'Content-Type': MIME[path.extname(p)] || 'application/octet-stream' });
+  // no-cache = "revalida siempre antes de reutilizar": sin ETags en este servidor, garantiza que una
+  // actualización de HTML/JS/CSS/icono se recoja sin vaciar caché a mano (clave para el .exe y para que
+  // el service worker, que cachea el shell con su propia versión, no sirva un shell viejo tras actualizar).
+  res.writeHead(200, { 'Content-Type': MIME[path.extname(p)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
   fs.createReadStream(p).pipe(res);
 }
 

@@ -539,8 +539,54 @@ window.player = (function () {
   }
   function progress() { if (scrubbing) return; const c = cur(); if (!c) return; const len = lenMs(), p = posMs(); const frac = len ? Math.min(100, p / len * 100) : 0; const pr = document.getElementById('npprog'), wf = document.getElementById('npwf'), el = document.getElementById('npel'); if (pr && len) pr.style.width = frac + '%'; if (wf && len) wf.style.clipPath = 'inset(0 ' + (100 - frac) + '% 0 0)'; if (el) el.textContent = mmss(p);
     const pr2 = document.getElementById('npfsprog'), wf2 = document.getElementById('npfswf'), el2 = document.getElementById('npfsel'); if (pr2 && len) pr2.style.width = frac + '%'; if (wf2 && len) wf2.style.clipPath = 'inset(0 ' + (100 - frac) + '% 0 0)'; if (el2) el2.textContent = mmss(p);
-    maybeScrobble(); maybeRadio(); syncLy(); syncNpLy(); }
-  const emit = () => document.dispatchEvent(new Event('player:change'));
+    maybeScrobble(); maybeRadio(); syncLy(); syncNpLy(); updateMsPosition(); }
+  const emit = () => { try { updateMediaSession(); } catch (e) {} document.dispatchEvent(new Event('player:change')); };
+
+  // ── Media Session API: metadata (título/artista/álbum/carátula) + mandos del SO en la pantalla de
+  //    bloqueo, auriculares y centro multimedia. Clave para que la PWA móvil se sienta nativa y permita
+  //    control en 2º plano. Los handlers reusan los controles del propio reproductor (toggle/next/prev/
+  //    seekFrac son mode-aware: html5 / nativo / UPnP). No rompe nada si el navegador no la soporta.
+  let _msInit = false, _msArtTrack = -1;
+  function setupMediaSession() {
+    if (_msInit || !('mediaSession' in navigator)) return; _msInit = true;
+    const ms = navigator.mediaSession;
+    const H = (name, fn) => { try { ms.setActionHandler(name, fn); } catch (e) {} };
+    H('play', () => { if (!playing) toggle(); });
+    H('pause', () => { if (playing) toggle(); });
+    H('previoustrack', () => prev());
+    H('nexttrack', () => next());
+    H('seekbackward', (d) => { const len = lenMs(); if (len) seekFrac(Math.max(0, (posMs() - ((d && d.seekOffset || 10) * 1000)) / len)); });
+    H('seekforward', (d) => { const len = lenMs(); if (len) seekFrac(Math.min(1, (posMs() + ((d && d.seekOffset || 10) * 1000)) / len)); });
+    H('seekto', (d) => { const len = lenMs(); if (len && d && typeof d.seekTime === 'number') seekFrac(d.seekTime * 1000 / len); });
+  }
+  function updateMediaSession() {
+    if (!('mediaSession' in navigator)) return;
+    setupMediaSession();
+    const ms = navigator.mediaSession;
+    if (irStation) {   // radio por internet: sin cola/seek; muestra emisora + lo que suena si lo sabemos
+      try { if (_msArtTrack !== 'radio') { _msArtTrack = 'radio'; ms.metadata = new MediaMetadata({ title: irTitle || irStation.name || 'Radio', artist: irTitle ? (irStation.name || '') : '' }); } ms.playbackState = irPlaying ? 'playing' : 'paused'; } catch (e) {}
+      return;
+    }
+    const c = cur();
+    if (!c) { try { ms.playbackState = 'none'; ms.metadata = null; _msArtTrack = -1; } catch (e) {} return; }
+    try {
+      if (_msArtTrack !== c.trackId) {   // recrea MediaMetadata solo al cambiar de pista, no en cada render
+        _msArtTrack = c.trackId;
+        const art = c.albumId != null ? '/api/cover?rg=' + c.albumId : null;
+        ms.metadata = new MediaMetadata({
+          title: c.title || '', artist: c.artist || '', album: c.album || '',
+          artwork: art ? [96, 256, 512].map(s => ({ src: art, sizes: s + 'x' + s, type: 'image/png' })) : []
+        });
+      }
+      ms.playbackState = playing ? 'playing' : 'paused';
+    } catch (e) {}
+  }
+  function updateMsPosition() {
+    if (!('mediaSession' in navigator) || !('setPositionState' in navigator.mediaSession)) return;
+    const len = lenMs(); if (!len) { try { navigator.mediaSession.setPositionState(null); } catch (e) {} return; }
+    const rate = (!nativeMode && !upnpMode && active().el && active().el.playbackRate) || 1;
+    try { navigator.mediaSession.setPositionState({ duration: len / 1000, position: Math.min(len / 1000, posMs() / 1000), playbackRate: rate }); } catch (e) {}
+  }
 
   // ── crossfade: al acercarse el final de la pista activa, solapa con la siguiente ──
   function maybeCrossfade() {
@@ -818,7 +864,7 @@ window.player = (function () {
   // Tope de volumen (soft limit): dB máx del fader (0 = sin límite). Recorta el volumen actual si supera el tope.
   function setVolLimit(db) { db = db >= 0 ? 0 : Math.max(VOL_FLOOR_DB + 1, db); volLimitDb = db; try { localStorage.setItem('escucharrr.vollimit', String(db)); } catch (e) {} setVol(vol); }
   function playTracks(tracks, i) { if (!tracks || !tracks.length) return; q = tracks; if (shuffle && tracks.length > 2) { fyShuffle(q, 0); i = 0; } start(i || 0); }
-  function playAlbum(id, i, rel) { fetch('/api/album?id=' + id + (rel ? '&rel=' + rel : '')).then(r => r.json()).then(a => { const tr = (a.tracks || []).map(t => ({ trackId: t.trackId, recording_id: t.recording_id, title: t.title, artist: a.artist, albumId: a.id, length_ms: t.length_ms, playable: t.playable !== 0, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs })); if (!tr.length) { alert('Este álbum aún no tiene pistas en tu biblioteca.'); return; } playTracks(tr, i || 0); }); }
+  function playAlbum(id, i, rel) { fetch('/api/album?id=' + id + (rel ? '&rel=' + rel : '')).then(r => r.json()).then(a => { const tr = (a.tracks || []).map(t => ({ trackId: t.trackId, recording_id: t.recording_id, title: t.title, artist: a.artist, album: a.title || a.name || '', albumId: a.id, length_ms: t.length_ms, playable: t.playable !== 0, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs })); if (!tr.length) { alert('Este álbum aún no tiene pistas en tu biblioteca.'); return; } playTracks(tr, i || 0); }); }
 
   // ── RADIO POR INTERNET: stream en vivo (sin cola/seek/duración), título "ahora suena" por ICY ──
   function persistRadio() { try { if (irStation) localStorage.setItem(IRKEY, JSON.stringify({ id: irStation.id, name: irStation.name })); else localStorage.removeItem(IRKEY); } catch (e) {} }
