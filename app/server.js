@@ -1205,6 +1205,20 @@ async function handleAlbumSimilar(req, res, u) {
     return sendJSON(res, { ok: true, configured: true, artists: out.slice(0, 16) });
   } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
 }
+// Artistas afines a UN artista (Roon: related_artists / view_all_related_artists). Vía Last.fm; marca los que
+// ya tienes en tu biblioteca (enlazan a su ficha) y ordena esos primero.
+async function handleArtistSimilar(req, res, u) {
+  try {
+    const art = Q.artist.get(parseInt(u.searchParams.get('id'), 10));
+    if (!art) return sendJSON(res, { ok: true, configured: !!lfmApiKey(), artists: [] });
+    const sim = await lastfmSimilar(art.name);
+    if (sim === null) return sendJSON(res, { ok: true, configured: false, artists: [] });
+    const idx = artistNameIndex();
+    const out = sim.map(s => { const id = idx.get(lidNormName(s.name)); return { name: s.name, id: id || null, owned: !!id, match: s.match }; });
+    out.sort((a, b) => (b.owned - a.owned) || (b.match - a.match));   // primero los que tienes
+    return sendJSON(res, { ok: true, configured: true, artists: out });
+  } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+}
 // Identificación automática por HUELLA (AcoustID) de UN álbum: huella de sus pistas → recording → release-group
 // por consenso → fija el mbid (modelo de versiones; provenance 'acoustid') y encadena enrich + portada.
 async function handleAlbumAcoustid(req, res, u) {
@@ -1445,6 +1459,21 @@ function artist(id) {
     .filter(x => !own.has(x.id))
     .map(x => ({ id: x.id, title: x.title, year: x.year, artist: x.artist, roles: (x.roles || '').split(',').filter(Boolean) }));
   a.album_count = (Q.artistAlbumCount.get(id) || {}).n || 0;
+  // Pistas de colaboración (Roon: view_all_collaboration_tracks): pistas acreditadas a este artista que viven
+  // en un álbum cuyo artista principal NO es él (invitaciones a nivel de canción). Distinto de «Apariciones»,
+  // que es a nivel de álbum. Cap 400 para artistas muy prolíficos.
+  a.collabTracks = db.prepare(`
+    SELECT DISTINCT t.id tid, t.title, t.position pos, m.position disc, rg.id rgid, rg.title album,
+      (SELECT acn3.name FROM artist_credit_name acn3 WHERE acn3.artist_credit_id=rg.artist_credit_id ORDER BY acn3.position LIMIT 1) album_artist
+    FROM track t
+    JOIN recording r ON r.id=t.recording_id
+    JOIN artist_credit_name acn ON acn.artist_credit_id = COALESCE(t.artist_credit_id, r.artist_credit_id)
+    JOIN medium m ON m.id=t.medium_id
+    JOIN "release" rel ON rel.id=m.release_id
+    JOIN release_group rg ON rg.id=rel.release_group_id
+    WHERE acn.artist_id=?
+      AND NOT EXISTS (SELECT 1 FROM artist_credit_name acn2 WHERE acn2.artist_credit_id=rg.artist_credit_id AND acn2.artist_id=?)
+    ORDER BY rg.title COLLATE NOCASE, m.position, t.position LIMIT 400`).all(id, id);
   // duplicados exactos de nombre (p. ej. 4 «blink-182») para ofrecer unirlos, con su nº de álbumes
   a.dupes = Q.artistDupes.all(id, normArtist(a.name)).map(d => ({ id: d.id, name: d.name, disambiguation: d.disambiguation, mbid: d.mbid, album_count: (Q.artistAlbumCount.get(d.id) || {}).n || 0 }));
   return a;
@@ -3575,6 +3604,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/artist/image') return serveArtistImage(res, parseInt(u.searchParams.get('id'), 10));
     if (u.pathname === '/api/album/merge-candidates') return sendJSON(res, { candidates: mergeCandidates(parseInt(u.searchParams.get('rg'), 10)) });
     if (u.pathname === '/api/album/similar') return void handleAlbumSimilar(req, res, u);
+    if (u.pathname === '/api/artist/similar') return void handleArtistSimilar(req, res, u);
     if (u.pathname === '/api/album/acoustid') return void handleAlbumAcoustid(req, res, u);
     if (u.pathname === '/api/covers/backfill') {   // descarga de CAA todas las portadas que falten (una sola instancia)
       if (req.method === 'POST') { const started = spawnCoversBackfill('manual'); return sendJSON(res, { ok: true, started, running: _coversBackfillRunning }); }

@@ -79,6 +79,10 @@ function renderArtist(a){
   if((a.albums||[]).length) tabs.push(['disco','Discografía',a.albums.length,`<div class="grid">${a.albums.map(albumCard).join('')}</div>`]);
   if(appPerf.length) tabs.push(['apar','Apariciones',appPerf.length,appearsList(appPerf)]);
   if(appProd.length) tabs.push(['prod','Producción',appProd.length,appearsList(appProd)]);
+  // Colaboraciones a nivel de PISTA (Roon: view_all_collaboration_tracks): pistas suyas en álbumes de otro.
+  const collab=a.collabTracks||[];
+  const collabList=list=>`<ul class="appears">`+list.map(x=>`<li><span class="yr">${x.disc&&x.disc>1?('D'+x.disc+'·'):''}${x.pos||''}</span><span style="flex:1"><a href="album.html?id=${x.rgid}" style="color:var(--accent)">${esc(x.title)}</a> <span style="color:var(--text-2)">· ${esc(x.album)}${x.album_artist?(' — '+esc(x.album_artist)):''}</span></span></li>`).join('')+`</ul>`;
+  if(collab.length) tabs.push(['colab','Colaboraciones',collab.length,collabList(collab)]);
   if((a.composed||[]).length) tabs.push(['obras','Obras',a.composed.length,`<div class="chips">${a.composed.map(w=>`<a class="chip" href="work.html?id=${w.id}">${esc(w.title)}</a>`).join('')}</div>`]);
   const tabsHtml=tabs.length
     ? `<div class="atabs">${tabs.map((t,i)=>`<button class="atab${i===0?' on':''}" data-tab="${t[0]}">${t[1]} <span class="atabn">${t[2]}</span></button>`).join('')}</div>`
@@ -99,9 +103,25 @@ function renderArtist(a){
     </div>
     ${bio}
     <div id="idealsec" style="margin-top:4px"></div>
-    ${tabsHtml}`;
+    ${tabsHtml}
+    <div id="afinessec" style="margin-top:22px"></div>`;
   applyBioCollapse();
   ensureEditorial(a);   // trae la bio de Wikipedia (inglés) si no la hay
+  loadAfines(a);        // artistas afines (Last.fm), perezoso
+}
+// ── Artistas afines (Roon: related_artists). Los que tienes enlazan a su ficha; el resto, a Last.fm. ──
+async function loadAfines(a){
+  const sec=document.getElementById('afinessec'); if(!sec) return;
+  let d; try{ d=await fetch('/api/artist/similar?id='+a.id).then(r=>r.json()); }catch(e){ return; }
+  if(!d||!d.ok||!d.configured){ return; }               // sin Last.fm configurado: no mostrar nada
+  const arts=d.artists||[]; if(!arts.length) return;
+  const SHOW=12, more=arts.length>SHOW;
+  const chip=x=> x.owned
+    ? `<a class="chip" href="artist.html?id=${x.id}" title="En tu biblioteca">${esc(x.name)}</a>`
+    : `<a class="chip" href="https://www.last.fm/music/${encodeURIComponent(x.name)}" target="_blank" rel="noopener" style="opacity:.75" title="No está en tu biblioteca">${esc(x.name)}</a>`;
+  sec.innerHTML=`<div class="sec">Afines</div><div class="chips" id="afineschips">${arts.slice(0,SHOW).map(chip).join('')}</div>`
+    +(more?`<button id="afinesmore" style="margin-top:8px;cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:5px 12px;font-size:13px">Ver todos (${arts.length})</button>`:'');
+  if(more) document.getElementById('afinesmore').addEventListener('click',function(){ document.getElementById('afineschips').innerHTML=arts.map(chip).join(''); this.remove(); });
 }
 // ── discografía ideal (MusicBrainz): poseídos + HUECOS con «Quiero» (como Roon) ──
 const _nnA=s=>String(s||'').normalize('NFD').toLowerCase().replace(/[^a-z0-9]+/g,'');
