@@ -107,6 +107,38 @@ LEFT JOIN tier t ON t.key = rt.tier_key`);
       added.push('view:v_album(title override)');
     }
   } catch (e) {}
+  // v_album.artist ahora prioriza el artista editado por el usuario (user_edit field='album_artist') sobre el
+  // crédito de MusicBrainz, y expone orig_artist (para «revertir»). Recreamos la vista si aún no lo tiene.
+  // ensureRg casa por título/artista ORIGINAL, así que el reescaneo no duplica el álbum.
+  try {
+    const def = db.prepare("SELECT sql FROM sqlite_master WHERE type='view' AND name='v_album'").get();
+    if (def && !/orig_artist/.test(def.sql || '')) {
+      db.exec('DROP VIEW v_album');
+      db.exec(`CREATE VIEW v_album AS
+SELECT rg.id,
+       COALESCE((SELECT ue.value FROM user_edit ue
+                   WHERE ue.subject_type='release_group' AND ue.subject_id=rg.id AND ue.field='title'),
+                rg.title) AS title,
+       rg.title AS orig_title,
+       rg.primary_type, rg.first_release,
+       substr(rg.first_release,1,4) AS year,
+       COALESCE((SELECT ue.value FROM user_edit ue
+                   WHERE ue.subject_type='release_group' AND ue.subject_id=rg.id AND ue.field='album_artist'),
+                (SELECT group_concat(acn.name || acn.join_phrase,'')
+                   FROM artist_credit_name acn WHERE acn.artist_credit_id = rg.artist_credit_id
+                   ORDER BY acn.position)) AS artist,
+       (SELECT group_concat(acn.name || acn.join_phrase,'')
+          FROM artist_credit_name acn WHERE acn.artist_credit_id = rg.artist_credit_id
+          ORDER BY acn.position) AS orig_artist,
+       rt.tier_key, t.rank AS tier_rank,
+       (SELECT AVG(stars) FROM rating r WHERE r.subject_type='release_group' AND r.subject_id=rg.id) AS album_stars,
+       EXISTS(SELECT 1 FROM flag f WHERE f.subject_type='release_group' AND f.subject_id=rg.id AND f.flag='favorite') AS is_favorite
+FROM release_group rg
+LEFT JOIN rating_tier rt ON rt.subject_type='release_group' AND rt.subject_id=rg.id
+LEFT JOIN tier t ON t.key = rt.tier_key`);
+      added.push('view:v_album(album_artist override)');
+    }
+  } catch (e) {}
   return added;
 }
 

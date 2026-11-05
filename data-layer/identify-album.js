@@ -57,8 +57,12 @@ function scoreCandidate(profile, cand) {
 // Construye el perfil del release_group: artista, título, barcode y el vector de duraciones por
 // pista (en orden medium/pista). Las duraciones vienen del escaneo (track/recording length_ms).
 function buildProfile(db, rgId) {
-  const rg = db.prepare(`SELECT rg.id, rg.title,
-      (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) AS artist
+  // Prioriza el título/artista EDITADO por el usuario (user_edit) sobre el tag original: si corrigió el nombre
+  // del álbum o el artista mal etiquetado («download»), identificamos con ESO, no con el valor viejo (bug matutino #2).
+  const rg = db.prepare(`SELECT rg.id,
+      COALESCE((SELECT ue.value FROM user_edit ue WHERE ue.subject_type='release_group' AND ue.subject_id=rg.id AND ue.field='title'), rg.title) AS title,
+      COALESCE((SELECT ue.value FROM user_edit ue WHERE ue.subject_type='release_group' AND ue.subject_id=rg.id AND ue.field='album_artist'),
+               (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1)) AS artist
      FROM release_group rg WHERE rg.id=?`).get(rgId);
   if (!rg) return null;
   const rel = db.prepare('SELECT barcode FROM "release" WHERE release_group_id=? ORDER BY id LIMIT 1').get(rgId) || {};

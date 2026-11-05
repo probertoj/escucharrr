@@ -384,9 +384,14 @@ SELECT rg.id,
        rg.title AS orig_title,
        rg.primary_type, rg.first_release,
        substr(rg.first_release,1,4) AS year,
+       COALESCE((SELECT ue.value FROM user_edit ue
+                   WHERE ue.subject_type='release_group' AND ue.subject_id=rg.id AND ue.field='album_artist'),
+                (SELECT group_concat(acn.name || acn.join_phrase,'')
+                   FROM artist_credit_name acn WHERE acn.artist_credit_id = rg.artist_credit_id
+                   ORDER BY acn.position)) AS artist,
        (SELECT group_concat(acn.name || acn.join_phrase,'')
           FROM artist_credit_name acn WHERE acn.artist_credit_id = rg.artist_credit_id
-          ORDER BY acn.position) AS artist,
+          ORDER BY acn.position) AS orig_artist,
        rt.tier_key, t.rank AS tier_rank,
        (SELECT AVG(stars) FROM rating r WHERE r.subject_type='release_group' AND r.subject_id=rg.id) AS album_stars,
        EXISTS(SELECT 1 FROM flag f WHERE f.subject_type='release_group' AND f.subject_id=rg.id AND f.flag='favorite') AS is_favorite

@@ -92,7 +92,8 @@ function renderAlbum(a){
         <div style="color:var(--text-2);font-size:13px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${esc(a.primary_type||'álbum')} · ${a.year||'—'}${a.mbid_source==='liderarrr'?`<span title="MBID importado de Liderarrr (identificación de MusicBrainz ya hecha allí)" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:var(--accent);background:var(--accent-bg);border-radius:999px;padding:2px 9px">${window.icon('check',12)}identificado vía Liderarrr</span>`:''}</div>
         <h1 style="display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap">${esc(a.title)}<button class="titleedit" title="Editar el título del álbum" aria-label="Editar título" style="flex:none;background:none;border:none;color:var(--text-2);cursor:pointer;padding:3px;display:inline-flex;align-items:center">${window.icon('edit',17)}</button></h1>
         ${(a.orig_title&&a.orig_title!==a.title)?`<div style="font-size:12px;color:var(--text-2);margin-top:-4px;margin-bottom:2px">Original: ${esc(a.orig_title)} · <a href="#" class="titlerevert" style="color:var(--accent)">revertir</a></div>`:''}
-        <div style="font-size:15px">${artistLink}</div>
+        <div style="font-size:15px;display:inline-flex;align-items:center;gap:6px">${artistLink}<button class="artistedit" title="Corregir el artista del álbum (no toca los tags de tus ficheros)" aria-label="Editar artista" style="flex:none;background:none;border:none;color:var(--text-2);cursor:pointer;padding:2px;display:inline-flex;align-items:center">${window.icon('edit',14)}</button></div>
+        ${(a.orig_artist&&a.orig_artist!==a.artist)?`<div style="font-size:12px;color:var(--text-2);margin-top:1px">Artista original: ${esc(a.orig_artist)} · <a href="#" class="artistrevert" style="color:var(--accent)">revertir</a></div>`:''}
         ${(a.tracks||[]).length?`<div class="actions"><button class="btn-accent" id="playalbum" style="display:inline-flex;align-items:center;gap:6px">${window.icon('play',15)}Reproducir</button><button class="iconbtn" id="radioalbum" title="Radio: reproduce y extiende con pistas afines de tu biblioteca">${window.icon('radio',17)}</button><button class="iconbtn" id="mixalbum" title="Mezcla: una lista afín a este álbum">${window.icon('music',17)}</button><button class="iconbtn" id="queuealbum" title="Añadir a la cola">${window.icon('queue',17)}</button><button class="iconbtn" id="nextalbum" title="Reproducir a continuación">${window.icon('next',17)}</button><button class="iconbtn" id="addalbum" title="Añadir a una lista">${window.icon('plus',17)}</button><button class="iconbtn" id="identifyalbum" title="${a.mbid?'Ya identificado con MusicBrainz — reidentificar':'Identificar con MusicBrainz (por nº de pistas y duraciones)'}">${window.icon(a.mbid?'check':'search',17)}</button>${a.has_audio?`<button class="iconbtn" id="acoustidalbum" title="Identificar por huella de audio (AcoustID) — reconoce el disco aunque las etiquetas estén mal">${window.icon('visualizer',17)}</button>`:''}${a.has_audio?`<button class="iconbtn" id="reanalyzealbum" ${a.reanalyzing?'disabled':''} title="Recalcula el loudness/ReplayGain y la barra de onda de este álbum">${window.icon('refresh',17)}</button>`:''}${a.folder?`<a class="iconbtn" id="folderalbum" href="folders.html?root=${a.folder.root}&path=${encodeURIComponent(a.folder.rel)}" title="Ir a la carpeta de este disco" style="display:inline-flex;align-items:center;justify-content:center">${window.icon('folder',17)}</a>`:''}<span id="retoslot"></span></div>`:''}
         <div class="meta">
           <span><span class="k">Tier</span> ${tier}</span>
@@ -224,6 +225,8 @@ document.addEventListener('click',e=>{
   const ae=e.target.closest('#app .aboutedit'); if(ae){ openAboutEditor(); return; }
   const te=e.target.closest('#app .titleedit'); if(te){ openTitleEditor(); return; }
   const tv=e.target.closest('#app .titlerevert'); if(tv){ e.preventDefault(); editField('title','').then(r=>{ if(r.ok){toast('Título restaurado');load();}else toast(r.error||'error'); }); return; }
+  const ate=e.target.closest('#app .artistedit'); if(ate){ openArtistEditor(); return; }
+  const atv=e.target.closest('#app .artistrevert'); if(atv){ e.preventDefault(); editField('album_artist','').then(r=>{ if(r.ok){toast('Artista restaurado');load();}else toast(r.error||'error'); }); return; }
 });
 function openTitleEditor(){
   const a=window.ALB; if(!a)return;
@@ -244,6 +247,27 @@ function openTitleEditor(){
   const save=()=>{ const v=inp.value.trim(); if(!v){toast('El título no puede estar vacío');return;} editField('title',v).then(r=>{ if(r.ok){toast('Título actualizado');close();load();}else toast(r.error||'error'); }); };
   document.getElementById('titlecancel').onclick=close;
   document.getElementById('titlesave').onclick=save;
+  inp.addEventListener('keydown',ev=>{ if(ev.key==='Enter'){ev.preventDefault();save();} else if(ev.key==='Escape'){ev.preventDefault();close();} });
+}
+function openArtistEditor(){
+  const a=window.ALB; if(!a)return;
+  if(document.getElementById('artistdlg'))return;
+  const ov=document.createElement('div'); ov.id='artistdlg'; ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:120';
+  ov.innerHTML=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;width:min(440px,92vw);box-shadow:0 12px 40px rgba(0,0,0,.4)">
+    <div style="font-weight:600;font-size:15px;margin-bottom:10px;display:inline-flex;align-items:center;gap:7px">${window.icon('edit',16)}Corregir el artista del álbum</div>
+    <input id="artistin" type="text" value="${esc(a.artist||'')}" style="width:100%;font:inherit;font-size:15px;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--text);box-sizing:border-box">
+    <div style="font-size:12px;color:var(--text-2);margin-top:8px">No toca las etiquetas de tus ficheros ni el escaneo: solo cambia cómo se muestra y con qué se empareja al identificar.${(a.orig_artist&&a.orig_artist!==a.artist)?` Original: <b style="color:var(--text)">${esc(a.orig_artist)}</b>.`:''}</div>
+    <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
+      <button id="artistcancel" style="padding:7px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer;color:var(--text)">Cancelar</button>
+      <button id="artistsave" class="btn-accent" style="padding:7px 16px">Guardar</button>
+    </div></div>`;
+  document.body.appendChild(ov);
+  const inp=document.getElementById('artistin'); inp.focus(); inp.select();
+  const close=()=>ov.remove();
+  ov.addEventListener('click',ev=>{ if(ev.target===ov)close(); });
+  const save=()=>{ const v=inp.value.trim(); if(!v){toast('El artista no puede estar vacío');return;} editField('album_artist',v).then(r=>{ if(r.ok){toast('Artista actualizado');close();load();}else toast(r.error||'error'); }); };
+  document.getElementById('artistcancel').onclick=close;
+  document.getElementById('artistsave').onclick=save;
   inp.addEventListener('keydown',ev=>{ if(ev.key==='Enter'){ev.preventDefault();save();} else if(ev.key==='Escape'){ev.preventDefault();close();} });
 }
 function openAboutEditor(){

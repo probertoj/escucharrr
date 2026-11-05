@@ -464,7 +464,7 @@ function buildQ(db) { return {
   countryAll: db.prepare(`SELECT release_group_id id, country c FROM "release" WHERE country IS NOT NULL GROUP BY release_group_id`),
   labelAll: db.prepare(`SELECT rel.release_group_id id, l.name c FROM "release" rel JOIN label l ON l.id=rel.label_id GROUP BY rel.release_group_id`),
   tagsAll:   db.prepare(`SELECT ti.subject_id id, group_concat(t.name,'|') gs FROM tag_item ti JOIN tag t ON t.id=ti.tag_id WHERE ti.subject_type='release_group' GROUP BY ti.subject_id`),
-  album: db.prepare(`SELECT a.id,a.title,a.orig_title,a.artist,a.year,a.primary_type,a.tier_key,a.tier_rank,
+  album: db.prepare(`SELECT a.id,a.title,a.orig_title,a.artist,a.orig_artist,a.year,a.primary_type,a.tier_key,a.tier_rank,
       (SELECT label FROM tier WHERE key=a.tier_key) tier_label, a.album_stars, a.is_favorite,
       EXISTS(SELECT 1 FROM flag f WHERE f.subject_type='release_group' AND f.subject_id=a.id AND f.flag='listen_later') listen_later,
       (SELECT acn.artist_id FROM artist_credit_name acn JOIN release_group rg ON rg.artist_credit_id=acn.artist_credit_id
@@ -2704,6 +2704,13 @@ function handleEditSync(body) {
     const v = body.value == null ? '' : String(body.value).trim();
     if (v === '') { Q.edDelUserEdit.run(st, sid, 'title'); Q.edDelProv.run(st, sid, 'title'); return { field, value: null }; }
     Q.edSetUserEdit.run(st, sid, 'title', v); Q.edSetProv.run(st, sid, 'title');
+    return { field, value: v };
+  }
+  if (field === 'album_artist') {   // corregir el artista del álbum (p. ej. mal etiquetado como «download»): override en user_edit (v_album.artist lo prioriza); los tags del fichero no se tocan, estilo Roon
+    if (st !== 'release_group') throw new Error('solo se puede editar el artista de un álbum');
+    const v = body.value == null ? '' : String(body.value).trim();
+    if (v === '') { Q.edDelUserEdit.run(st, sid, 'album_artist'); Q.edDelProv.run(st, sid, 'album_artist'); return { field, value: null }; }
+    Q.edSetUserEdit.run(st, sid, 'album_artist', v); Q.edSetProv.run(st, sid, 'album_artist');
     return { field, value: v };
   }
   if (EDIT_TEXT_FIELDS.has(field)) {
