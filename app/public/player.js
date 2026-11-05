@@ -254,6 +254,27 @@ window.player = (function () {
   // Espec técnico + loudness de la pista para la página "Señal" (ruta de señal / nerd stats).
   function loadNpInfo() { const c = cur(); if (!c || !c.trackId) { npInfo = null; npInfoTrack = -1; return; } if (npInfoTrack === c.trackId && npInfo) return; npInfoTrack = c.trackId; npInfo = null; fetch('/api/trackinfo?track=' + c.trackId).then(r => r.json()).then(j => { const cc = cur(); if (cc && cc.trackId === npInfoTrack) { npInfo = j; if (npfs && npfs.style.display === 'flex' && npPage === 'signal') renderNpFs(); } }).catch(() => {}); }
 
+  // ── chip de resolución en la barra (estilo Roon): formato + bit/kHz de lo que suena, de /api/trackinfo.
+  //    Así ves la «cadena de calidad» de un vistazo sin abrir el fullscreen; clic → página «Señal». ──
+  let barTech = null, barTechTrack = -1;
+  function loadBarTech() {
+    const c = cur();
+    if (!c || !c.trackId || c.playable === false) { if (barTechTrack !== -1) { barTech = null; barTechTrack = -1; render(); } return; }
+    if (barTechTrack === c.trackId) return;
+    barTechTrack = c.trackId; barTech = null;
+    fetch('/api/trackinfo?track=' + c.trackId).then(r => r.json()).then(j => { const cc = cur(); if (cc && cc.trackId === barTechTrack) { barTech = (j && j.format) ? j : null; render(); } }).catch(() => {});
+  }
+  function techIsHires(ti) { return !!ti && ((ti.sample_rate && ti.sample_rate > 48000) || (ti.bit_depth && ti.bit_depth > 16)); }
+  function techLabel(ti) {
+    if (!ti || !ti.format) return '';
+    const fmt = String(ti.format).toUpperCase();
+    const khz = ti.sample_rate ? ti.sample_rate / 1000 : 0;
+    const kstr = khz ? (khz % 1 ? khz.toFixed(1) : String(khz)) : '';
+    if (ti.bit_depth) return fmt + (kstr ? ' ' + ti.bit_depth + '/' + kstr : '');                 // sin pérdida: FLAC 16/44.1
+    const kbps = (ti.size_bytes && ti.duration_ms) ? Math.round(ti.size_bytes * 8 / ti.duration_ms) : 0;  // con pérdida: MP3 320k
+    return fmt + (kbps ? ' ' + kbps + 'k' : '');
+  }
+
   // ── paleta dinámica de la portada (color dominante + acento vibrante), acotada al fullscreen ──
   function loadPalette(albumId) {
     if (albumId == null) return; if (npPaletteId === albumId && npPalette) { applyNpPalette(); return; }
@@ -507,10 +528,12 @@ window.player = (function () {
     const c = cur();
     if (!c) { bar.style.display = 'none'; emit(); return; }
     const len = lenMs(), p = posMs(), noAudio = c.playable === false;
+    loadBarTech();
     bar.style.display = 'flex';
     bar.innerHTML =
       `<a href="album.html?id=${c.albumId}" style="flex:none">${cover(c.albumId, 46)}</a>
        <div data-act="npopen" title="Ahora suena" style="min-width:110px;cursor:pointer"><div style="font-size:14px;font-weight:600">${esc(c.title)}</div><div style="font-size:12px;color:var(--text-2)">${esc(c.artist)}${noAudio ? ' · sin audio local' : ''}</div></div>
+       ${techLabel(barTech) ? `<span data-act="npsignal" title="Resolución de audio — abre la ruta de señal" style="flex:none;cursor:pointer;font-size:10px;font-weight:700;letter-spacing:.3px;padding:2px 7px;border-radius:999px;border:1px solid ${techIsHires(barTech) ? 'var(--accent)' : 'var(--line)'};color:${techIsHires(barTech) ? 'var(--accent)' : 'var(--text-2)'};white-space:nowrap">${esc(techLabel(barTech))}</span>` : ''}
        <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px">
          <div style="display:flex;align-items:center;gap:18px;color:var(--text)">
            <span data-act="shuffle" title="Aleatorio: baraja lo que viene (S)" style="cursor:pointer;display:inline-flex;color:${shuffle ? 'var(--accent)' : 'var(--text-2)'}">${ic('shuffle', 17)}</span>
@@ -1255,6 +1278,7 @@ window.player = (function () {
     else if (k === 'next') next();
     else if (k === 'toggle') toggle();
     else if (k === 'npopen' || k === 'npclose') toggleNpFs();
+    else if (k === 'npsignal') { ensureNpFs(); npPage = 'signal'; loadNpInfo(); const c = cur(); if (c) loadPalette(c.albumId); renderNpFs(); npfs.style.display = 'flex'; }
     else if (k === 'nppage') { npPage = a.dataset.page; npLyActive = -1; renderNpFs(); }
     else if (k === 'viztoggle') setVizOn(!vizOn);
     else if (k === 'vizstyle') cycleVizStyle();
