@@ -99,7 +99,7 @@ function renderAlbum(a){
   const moreBy=(a.more_albums||[]).length?`<div class="sec">Más de ${a.artist_id?`<a href="artist.html?id=${a.artist_id}" style="color:inherit;text-decoration:none">${artNm}</a>`:artNm}</div><div class="shelf">`+a.more_albums.map(al=>`<a class="shcard" href="album.html?id=${al.id}" title="${esc(al.title)}"><div class="cv"><img src="/api/cover?rg=${al.id}" alt="" loading="lazy"></div><div class="nm">${esc(al.title)}</div><div class="yr">${al.year||''}</div></a>`).join('')+`</div>`:'';
   app.innerHTML=`
     <div class="hero">
-      <div style="flex:none"><div class="cov"><img src="/api/cover?rg=${a.id}&p=${encodeURIComponent(a.cover_pref||'auto')}" alt="" draggable="false" style="width:100%;height:100%;object-fit:cover;display:block"></div><div class="coverpref">${[['auto','Auto'],['file','Archivo'],['download','Descargada'],['none','Ninguna']].map(([v,l])=>`<span class="cpref${(a.cover_pref||'auto')===v?' on':''}" data-v="${v}" title="Fuente de la portada">${l}</span>`).join('')}</div></div>
+      <div style="flex:none"><div class="cov"><img src="/api/cover?rg=${a.id}&p=${encodeURIComponent(a.cover_pref||'auto')}" alt="" draggable="false" style="width:100%;height:100%;object-fit:cover;display:block"></div><div class="coverpref">${[['auto','Auto'],['file','Archivo'],['download','Descargada'],['none','Ninguna']].map(([v,l])=>`<span class="cpref${(a.cover_pref||'auto')===v?' on':''}" data-v="${v}" title="Fuente de la portada">${l}</span>`).join('')}<span class="setcover" title="Elegir portada desde una URL o un archivo" style="cursor:pointer;color:var(--accent)">Cambiar…</span></div></div>
       <div style="flex:1;min-width:240px">
         <div style="color:var(--text-2);font-size:13px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${esc(a.primary_type||'álbum')} · ${a.year||'—'}${a.mbid_source==='liderarrr'?`<span title="MBID importado de Liderarrr (identificación de MusicBrainz ya hecha allí)" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:var(--accent);background:var(--accent-bg);border-radius:999px;padding:2px 9px">${window.icon('check',12)}identificado vía Liderarrr</span>`:''}</div>
         <h1 style="display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap">${esc(a.title)}<button class="titleedit" title="Editar el título del álbum" aria-label="Editar título" style="flex:none;background:none;border:none;color:var(--text-2);cursor:pointer;padding:3px;display:inline-flex;align-items:center">${window.icon('edit',17)}</button></h1>
@@ -233,6 +233,7 @@ document.addEventListener('click',e=>{
   const ll=e.target.closest('#app .llater'); if(ll){ const on=ll.dataset.ll==='1'; editField('listen_later',on).then(r=>{ if(r.ok){toast(on?'En «escuchar más tarde»':'Quitado de «más tarde»');load();}else toast(r.error||'error'); }); return; }
   const hd=e.target.closest('#app .hided'); if(hd){ const on=hd.dataset.hide==='1'; editField('hidden',on).then(r=>{ if(r.ok){toast(on?'Álbum ocultado de la biblioteca':'Álbum visible de nuevo');load();}else toast(r.error||'error'); }); return; }
   const cp=e.target.closest('#app .cpref'); if(cp){ editField('cover_pref',cp.dataset.v).then(r=>{ if(r.ok){toast('Portada: '+cp.textContent);load();}else toast(r.error||'error'); }); return; }
+  const scv=e.target.closest('#app .setcover'); if(scv){ openCoverPicker(); return; }
   const rt=e.target.closest('#app .revtoggle'); if(rt){ const box=document.getElementById('aboutbox'); const col=box.classList.toggle('collapsed'); rt.textContent=col?'Ver más':'Ver menos'; return; }
   const rs=e.target.closest('#app .revsrc'); if(rs){ showReview(+rs.dataset.i); return; }
   const ae=e.target.closest('#app .aboutedit'); if(ae){ openAboutEditor(); return; }
@@ -483,6 +484,29 @@ function pickPlaylist(anchor,onPick){
 }
 let toastT=null;
 function toast(msg){let t=document.getElementById('toast');if(!t){t=document.createElement('div');t.id='toast';t.setAttribute('style','position:fixed;left:50%;bottom:80px;transform:translateX(-50%);z-index:80;background:var(--text);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.25);opacity:0;transition:opacity .15s');document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(toastT);toastT=setTimeout(()=>t.style.opacity='0',1800);}
+
+// ── Portada manual: elegir desde una URL o examinar un archivo (como Plex) ──
+function openCoverPicker(){
+  if(document.getElementById('covdlg'))return;
+  const ov=document.createElement('div'); ov.id='covdlg'; ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:120';
+  ov.innerHTML=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;width:min(460px,92vw);box-shadow:0 12px 40px rgba(0,0,0,.4)">
+    <div style="font-weight:600;font-size:15px;margin-bottom:12px;display:inline-flex;align-items:center;gap:7px">${window.icon('edit',16)}Cambiar portada</div>
+    <label style="font-size:12px;color:var(--text-2)">Desde una URL (como en Plex)</label>
+    <div style="display:flex;gap:8px;margin-top:4px"><input id="covurl" type="url" placeholder="https://…/portada.jpg" style="flex:1;font:inherit;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--text)"><button id="covurlgo" class="btn-accent" style="padding:7px 14px">Usar</button></div>
+    <div style="margin-top:14px"><label style="font-size:12px;color:var(--text-2)">…o examinar un archivo</label><br><input id="covfile" type="file" accept="image/*" style="margin-top:4px"></div>
+    <div style="font-size:12px;color:var(--text-2);margin-top:12px">La portada se guarda en la app (no toca tus ficheros) y no la pisa la descarga automática.</div>
+    <div style="margin-top:14px;display:flex;gap:8px;justify-content:space-between;align-items:center">
+      <button id="covclear" style="padding:7px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer;color:var(--text-2)">Quitar portada puesta</button>
+      <button id="covcancel" style="padding:7px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer;color:var(--text)">Cerrar</button>
+    </div><div id="covmsg2" style="font-size:12.5px;margin-top:8px;color:var(--text-2)"></div></div>`;
+  document.body.appendChild(ov);
+  const close=()=>ov.remove(); ov.addEventListener('click',ev=>{ if(ev.target===ov)close(); });
+  document.getElementById('covcancel').onclick=close;
+  const msg=document.getElementById('covmsg2'), post=async(body)=>{ msg.textContent='Guardando…'; try{ const r=await fetch('/api/album/cover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({rg:id},body))}).then(x=>x.json()); if(r.ok){ toast('Portada actualizada'); close(); load(); } else { msg.style.color='#c0392b'; msg.textContent=r.error||'error'; } }catch(e){ msg.style.color='#c0392b'; msg.textContent='error: '+e.message; } };
+  document.getElementById('covurlgo').onclick=()=>{ const u=document.getElementById('covurl').value.trim(); if(!u){msg.textContent='Pon una URL';return;} post({url:u}); };
+  document.getElementById('covclear').onclick=()=>post({clear:true});
+  document.getElementById('covfile').onchange=(ev)=>{ const f=ev.target.files[0]; if(!f)return; if(f.size>15*1024*1024){msg.style.color='#c0392b';msg.textContent='Archivo demasiado grande (máx. 15 MB)';return;} const rd=new FileReader(); rd.onload=()=>post({dataUrl:rd.result}); rd.readAsDataURL(f); };
+}
 
 // ── multi-selección de pistas: poner varias en un disco de golpe (Serge) ──
 function trkRepaint(){ document.body.classList.toggle('trksel',TRKSEL); const tog=document.getElementById('trkseltog'); if(tog)tog.textContent=TRKSEL?'Hecho':'Seleccionar'; const n=TRKSET.size; document.getElementById('trkbar').classList.toggle('on',TRKSEL&&n>0); document.getElementById('trkcount').textContent=n+' pista'+(n===1?'':'s'); document.querySelectorAll('#app .track').forEach(el=>{ const on=TRKSET.has(+el.dataset.tid); el.classList.toggle('trkon',on); const m=el.querySelector('.trkmark'); if(m)m.textContent=on?'✓':''; }); }

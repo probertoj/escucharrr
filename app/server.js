@@ -2301,6 +2301,59 @@ function serveCover(res, id) {
   res.end(coverSvg(id));
 }
 
+// ── Portada MANUAL (Serge): elegir desde una URL o subir un archivo. Se guarda como cover_path + provenance
+// 'user' (que covers.js respeta y no pisa). Solo BD/cache, no toca los ficheros de música. ──
+const COVER_USER_DIR = path.join(__dirname, 'cache', 'cover-user');
+function _imgMimeExt(buf) {
+  if (buf.length > 3 && buf[0] === 0xFF && buf[1] === 0xD8) return ['image/jpeg', 'jpg'];
+  if (buf.length > 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return ['image/png', 'png'];
+  if (buf.length > 12 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP') return ['image/webp', 'webp'];
+  if (buf.length > 6 && buf.toString('latin1', 0, 3) === 'GIF') return ['image/gif', 'gif'];
+  return null;
+}
+function saveUserCover(rg, buf, srcRef) {
+  const me = _imgMimeExt(buf); if (!me) throw new Error('eso no parece una imagen (JPEG/PNG/WEBP/GIF)');
+  if (buf.length > 15 * 1024 * 1024) throw new Error('imagen demasiado grande (máx. 15 MB)');
+  try { fs.mkdirSync(COVER_USER_DIR, { recursive: true }); } catch (e) {}
+  for (const ext of ['jpg', 'png', 'webp', 'gif']) { const p = path.join(COVER_USER_DIR, rg + '.' + ext); try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (e) {} }
+  const rel = 'cache/cover-user/' + rg + '.' + me[1];
+  fs.writeFileSync(path.join(__dirname, rel), buf);
+  db.prepare('UPDATE release_group SET cover_path=?, cover_mime=? WHERE id=?').run(rel, me[0], rg);
+  db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at) VALUES('release_group',?,'cover','user',?,datetime('now'))
+      ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source='user', source_ref=excluded.source_ref, fetched_at=datetime('now')`).run(rg, srcRef || null);
+  Q.edDelUserEdit.run('release_group', rg, 'cover_pref');   // volver a 'auto' para que se vea la portada puesta
+}
+// lector de cuerpo con límite alto (la portada subida como dataUrl base64 pesa varios MB; readBody corta a 100 KB)
+function readBodyBig(req, max) { return new Promise(resolve => { let b = '', over = false; req.on('data', c => { b += c; if (b.length > max) { over = true; req.destroy(); } }); req.on('end', () => { if (over) return resolve(null); try { resolve(JSON.parse(b || '{}')); } catch (e) { resolve({}); } }); req.on('error', () => resolve(null)); }); }
+async function handleAlbumCover(req, res) {
+  try {
+    const b = await readBodyBig(req, 30 * 1024 * 1024);
+    if (!b) return sendJSON(res, { ok: false, error: 'imagen demasiado grande' });
+    const rg = parseInt(b.rg, 10);
+    if (!rg || !db.prepare('SELECT 1 FROM release_group WHERE id=?').get(rg)) { res.writeHead(404); return res.end(JSON.stringify({ ok: false, error: 'álbum no encontrado' })); }
+    if (b.clear) {   // quitar la portada manual → vuelve a embebida/CAA
+      for (const ext of ['jpg', 'png', 'webp', 'gif']) { const p = path.join(COVER_USER_DIR, rg + '.' + ext); try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (e) {} }
+      db.prepare('UPDATE release_group SET cover_path=NULL, cover_mime=NULL WHERE id=?').run(rg);
+      db.prepare(`DELETE FROM provenance WHERE subject_type='release_group' AND subject_id=? AND field='cover'`).run(rg);
+      sseBroadcast('library'); return sendJSON(res, { ok: true, cleared: true });
+    }
+    let buf = null, srcRef = null;
+    if (b.dataUrl) {   // archivo subido: data:image/...;base64,....
+      const m = /^data:([^;]+);base64,(.*)$/s.exec(String(b.dataUrl));
+      if (!m) throw new Error('archivo inválido');
+      buf = Buffer.from(m[2], 'base64'); srcRef = 'archivo';
+    } else if (b.url) {   // desde una URL (como Plex): la bajamos nosotros
+      const url = String(b.url).trim(); if (!/^https?:\/\//i.test(url)) throw new Error('la URL debe empezar por http(s)://');
+      const r = await fetch(url, { redirect: 'follow', headers: { 'User-Agent': 'escucharrr/0.1' } });
+      if (!r.ok) throw new Error('la URL respondió ' + r.status);
+      buf = Buffer.from(await r.arrayBuffer()); srcRef = url;
+    } else throw new Error('pasa una URL o un archivo');
+    saveUserCover(rg, buf, srcRef);
+    sseBroadcast('library');
+    return sendJSON(res, { ok: true });
+  } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+}
+
 // ── estado para la página de Configuración (solo lectura; lo editable va por sus propias rutas) ──
 function settingsInfo() {
   const n = sql => { try { return db.prepare(sql).get().n; } catch (e) { return 0; } };
@@ -3255,6 +3308,7 @@ http.createServer((req, res) => {
   if (req.method === 'POST' && u.pathname === '/api/edit') return void handleEdit(req, res);
   if (req.method === 'POST' && u.pathname === '/api/album/merge') return void handleMergeAlbums(req, res);
   if (req.method === 'POST' && u.pathname === '/api/album/merge-bulk') return void handleMergeBulk(req, res);
+  if (req.method === 'POST' && u.pathname === '/api/album/cover') return void handleAlbumCover(req, res);
   if (req.method === 'POST' && u.pathname === '/api/album/make-primary') return void (async () => {
     try {
       const b = await readBody(req); const rg = parseInt(b.rg, 10), rel = parseInt(b.rel, 10);
