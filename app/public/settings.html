@@ -226,14 +226,26 @@ window.addEventListener('DOMContentLoaded', async () => {
       <div class="d" style="margin:3px 0 8px">Pega tu <b>token</b> de <span class="mono">listenbrainz.org/settings</span>; se valida al conectar.</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${lb.connected ? '<button id="lbdisc">Desconectar</button>' : '<input id="lbtoken" type="password" placeholder="token de ListenBrainz" style="flex:1;min-width:200px"><button id="lbsave">Conectar</button>'}</div>
       <div id="lbmsg" style="font-size:12.5px;margin-top:6px;display:none"></div></div>
-    <div class="row" style="display:block"><div class="k" style="display:flex;align-items:center;gap:8px">Last.fm ${lf.connected ? badge(true, 'conectado') : ''}</div>
-      <div class="d" style="margin:3px 0 8px">Crea una API account en <span class="mono">last.fm/api/account/create</span> (el <b>Callback URL</b> puedes dejarlo en blanco: escucharrr lo envía solo), pega la <b>API key</b> y el <b>secret</b>, guarda y pulsa Conectar.</div>
+    <div class="row" style="display:block"><div class="k" style="display:flex;align-items:center;gap:8px">Last.fm ${lf.connected ? badge(true, 'conectado') : (lf.builtin ? badge(false, 'un clic') : '')}</div>
+      ${lf.builtin ? `
+      <div class="d" style="margin:3px 0 8px">escucharrr trae su propia clave: solo pulsa <b>Conectar</b> y autoriza en Last.fm. No necesitas crear ninguna cuenta de API.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        ${lf.connected ? '<button id="lfdisc">Desconectar</button>' : '<button id="lfconn">Conectar con Last.fm</button>'}
+      </div>
+      <details style="margin-top:8px"><summary style="cursor:pointer;color:var(--text-2);font-size:12.5px">Usar mi propia cuenta de API (avanzado)</summary>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+          <input id="lfkey" placeholder="API key" value="${esc(lf.apiKey || '')}" style="flex:1;min-width:140px">
+          <input id="lfsecret" type="password" placeholder="${lf.hasSecret ? 'secret guardado — en blanco lo conserva' : 'shared secret'}" style="flex:1;min-width:140px">
+          <button id="lfsave">Guardar claves</button>
+        </div></details>` : `
+      <div class="d" style="margin:3px 0 8px">Crea una API account en <span class="mono">last.fm/api/account/create</span> (el <b>Callback URL</b> puedes dejarlo en blanco: escucharrr lo envía solo), pega la <b>API key</b> y el <b>secret</b> de la <b>misma app</b>, guarda y pulsa Conectar.</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <input id="lfkey" placeholder="API key" value="${esc(lf.apiKey || '')}" style="flex:1;min-width:140px">
-        <input id="lfsecret" type="password" placeholder="shared secret" style="flex:1;min-width:140px">
+        <input id="lfsecret" type="password" placeholder="${lf.hasSecret ? 'secret guardado — en blanco lo conserva' : 'shared secret'}" style="flex:1;min-width:140px">
         <button id="lfsave">Guardar claves</button>
-        ${(lf.apiKey && lf.hasSecret) ? (lf.connected ? '<button id="lfdisc">Desconectar</button>' : '<button id="lfconn">Conectar con Last.fm</button>') : ''}
-      </div><div id="lfmsg" style="font-size:12.5px;margin-top:6px;display:none"></div></div>
+        ${lf.canConnect ? (lf.connected ? '<button id="lfdisc">Desconectar</button>' : '<button id="lfconn">Conectar con Last.fm</button>') : ''}
+      </div>`}
+      <div id="lfmsg" style="font-size:12.5px;margin-top:6px;display:none"></div></div>
     <div class="row" style="display:block"><div class="k" style="display:flex;align-items:center;gap:8px">Spotify — ¿tengo este disco en mi biblioteca? ${sp.authorized ? badge(true, 'conectado') : sp.configured ? badge(false, 'sin conectar') : ''}</div>
       <div class="d" id="spotrow" style="margin:3px 0 8px">${sp.authorized ? 'Conectado. <b>' + (sp.matched || 0) + '</b> de tus discos locales están en tu Spotify.' : 'Compara tus discos locales con tu Spotify (solo lectura, no reproduce). Crea una app en <span class="mono">developer.spotify.com/dashboard</span> con la Redirect URI de abajo.'}</div>
       ${sp.configured ? '' : `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><input id="spid" placeholder="Client ID" value="${esc(sp.clientId || '')}" style="flex:1;min-width:140px"><input id="spsecret" type="password" placeholder="Client Secret" style="flex:1;min-width:140px"><button id="spsave">Guardar</button></div>`}
@@ -343,7 +355,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (qp.get('spotify') === 'ok') setTimeout(() => { srvMsg('spmsg', '¡Spotify conectado! Sincronizando…', true); loadServices(); }, 1500);
   else if (qp.get('spotify') === 'error') setTimeout(() => srvMsg('spmsg', 'No se pudo conectar con Spotify. Revisa las claves y la Redirect URI.', false), 600);
   if (qp.get('lastfm') === 'ok') setTimeout(() => { srvMsg('lfmsg', '¡Last.fm conectado!', true); loadServices(); }, 800);
-  else if (qp.get('lastfm') === 'error') setTimeout(() => srvMsg('lfmsg', 'No se pudo conectar con Last.fm' + (qp.get('reason') ? ': ' + qp.get('reason') : '. Revisa la API key y el secret.'), false), 600);
+  else if (qp.get('lastfm') === 'error') { const rz = qp.get('reason') || ''; const hint = /\b13\b|signature|firma/i.test(rz) ? ' — la API key y el «shared secret» tienen que ser de la MISMA app de Last.fm y sin espacios; vuelve a pegar el secret.' : ''; setTimeout(() => srvMsg('lfmsg', 'No se pudo conectar con Last.fm' + (rz ? ': ' + rz : '. Revisa la API key y el secret.') + hint, false), 600); }
   else if (qp.get('lastfm') === 'noconfig') setTimeout(() => srvMsg('lfmsg', 'Primero guarda la API key y el secret.', false), 600);
 
   // ── Biblioteca editable: carpetas vigiladas + Obsidian + reescaneo ──

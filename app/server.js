@@ -169,9 +169,22 @@ function saveScrobbleCfg(patch) {
   fs.writeFileSync(SCROBBLE_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
   scrobCfg = cfg; return cfg;
 }
+// Clave de API integrada (opcional): si el que despliega escucharrr fija estas variables (p. ej. creando
+// UNA app en last.fm/api/account), todos los usuarios conectan con solo pulsar «Conectar», sin crear su
+// propia cuenta de API — como Roon/la mayoría de apps. Se lee de entorno para NO versionar el secreto.
+const LFM_BUILTIN = { apiKey: String(process.env.ESC_LASTFM_API_KEY || '').replace(/\s+/g, ''), apiSecret: String(process.env.ESC_LASTFM_API_SECRET || '').replace(/\s+/g, '') };
+// Config EFECTIVA de scrobble: la del usuario manda; si no puso clave de Last.fm, se usa la integrada (sin
+// escribirla nunca en scrobble.json). La sessionKey (tras conectar) siempre es la del usuario.
+function scrobEff() {
+  const c = scrobCfg || { listenbrainz: {}, lastfm: {} };
+  if (!LFM_BUILTIN.apiKey) return c;
+  const lf = c.lastfm || {};
+  if (lf.apiKey) return c;   // el usuario puso su propia clave
+  return Object.assign({}, c, { lastfm: Object.assign({}, lf, { apiKey: LFM_BUILTIN.apiKey, apiSecret: LFM_BUILTIN.apiSecret }) });
+}
 // Llamada firmada a la API de auth de Last.fm (auth.getToken / auth.getSession).
 async function lfmAuthCall(method, extra) {
-  const lf = (scrobCfg && scrobCfg.lastfm) || {};
+  const lf = (scrobEff().lastfm) || {};
   if (!lf.apiKey || !lf.apiSecret) throw new Error('Faltan la API key y el secret de Last.fm');
   const params = Object.assign({ method, api_key: lf.apiKey }, extra || {});
   params.api_sig = scrobble.lastfmSig(params, lf.apiSecret);
@@ -1053,7 +1066,7 @@ function album(id, relId) {
 // ── Artistas similares vía Last.fm (editorial; el género local es demasiado grueso) ──
 // Solo necesita la API key pública de Last.fm (no sesión). Caché en memoria por artista.
 let _simCache = new Map();   // nombreNorm → { at, list }
-function lfmApiKey() { return (scrobCfg && scrobCfg.lastfm && scrobCfg.lastfm.apiKey) || ''; }
+function lfmApiKey() { const lf = scrobEff().lastfm || {}; return lf.apiKey || ''; }
 async function lastfmSimilar(name) {
   const key = lidNormName(name); if (!key) return [];
   const c = _simCache.get(key); if (c && Date.now() - c.at < 6 * 3600e3) return c.list;
@@ -1893,10 +1906,11 @@ async function handleLastfm(req, res, u) {
   const sub = u.pathname.slice('/api/lastfm/'.length);
   try {
     if (sub === 'connect') {
-      if (!(scrobCfg && scrobCfg.lastfm && scrobCfg.lastfm.apiKey && scrobCfg.lastfm.apiSecret)) { res.writeHead(302, { Location: '/settings.html?lastfm=noconfig' }); return res.end(); }
+      const eff = scrobEff();
+      if (!(eff && eff.lastfm && eff.lastfm.apiKey && eff.lastfm.apiSecret)) { res.writeHead(302, { Location: '/settings.html?lastfm=noconfig' }); return res.end(); }
       // con cb, Last.fm devuelve a nuestro callback con ?token=... (sin guardar nada en memoria). El cb se deriva
       // del Host para que el navegador vuelva al MISMO origen desde el que abriste escucharrr.
-      const url = 'https://www.last.fm/api/auth/?api_key=' + encodeURIComponent(scrobCfg.lastfm.apiKey) + '&cb=' + encodeURIComponent(lastfmCallbackFor(req));
+      const url = 'https://www.last.fm/api/auth/?api_key=' + encodeURIComponent(eff.lastfm.apiKey) + '&cb=' + encodeURIComponent(lastfmCallbackFor(req));
       res.writeHead(302, { Location: url }); return res.end();
     }
     if (sub === 'callback') {
@@ -1921,17 +1935,18 @@ async function handleLastfm(req, res, u) {
 function scrobbleMetaOf(trackId) { const m = Q.scrobbleMeta.get(trackId); if (!m || !m.artist || !m.title) return null; m.track_id = trackId; return m; }
 async function handleScrobble(req, res, u) {
   const sub = u.pathname.slice('/api/scrobble/'.length);
-  const services = scrobble.enabledServices(scrobCfg || {});
-  if (req.method === 'GET' && sub === 'status') return sendJSON(res, { ok: true, enabled: services, pending: scrobble.pendingCount(db, scrobCfg || {}) });
+  const eff = scrobEff();
+  const services = scrobble.enabledServices(eff || {});
+  if (req.method === 'GET' && sub === 'status') return sendJSON(res, { ok: true, enabled: services, pending: scrobble.pendingCount(db, eff || {}) });
   const body = req.method === 'POST' ? await readBody(req) : {};
   if (!services.length) return sendJSON(res, { ok: true, enabled: [] });   // sin claves: no-op
   const meta = scrobbleMetaOf(body.track_id);
   if (!meta) return sendJSON(res, { ok: false, error: 'pista sin metadatos' });
-  if (sub === 'nowplaying') { scrobble.nowPlaying(scrobCfg, meta).catch(() => {}); return sendJSON(res, { ok: true, enabled: services }); }
+  if (sub === 'nowplaying') { scrobble.nowPlaying(eff, meta).catch(() => {}); return sendJSON(res, { ok: true, enabled: services }); }
   if (sub === 'submit') {
     meta.listened_at = parseInt(body.listened_at, 10) || Math.floor(Date.now() / 1000);
     scrobble.enqueue(db, meta);
-    scrobble.drain(db, scrobCfg, () => {}).catch(() => {});   // intenta enviar ya; si falla, queda en cola
+    scrobble.drain(db, eff, () => {}).catch(() => {});   // intenta enviar ya; si falla, queda en cola
     return sendJSON(res, { ok: true, enabled: services });
   }
   res.writeHead(404); res.end('{}');
@@ -2221,7 +2236,7 @@ function settingsInfo() {
     }
   } catch (e) {}
   const scr = { enabled: [], pending: 0 };
-  try { scr.enabled = scrobble.enabledServices(scrobCfg || {}); scr.pending = scrobble.pendingCount(db, scrobCfg || {}); } catch (e) {}
+  try { scr.enabled = scrobble.enabledServices(scrobEff() || {}); scr.pending = scrobble.pendingCount(db, scrobEff() || {}); } catch (e) {}
   const native = { available: !!NATIVE, built: !!(NATIVE && fs.existsSync(NATIVE.ENGINE)) };
   const spot = { configured: spotifyConfigured(), authorized: !!spotifyTok, matched: (() => { try { return Q.spotifyCount.get().n; } catch (e) { return 0; } })() };
   return { app: { version: '0.1', port: PORT, db: DB_PATH }, library, watch, scrobble: scr, native, spotify: spot };
@@ -2467,13 +2482,16 @@ async function handleConfig(req, res, u) {
     // estado de las integraciones (sin exponer secretos: sólo apiKey/clientId y booleanos)
     if (req.method === 'GET' && sub === 'services') {
       const lf = (scrobCfg && scrobCfg.lastfm) || {}, lb = (scrobCfg && scrobCfg.listenbrainz) || {};
+      const eff = scrobEff().lastfm || {};
+      const usingBuiltin = !!LFM_BUILTIN.apiKey && !lf.apiKey;   // hay clave integrada y el usuario no puso la suya
       return sendJSON(res, { ok: true,
         listenbrainz: { connected: !!lb.token },
-        lastfm: { apiKey: lf.apiKey || '', hasSecret: !!lf.apiSecret, connected: !!lf.sessionKey, callbackUri: LASTFM_CALLBACK },
+        lastfm: { apiKey: lf.apiKey || '', hasSecret: !!lf.apiSecret, connected: !!lf.sessionKey, callbackUri: lastfmCallbackFor(req),
+          builtin: usingBuiltin, canConnect: !!(eff.apiKey && eff.apiSecret) },
         spotify: { configured: spotifyConfigured(), authorized: !!spotifyTok, clientId: (spotifyCfg && spotifyCfg.clientId) || '', redirectUri: SPOTIFY_REDIRECT, matched: Q.spotifyCount.get().n },
         liderarrr: { url: liderarrrUrl(), connected: !!liderarrrUrl(), hasAuth: !!(liderarrrCfg && liderarrrCfg.pass), user: (liderarrrCfg && liderarrrCfg.user) || '' },
         acoustid: { hasKey: !!acoustidKey(), fpcalcPath: acoustidFpcalc(), fpcalc: await acoustidLib.fpcalcAvailable(acoustidFpcalc()) },
-        enabled: scrobble.enabledServices(scrobCfg || {}), pending: scrobble.pendingCount(db, scrobCfg || {}) });
+        enabled: scrobble.enabledServices(scrobEff() || {}), pending: scrobble.pendingCount(db, scrobEff() || {}) });
     }
     const body = await readBody(req);
     // ListenBrainz: valida el token y lo guarda (o lo quita). Last.fm: guarda apiKey/secret (o quita todo).
@@ -2488,7 +2506,15 @@ async function handleConfig(req, res, u) {
         if (r.status === 200 && j.valid) { saveScrobbleCfg({ listenbrainz: { token } }); return sendJSON(res, { ok: true, user: j.user_name, enabled: scrobble.enabledServices(scrobCfg || {}) }); }
         return sendJSON(res, { ok: false, error: 'Token de ListenBrainz no válido.' });
       }
-      if (body.lastfm) { saveScrobbleCfg({ lastfm: { apiKey: String(body.lastfm.apiKey || '').trim(), apiSecret: String(body.lastfm.apiSecret || '').trim() } }); return sendJSON(res, { ok: true, needsConnect: !((scrobCfg.lastfm || {}).sessionKey), enabled: scrobble.enabledServices(scrobCfg || {}) }); }
+      if (body.lastfm) {
+        // Quita TODO espacio (las claves son hex; un espacio pegado por error reventaba la firma → error 13).
+        // Y si un campo llega VACÍO, conserva el guardado (el input de secret sale en blanco al reabrir Ajustes;
+        // re-guardar sin reescribirlo NO debe borrarlo).
+        const k = String(body.lastfm.apiKey || '').replace(/\s+/g, ''), s = String(body.lastfm.apiSecret || '').replace(/\s+/g, '');
+        const patch = {}; if (k) patch.apiKey = k; if (s) patch.apiSecret = s;
+        if (Object.keys(patch).length) saveScrobbleCfg({ lastfm: patch });
+        return sendJSON(res, { ok: true, needsConnect: !((scrobCfg.lastfm || {}).sessionKey), enabled: scrobble.enabledServices(scrobEff() || {}) });
+      }
       return sendJSON(res, { ok: false, error: 'Nada que guardar.' });
     }
     // Spotify: guarda clientId/clientSecret (la Redirect URI es fija y se muestra para registrarla)
@@ -3100,7 +3126,7 @@ http.createServer((req, res) => {
   maybeOpenBrowser();
   startWatching();
   autoBackupIfStale();   // copia de seguridad "programada": una al arrancar si la última es antigua
-  const svc = scrobble.enabledServices(scrobCfg || {});
-  if (svc.length) { console.log('scrobbling activo:', svc.join(', ')); setInterval(() => scrobble.drain(db, scrobCfg, console.log).catch(() => {}), 30000); }
+  const svc = scrobble.enabledServices(scrobEff() || {});
+  if (svc.length) { console.log('scrobbling activo:', svc.join(', ')); setInterval(() => scrobble.drain(db, scrobEff(), console.log).catch(() => {}), 30000); }
   else console.log('scrobbling: desactivado (crea app/scrobble.json a partir de scrobble.example.json)');
 });
