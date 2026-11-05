@@ -438,6 +438,20 @@ async function spotifyAccessToken() {
   return spotifyTok.access_token;
 }
 
+// Overrides por PISTA (estilo Roon: la corrección manda sobre el tag, sin tocar el fichero). user_edit(subject_type='track').
+// Se interpolan en las queries de pistas; `tr` es el alias de la tabla track.
+const _tovTitle = `COALESCE((SELECT value FROM user_edit WHERE subject_type='track' AND subject_id=tr.id AND field='title'), tr.title)`;
+const _tovArtist = `COALESCE((SELECT value FROM user_edit WHERE subject_type='track' AND subject_id=tr.id AND field='track_artist'), (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=tr.artist_credit_id ORDER BY acn.position LIMIT 1))`;
+// id del artista de la pista: si hay id resuelto, ese; si hay override de NOMBRE sin entidad, NULL (no enlazar al artista viejo); si no, el del crédito original.
+const _tovArtistId = `CASE
+    WHEN (SELECT value FROM user_edit WHERE subject_type='track' AND subject_id=tr.id AND field='track_artist_id') IS NOT NULL
+      THEN (SELECT CAST(value AS INTEGER) FROM user_edit WHERE subject_type='track' AND subject_id=tr.id AND field='track_artist_id')
+    WHEN (SELECT value FROM user_edit WHERE subject_type='track' AND subject_id=tr.id AND field='track_artist') IS NOT NULL
+      THEN NULL
+    ELSE (SELECT acn.artist_id FROM artist_credit_name acn WHERE acn.artist_credit_id=tr.artist_credit_id ORDER BY acn.position LIMIT 1)
+  END`;
+const _tovPos = `COALESCE((SELECT CAST(value AS INTEGER) FROM user_edit WHERE subject_type='track' AND subject_id=tr.id AND field='track_no'), tr.position)`;
+const _tovDisc = `COALESCE((SELECT CAST(value AS INTEGER) FROM user_edit WHERE subject_type='track' AND subject_id=tr.id AND field='disc_no'), m.position)`;
 function buildQ(db) { return {
   genresOf: db.prepare(`SELECT group_concat(g.name,'|') gs FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id WHERE rgg.release_group_id=?`),
   formatOf: db.prepare(`SELECT rel.format f FROM "release" rel WHERE rel.release_group_id=? LIMIT 1`),
@@ -540,9 +554,11 @@ function buildQ(db) { return {
   // versiones/ediciones del álbum = release_groups hermanos (mismo artista + título base), estilo Roon
   albumMainArtist: db.prepare(`SELECT acn.name FROM artist_credit_name acn JOIN release_group rg ON rg.artist_credit_id=acn.artist_credit_id WHERE rg.id=? AND acn.position=1 LIMIT 1`),
   rgsByArtistName: db.prepare(`SELECT rg.id, rg.title, substr(rg.first_release,1,4) year FROM release_group rg JOIN artist_credit_name acn ON acn.artist_credit_id=rg.artist_credit_id AND acn.position=1 WHERE acn.name=?`),
-  tracks: db.prepare(`SELECT tr.id trackId, tr.recording_id, m.position disc, tr.position pos, tr.title, tr.length_ms,
-      (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=tr.artist_credit_id ORDER BY acn.position LIMIT 1) artist,
-      (SELECT acn.artist_id FROM artist_credit_name acn WHERE acn.artist_credit_id=tr.artist_credit_id ORDER BY acn.position LIMIT 1) artist_id,
+  tracks: db.prepare(`SELECT tr.id trackId, tr.recording_id, ${_tovDisc} disc, ${_tovPos} pos, ${_tovTitle} title, tr.length_ms,
+      ${_tovArtist} artist,
+      ${_tovArtistId} artist_id,
+      tr.title orig_title, tr.position orig_pos, m.position orig_disc,
+      (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=tr.artist_credit_id ORDER BY acn.position LIMIT 1) orig_artist,
       EXISTS(SELECT 1 FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id) playable,
       (SELECT lf.gain_db FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) gain_db,
       (SELECT lf.peak_dbfs FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) peak_dbfs,
@@ -552,12 +568,14 @@ function buildQ(db) { return {
       (SELECT w.title FROM work w WHERE w.id=(SELECT work_id FROM recording WHERE id=tr.recording_id)) work,
       (SELECT group_concat(DISTINCT a.name) FROM credit c JOIN artist a ON a.id=c.artist_id WHERE c.entity_type='work' AND c.entity_id=(SELECT work_id FROM recording WHERE id=tr.recording_id) AND c.role='composición') composers
      FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
-     WHERE rel.release_group_id=? ORDER BY m.position,tr.position`),
+     WHERE rel.release_group_id=? ORDER BY ${_tovDisc}, ${_tovPos}`),
   // Igual que `tracks` pero acotado a UN release (una copia/versión concreta, estilo Roon): la página de álbum
   // muestra las pistas de la copia primaria (o la seleccionada), no las de todas las versiones concatenadas.
-  tracksRel: db.prepare(`SELECT tr.id trackId, tr.recording_id, m.position disc, tr.position pos, tr.title, tr.length_ms,
-      (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=tr.artist_credit_id ORDER BY acn.position LIMIT 1) artist,
-      (SELECT acn.artist_id FROM artist_credit_name acn WHERE acn.artist_credit_id=tr.artist_credit_id ORDER BY acn.position LIMIT 1) artist_id,
+  tracksRel: db.prepare(`SELECT tr.id trackId, tr.recording_id, ${_tovDisc} disc, ${_tovPos} pos, ${_tovTitle} title, tr.length_ms,
+      ${_tovArtist} artist,
+      ${_tovArtistId} artist_id,
+      tr.title orig_title, tr.position orig_pos, m.position orig_disc,
+      (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=tr.artist_credit_id ORDER BY acn.position LIMIT 1) orig_artist,
       EXISTS(SELECT 1 FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id) playable,
       (SELECT lf.gain_db FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) gain_db,
       (SELECT lf.peak_dbfs FROM local_file lf WHERE lf.track_id=tr.id OR lf.recording_id=tr.recording_id LIMIT 1) peak_dbfs,
@@ -567,7 +585,7 @@ function buildQ(db) { return {
       (SELECT w.title FROM work w WHERE w.id=(SELECT work_id FROM recording WHERE id=tr.recording_id)) work,
       (SELECT group_concat(DISTINCT a.name) FROM credit c JOIN artist a ON a.id=c.artist_id WHERE c.entity_type='work' AND c.entity_id=(SELECT work_id FROM recording WHERE id=tr.recording_id) AND c.role='composición') composers
      FROM track tr JOIN medium m ON m.id=tr.medium_id
-     WHERE m.release_id=? ORDER BY m.position,tr.position`),
+     WHERE m.release_id=? ORDER BY ${_tovDisc}, ${_tovPos}`),
   fileByTrack: db.prepare('SELECT path, format, gain_db FROM local_file WHERE track_id=? LIMIT 1'),
   fileByRec: db.prepare('SELECT path, format, gain_db FROM local_file WHERE recording_id=? LIMIT 1'),
   peaksByTrack: db.prepare('SELECT peaks FROM local_file WHERE track_id=? AND peaks IS NOT NULL LIMIT 1'),
@@ -596,7 +614,7 @@ function buildQ(db) { return {
   topArtists: db.prepare(`SELECT acn.artist_id aid, acn.name artist, SUM(p.ms_played) ms, COUNT(*) plays FROM play p JOIN recording r ON r.id=p.recording_id JOIN artist_credit_name acn ON acn.artist_credit_id=r.artist_credit_id AND acn.position=1 GROUP BY acn.artist_id ORDER BY ms DESC, plays DESC LIMIT 5`),
   topReleases: db.prepare(`SELECT rg.id, rg.title, (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) artist, SUM(p.ms_played) ms, COUNT(*) plays FROM play p JOIN track tr ON tr.id=p.track_id JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id GROUP BY rg.id ORDER BY ms DESC LIMIT 5`),
   // ── artista ──
-  artist: db.prepare(`SELECT id,name,sort_name,type,country,founded,bio,disambiguation FROM artist WHERE id=?`),
+  artist: db.prepare(`SELECT id,name,sort_name,type,country,founded,bio,disambiguation,mbid FROM artist WHERE id=?`),
   artistBioProv: db.prepare(`SELECT source,source_ref FROM provenance WHERE subject_type='artist' AND subject_id=? AND field='bio'`),
   artistBioEdProv: db.prepare(`SELECT source,source_ref FROM provenance WHERE subject_type='artist' AND subject_id=? AND field='bio_editorial'`),   // procedencia de la bio editorial (separada de la del usuario)
   artistBioEdit: db.prepare(`SELECT value v FROM user_edit WHERE subject_type='artist' AND subject_id=? AND field='bio'`),
@@ -2780,12 +2798,41 @@ function handleEditSync(body) {
     if (on) Q.edSetFlag.run(st, sid, field); else Q.edDelFlag.run(st, sid, field);
     return { field, value: on };
   }
-  if (field === 'title') {   // renombrar álbum: override en user_edit (v_album.title lo prioriza); rg.title queda intacto para que el reescaneo no duplique
-    if (st !== 'release_group') throw new Error('solo se puede editar el título de un álbum');
+  if (field === 'title') {   // renombrar álbum o PISTA: override en user_edit (las vistas/queries lo priorizan); el tag/fichero queda intacto, estilo Roon
+    if (st !== 'release_group' && st !== 'track') throw new Error('título no editable para este sujeto');
     const v = body.value == null ? '' : String(body.value).trim();
     if (v === '') { Q.edDelUserEdit.run(st, sid, 'title'); Q.edDelProv.run(st, sid, 'title'); return { field, value: null }; }
     Q.edSetUserEdit.run(st, sid, 'title', v); Q.edSetProv.run(st, sid, 'title');
     return { field, value: v };
+  }
+  if (field === 'track_artist') {   // artista de UNA canción (p. ej. colaboraciones Bunbury & Vega): override por pista; distinto del artista del álbum
+    if (st !== 'track') throw new Error('solo las pistas tienen artista de canción');
+    const v = body.value == null ? '' : String(body.value).trim();
+    if (v === '') { Q.edDelUserEdit.run(st, sid, 'track_artist'); Q.edDelUserEdit.run(st, sid, 'track_artist_id'); Q.edDelProv.run(st, sid, 'track_artist'); return { field, value: null }; }
+    Q.edSetUserEdit.run(st, sid, 'track_artist', v);
+    // si el nombre coincide EXACTAMENTE con un artista existente, enlázalo (para que sea clicable); si no, deja solo el texto
+    const m = db.prepare('SELECT id FROM artist WHERE lower(trim(name))=lower(trim(?)) ORDER BY id LIMIT 1').get(v);
+    if (m) Q.edSetUserEdit.run(st, sid, 'track_artist_id', String(m.id)); else Q.edDelUserEdit.run(st, sid, 'track_artist_id');
+    Q.edSetProv.run(st, sid, 'track_artist');
+    return { field, value: v };
+  }
+  if (field === 'track_no') {   // corregir el nº de pista (reordena en la vista; no toca el tag)
+    if (st !== 'track') throw new Error('solo las pistas tienen número');
+    const raw = body.value == null ? '' : String(body.value).trim();
+    if (raw === '') { Q.edDelUserEdit.run(st, sid, 'track_no'); Q.edDelProv.run(st, sid, 'track_no'); return { field, value: null }; }
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 9999) throw new Error('número de pista inválido');
+    Q.edSetUserEdit.run(st, sid, 'track_no', String(n)); Q.edSetProv.run(st, sid, 'track_no');
+    return { field, value: n };
+  }
+  if (field === 'disc_no') {   // asignar la pista a un disco (doble disco: discos no detectados en el tag; no toca el fichero)
+    if (st !== 'track') throw new Error('solo las pistas tienen disco');
+    const raw = body.value == null ? '' : String(body.value).trim();
+    if (raw === '') { Q.edDelUserEdit.run(st, sid, 'disc_no'); Q.edDelProv.run(st, sid, 'disc_no'); return { field, value: null }; }
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 99) throw new Error('número de disco inválido');
+    Q.edSetUserEdit.run(st, sid, 'disc_no', String(n)); Q.edSetProv.run(st, sid, 'disc_no');
+    return { field, value: n };
   }
   if (field === 'album_artist') {   // corregir el artista del álbum (p. ej. mal etiquetado como «download»): override en user_edit (v_album.artist lo prioriza); los tags del fichero no se tocan, estilo Roon
     if (st !== 'release_group') throw new Error('solo se puede editar el artista de un álbum');
