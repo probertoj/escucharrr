@@ -452,6 +452,15 @@ const _tovArtistId = `CASE
   END`;
 const _tovPos = `COALESCE((SELECT CAST(value AS INTEGER) FROM user_edit WHERE subject_type='track' AND subject_id=tr.id AND field='track_no'), tr.position)`;
 const _tovDisc = `COALESCE((SELECT CAST(value AS INTEGER) FROM user_edit WHERE subject_type='track' AND subject_id=tr.id AND field='disc_no'), m.position)`;
+// id del artista del ÁLBUM, respetando el override de album_artist (igual que en pistas): si hay id resuelto, ese;
+// si hay override de NOMBRE sin entidad, NULL (no enlazar al artista viejo, p. ej. Bunbury/Vega); si no, el del crédito original.
+const _aovArtistId = `CASE
+    WHEN (SELECT value FROM user_edit WHERE subject_type='release_group' AND subject_id=a.id AND field='album_artist_id') IS NOT NULL
+      THEN (SELECT CAST(value AS INTEGER) FROM user_edit WHERE subject_type='release_group' AND subject_id=a.id AND field='album_artist_id')
+    WHEN (SELECT value FROM user_edit WHERE subject_type='release_group' AND subject_id=a.id AND field='album_artist') IS NOT NULL
+      THEN NULL
+    ELSE (SELECT acn.artist_id FROM artist_credit_name acn JOIN release_group rg ON rg.artist_credit_id=acn.artist_credit_id WHERE rg.id=a.id ORDER BY acn.position LIMIT 1)
+  END`;
 function buildQ(db) { return {
   genresOf: db.prepare(`SELECT group_concat(g.name,'|') gs FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id WHERE rgg.release_group_id=?`),
   formatOf: db.prepare(`SELECT rel.format f FROM "release" rel WHERE rel.release_group_id=? LIMIT 1`),
@@ -503,8 +512,7 @@ function buildQ(db) { return {
   album: db.prepare(`SELECT a.id,a.title,a.orig_title,a.artist,a.orig_artist,a.year,a.primary_type,a.tier_key,a.tier_rank,
       (SELECT label FROM tier WHERE key=a.tier_key) tier_label, a.album_stars, a.is_favorite,
       EXISTS(SELECT 1 FROM flag f WHERE f.subject_type='release_group' AND f.subject_id=a.id AND f.flag='listen_later') listen_later,
-      (SELECT acn.artist_id FROM artist_credit_name acn JOIN release_group rg ON rg.artist_credit_id=acn.artist_credit_id
-         WHERE rg.id=a.id ORDER BY acn.position LIMIT 1) artist_id
+      ${_aovArtistId} artist_id
      FROM v_album a WHERE a.id=?`),
   about: db.prepare(`SELECT value v FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='about'`),
   aboutExt: db.prepare(`SELECT about v FROM release_group WHERE id=?`),   // reseña editorial externa (Wikipedia)
@@ -2846,8 +2854,12 @@ function handleEditSync(body) {
   if (field === 'album_artist') {   // corregir el artista del álbum (p. ej. mal etiquetado como «download»): override en user_edit (v_album.artist lo prioriza); los tags del fichero no se tocan, estilo Roon
     if (st !== 'release_group') throw new Error('solo se puede editar el artista de un álbum');
     const v = body.value == null ? '' : String(body.value).trim();
-    if (v === '') { Q.edDelUserEdit.run(st, sid, 'album_artist'); Q.edDelProv.run(st, sid, 'album_artist'); return { field, value: null }; }
-    Q.edSetUserEdit.run(st, sid, 'album_artist', v); Q.edSetProv.run(st, sid, 'album_artist');
+    if (v === '') { Q.edDelUserEdit.run(st, sid, 'album_artist'); Q.edDelUserEdit.run(st, sid, 'album_artist_id'); Q.edDelProv.run(st, sid, 'album_artist'); return { field, value: null }; }
+    Q.edSetUserEdit.run(st, sid, 'album_artist', v);
+    // si el nombre coincide EXACTAMENTE con un artista existente, enlázalo (clicar lleva a ese artista, no al original Bunbury/Vega); si no, sin enlace
+    const m = db.prepare('SELECT id FROM artist WHERE lower(trim(name))=lower(trim(?)) ORDER BY id LIMIT 1').get(v);
+    if (m) Q.edSetUserEdit.run(st, sid, 'album_artist_id', String(m.id)); else Q.edDelUserEdit.run(st, sid, 'album_artist_id');
+    Q.edSetProv.run(st, sid, 'album_artist');
     return { field, value: v };
   }
   if (EDIT_TEXT_FIELDS.has(field)) {
