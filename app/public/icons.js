@@ -32,6 +32,7 @@
     'star-fill': '<path d="M12 3.6l2.6 5.3 5.8.9-4.2 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8L3.6 9.8l5.8-.9z" fill="currentColor" stroke="none"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
     minus: '<path d="M5 12h14"/>',
+    merge: '<path d="M7 4v4a5 5 0 0 0 5 5 5 5 0 0 0 5-5V4M12 13v7M8.5 16.5 12 20l3.5-3.5"/>',
     close: '<path d="M6 6l12 12M18 6 6 18"/>',
     check: '<path d="M5 12.5 9.5 17 19 7"/>',
     'chevron-right': '<path d="M9 5l7 7-7 7"/>',

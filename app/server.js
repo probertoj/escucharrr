@@ -2846,6 +2846,59 @@ async function handleReanalyze(req, res) {
   } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 
+// ── COMBINAR duplicados: fusiona dos release_group que son el mismo álbum (estilo Roon «merge
+//    albums»/identificar como el mismo). Mueve TODAS las copias/ediciones del 'drop' bajo el 'keep'
+//    (así los temas repartidos en dos releases quedan como versiones del mismo álbum), migra los datos
+//    de usuario (tier/valoración/favoritos/etiquetas/ediciones) del drop al keep donde el keep no los
+//    tenga, limpia lo sobrante y borra el drop. Todo en una transacción. SOLO toca la BD, no el disco. ──
+function mergeAlbumsTx(keep, drop) {
+  db.exec('BEGIN');
+  try {
+    db.prepare('UPDATE "release" SET release_group_id=? WHERE release_group_id=?').run(keep, drop);           // copias/ediciones → keep
+    db.prepare('UPDATE OR IGNORE release_group_genre SET release_group_id=? WHERE release_group_id=?').run(keep, drop);
+    const mv = (sql) => { try { db.prepare(sql).run({ neu: keep, old: drop }); } catch (e) {} };
+    mv(`UPDATE OR IGNORE rating_tier SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old
+        AND NOT EXISTS (SELECT 1 FROM rating_tier x WHERE x.subject_type='release_group' AND x.subject_id=$neu)`);
+    mv(`UPDATE OR IGNORE rating SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old
+        AND NOT EXISTS (SELECT 1 FROM rating y WHERE y.subject_type='release_group' AND y.subject_id=$neu)`);
+    mv(`UPDATE OR IGNORE flag      SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old`);
+    mv(`UPDATE OR IGNORE user_edit SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old`);
+    mv(`UPDATE OR IGNORE tag_item  SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old`);
+    try { db.prepare(`UPDATE OR IGNORE obsidian_link SET subject_id=? WHERE subject_type='release_group' AND subject_id=?`).run(keep, drop); } catch (e) {}
+    // sobrantes del drop (los que el keep ya tenía) + procedencia + índice de búsqueda
+    for (const t of ['rating_tier', 'rating', 'flag', 'user_edit', 'tag_item', 'provenance', 'obsidian_link']) {
+      try { db.prepare(`DELETE FROM ${t} WHERE subject_type='release_group' AND subject_id=?`).run(drop); } catch (e) {}
+    }
+    try { db.prepare(`DELETE FROM search_fts WHERE subject_type='release_group' AND subject_id=?`).run(drop); } catch (e) {}
+    db.prepare('DELETE FROM release_group WHERE id=?').run(drop);   // cascada: release_group_genre sobrante del drop
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+async function handleMergeAlbums(req, res) {
+  try {
+    const b = await readBody(req);
+    const keep = parseInt(b.keep, 10), drop = parseInt(b.drop, 10);
+    if (!keep || !drop || keep === drop) { res.writeHead(400); return res.end(JSON.stringify({ ok: false, error: 'ids inválidos' })); }
+    if (!db.prepare('SELECT 1 FROM release_group WHERE id=?').get(keep) || !db.prepare('SELECT 1 FROM release_group WHERE id=?').get(drop)) {
+      res.writeHead(404); return res.end(JSON.stringify({ ok: false, error: 'álbum no encontrado' }));
+    }
+    mergeAlbumsTx(keep, drop);
+    sseBroadcast('library');
+    return sendJSON(res, { ok: true, keep, dropped: drop });
+  } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+}
+// Candidatos a combinar: otros álbumes del MISMO artista (para elegir el duplicado).
+function mergeCandidates(rg) {
+  const a = db.prepare(`SELECT acn.artist_id aid FROM artist_credit_name acn JOIN release_group g ON g.artist_credit_id=acn.artist_credit_id WHERE g.id=? ORDER BY acn.position LIMIT 1`).get(rg);
+  if (!a || a.aid == null) return [];
+  return db.prepare(`SELECT DISTINCT v.id, v.title, v.year, v.primary_type,
+       (SELECT COUNT(*) FROM "release" rel JOIN medium m ON m.release_id=rel.id JOIN track tr ON tr.medium_id=m.id WHERE rel.release_group_id=v.id) tracks
+     FROM v_album v
+     JOIN release_group g ON g.id=v.id
+     JOIN artist_credit_name acn ON acn.artist_credit_id=g.artist_credit_id
+     WHERE acn.artist_id=? AND v.id<>? ORDER BY v.first_release DESC, v.title`).all(a.aid, rg);
+}
+
 // ── Guardar la reseña/bio DE VUELTA en la nota de Obsidian (son .md) ──────────────
 // Preserva el frontmatter tal cual y reemplaza solo el cuerpo; escritura atómica
 // (fichero temporal + rename) dentro del vault; espeja el estado en la BD como hace el sync.
@@ -2966,6 +3019,7 @@ http.createServer((req, res) => {
   if (u.pathname.startsWith('/api/backup/')) return void handleBackup(req, res, u);
   if (u.pathname === '/api/history') return sendJSON(res, history(parseInt(u.searchParams.get('n'), 10), parseInt(u.searchParams.get('offset'), 10)));
   if (req.method === 'POST' && u.pathname === '/api/edit') return void handleEdit(req, res);
+  if (req.method === 'POST' && u.pathname === '/api/album/merge') return void handleMergeAlbums(req, res);
   if (req.method === 'POST' && u.pathname === '/api/album/make-primary') return void (async () => {
     try {
       const b = await readBody(req); const rg = parseInt(b.rg, 10), rel = parseInt(b.rel, 10);
@@ -2992,6 +3046,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/stream') return streamAudio(req, res, parseInt(u.searchParams.get('track'), 10));
     if (u.pathname === '/api/cover') return serveCover(res, parseInt(u.searchParams.get('rg'), 10));
     if (u.pathname === '/api/artist/image') return serveArtistImage(res, parseInt(u.searchParams.get('id'), 10));
+    if (u.pathname === '/api/album/merge-candidates') return sendJSON(res, { candidates: mergeCandidates(parseInt(u.searchParams.get('rg'), 10)) });
     if (u.pathname === '/api/album/similar') return void handleAlbumSimilar(req, res, u);
     if (u.pathname === '/api/album/acoustid') return void handleAlbumAcoustid(req, res, u);
     if (u.pathname === '/api/covers/backfill') {   // descarga de CAA todas las portadas que falten (una sola instancia)

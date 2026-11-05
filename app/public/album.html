@@ -94,7 +94,7 @@ function renderAlbum(a){
         ${(a.orig_title&&a.orig_title!==a.title)?`<div style="font-size:12px;color:var(--text-2);margin-top:-4px;margin-bottom:2px">Original: ${esc(a.orig_title)} · <a href="#" class="titlerevert" style="color:var(--accent)">revertir</a></div>`:''}
         <div style="font-size:15px;display:inline-flex;align-items:center;gap:6px">${artistLink}<button class="artistedit" title="Corregir el artista del álbum (no toca los tags de tus ficheros)" aria-label="Editar artista" style="flex:none;background:none;border:none;color:var(--text-2);cursor:pointer;padding:2px;display:inline-flex;align-items:center">${window.icon('edit',14)}</button></div>
         ${(a.orig_artist&&a.orig_artist!==a.artist)?`<div style="font-size:12px;color:var(--text-2);margin-top:1px">Artista original: ${esc(a.orig_artist)} · <a href="#" class="artistrevert" style="color:var(--accent)">revertir</a></div>`:''}
-        ${(a.tracks||[]).length?`<div class="actions"><button class="btn-accent" id="playalbum" style="display:inline-flex;align-items:center;gap:6px">${window.icon('play',15)}Reproducir</button><button class="iconbtn" id="radioalbum" title="Radio: reproduce y extiende con pistas afines de tu biblioteca">${window.icon('radio',17)}</button><button class="iconbtn" id="mixalbum" title="Mezcla: una lista afín a este álbum">${window.icon('music',17)}</button><button class="iconbtn" id="queuealbum" title="Añadir a la cola">${window.icon('queue',17)}</button><button class="iconbtn" id="nextalbum" title="Reproducir a continuación">${window.icon('next',17)}</button><button class="iconbtn" id="addalbum" title="Añadir a una lista">${window.icon('plus',17)}</button><button class="iconbtn" id="identifyalbum" title="${a.mbid?'Ya identificado con MusicBrainz — reidentificar':'Identificar con MusicBrainz (por nº de pistas y duraciones)'}">${window.icon(a.mbid?'check':'search',17)}</button>${a.has_audio?`<button class="iconbtn" id="acoustidalbum" title="Identificar por huella de audio (AcoustID) — reconoce el disco aunque las etiquetas estén mal">${window.icon('visualizer',17)}</button>`:''}${a.has_audio?`<button class="iconbtn" id="reanalyzealbum" ${a.reanalyzing?'disabled':''} title="Recalcula el loudness/ReplayGain y la barra de onda de este álbum">${window.icon('refresh',17)}</button>`:''}${a.folder?`<a class="iconbtn" id="folderalbum" href="folders.html?root=${a.folder.root}&path=${encodeURIComponent(a.folder.rel)}" title="Ir a la carpeta de este disco" style="display:inline-flex;align-items:center;justify-content:center">${window.icon('folder',17)}</a>`:''}<span id="retoslot"></span></div>`:''}
+        ${(a.tracks||[]).length?`<div class="actions"><button class="btn-accent" id="playalbum" style="display:inline-flex;align-items:center;gap:6px">${window.icon('play',15)}Reproducir</button><button class="iconbtn" id="radioalbum" title="Radio: reproduce y extiende con pistas afines de tu biblioteca">${window.icon('radio',17)}</button><button class="iconbtn" id="mixalbum" title="Mezcla: una lista afín a este álbum">${window.icon('music',17)}</button><button class="iconbtn" id="queuealbum" title="Añadir a la cola">${window.icon('queue',17)}</button><button class="iconbtn" id="nextalbum" title="Reproducir a continuación">${window.icon('next',17)}</button><button class="iconbtn" id="addalbum" title="Añadir a una lista">${window.icon('plus',17)}</button><button class="iconbtn" id="mergealbum" title="Combinar con un álbum duplicado (son el mismo)">${window.icon('merge',17)}</button><button class="iconbtn" id="identifyalbum" title="${a.mbid?'Ya identificado con MusicBrainz — reidentificar':'Identificar con MusicBrainz (por nº de pistas y duraciones)'}">${window.icon(a.mbid?'check':'search',17)}</button>${a.has_audio?`<button class="iconbtn" id="acoustidalbum" title="Identificar por huella de audio (AcoustID) — reconoce el disco aunque las etiquetas estén mal">${window.icon('visualizer',17)}</button>`:''}${a.has_audio?`<button class="iconbtn" id="reanalyzealbum" ${a.reanalyzing?'disabled':''} title="Recalcula el loudness/ReplayGain y la barra de onda de este álbum">${window.icon('refresh',17)}</button>`:''}${a.folder?`<a class="iconbtn" id="folderalbum" href="folders.html?root=${a.folder.root}&path=${encodeURIComponent(a.folder.rel)}" title="Ir a la carpeta de este disco" style="display:inline-flex;align-items:center;justify-content:center">${window.icon('folder',17)}</a>`:''}<span id="retoslot"></span></div>`:''}
         <div class="meta">
           <span><span class="k">Tier</span> ${tier}</span>
           <span><span class="k">Valoración</span> ${stars}</span>
@@ -286,6 +286,38 @@ function openAboutEditor(){
 // ── Wizard de IDENTIFICACIÓN (estilo Roon): empareja el álbum con MusicBrainz por nº de pistas
 // + perfil de duraciones (no por búsqueda de texto). GET /api/identify, luego /api/identify/apply. ──
 document.addEventListener('click',e=>{ if(e.target.closest('#identifyalbum')){ openIdentify(); } });
+// Combinar un álbum duplicado dentro de este (estilo Roon «merge albums»). No toca el disco.
+document.addEventListener('click',e=>{ if(e.target.closest('#mergealbum')){ openMergePicker(); } });
+async function openMergePicker(){
+  const a=window.ALB; if(!a) return;
+  if(document.getElementById('mergedlg')) return;
+  let cands=[];
+  try{ const r=await fetch('/api/album/merge-candidates?rg='+a.id).then(x=>x.json()); cands=(r.candidates||[]); }catch(e){}
+  const ov=document.createElement('div'); ov.id='mergedlg'; ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:120';
+  const list = cands.length
+    ? cands.map(c=>`<div class="mcand" data-id="${c.id}" data-title="${esc(c.title)}" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:9px;cursor:pointer"><img src="/api/cover?rg=${c.id}" alt="" style="width:40px;height:40px;border-radius:5px;object-fit:cover;flex:none"><div style="min-width:0"><div style="font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.title)}</div><div style="font-size:12px;color:var(--text-2)">${[c.primary_type||'álbum',c.year,c.tracks?c.tracks+' pistas':''].filter(Boolean).map(esc).join(' · ')}</div></div></div>`).join('')
+    : '<div style="color:var(--text-2);font-size:13.5px;padding:10px">No hay otros álbumes de este artista en tu biblioteca.</div>';
+  ov.innerHTML=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;width:min(460px,92vw);max-height:80vh;display:flex;flex-direction:column;box-shadow:0 12px 40px rgba(0,0,0,.4)">
+    <div style="font-weight:600;font-size:15px;margin-bottom:4px;display:inline-flex;align-items:center;gap:7px">${window.icon('merge',16)}Combinar un duplicado en este álbum</div>
+    <div style="font-size:12px;color:var(--text-2);margin-bottom:10px">Elige el álbum que en realidad es <b style="color:var(--text)">${esc(a.title)}</b>: sus copias y pistas pasarán a este álbum y el duplicado desaparecerá. No toca tus ficheros; tus valoraciones y etiquetas se conservan.</div>
+    <div style="overflow:auto;margin:0 -4px">${list}</div>
+    <div style="margin-top:12px;display:flex;justify-content:flex-end"><button id="mergecancel" style="padding:7px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer;color:var(--text)">Cancelar</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+  const close=()=>ov.remove();
+  ov.addEventListener('click',ev=>{ if(ev.target===ov) close(); });
+  document.getElementById('mergecancel').onclick=close;
+  ov.querySelectorAll('.mcand').forEach(el=>{
+    el.addEventListener('mouseenter',()=>el.style.background='var(--surface-2)');
+    el.addEventListener('mouseleave',()=>el.style.background='');
+    el.addEventListener('click',async()=>{
+      const drop=+el.dataset.id, dt=el.dataset.title;
+      if(!confirm('¿Combinar «'+dt+'» dentro de «'+a.title+'»?\nEl duplicado desaparecerá (tus valoraciones y etiquetas se conservan; no se tocan los ficheros).')) return;
+      try{ const r=await fetch('/api/album/merge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keep:a.id,drop})}).then(x=>x.json());
+        if(r.ok){ toast('Álbumes combinados'); close(); load(); } else toast(r.error||'error'); }catch(e){ toast('Error: '+e.message); }
+    });
+  });
+}
 // Identificar por HUELLA de audio (AcoustID): reconoce el disco aunque las etiquetas estén mal.
 document.addEventListener('click',e=>{ if(e.target.closest('#acoustidalbum')){ runAcoustid(); } });
 // «Abrir en el Explorador»: el servidor (local) abre la carpeta en el Explorador de Windows. No toca nada.
