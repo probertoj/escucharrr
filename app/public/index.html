@@ -219,6 +219,18 @@ document.getElementById('viewtoggle').onclick=()=>{VIEW=VIEW==='list'?'grid':'li
 updateViewBtn();
 document.getElementById('filter').oninput=(e)=>{txt=e.target.value.toLowerCase().trim();render();};
 
+// toast con enlace «Deshacer» (para revertir un merge)
+function undoToast(msg, undoId){
+  let t=document.getElementById('undotoast'); if(t)t.remove();
+  t=document.createElement('div'); t.id='undotoast';
+  t.style.cssText='position:fixed;left:50%;bottom:80px;transform:translateX(-50%);z-index:130;background:var(--text);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.3);display:flex;gap:14px;align-items:center';
+  t.innerHTML=`<span>${msg}</span>`+(undoId?`<a href="#" id="undolink" style="color:#9ecbff;font-weight:600;text-decoration:none">Deshacer</a>`:'');
+  document.body.appendChild(t);
+  const close=()=>t.remove(); const to=setTimeout(close,9000);
+  if(undoId){ t.querySelector('#undolink').onclick=async(e)=>{ e.preventDefault(); clearTimeout(to);
+    try{ const r=await fetch('/api/merge/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:undoId})}).then(x=>x.json());
+      close(); if(window.toast)toast(r.ok?'Deshecho':(r.error||'error')); load(); }catch(err){ if(window.toast)toast('error'); } }; }
+}
 // ── multi-selección + acciones en bloque (Serge) ──
 let SELMODE=false; const SELSET=new Set();
 const selG=id=>document.getElementById(id);
@@ -237,7 +249,7 @@ selG('selmerge').onclick=async()=>{
   if(arts.length>1) msg='⚠ Son de artistas distintos ('+arts.slice(0,4).join(', ')+').\n\n'+msg;
   if(!confirm(msg))return;
   try{ const r=await fetch('/api/album/merge-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})}).then(x=>x.json());
-    if(r.ok){ if(window.toast)toast('Combinados '+((r.count||0)+1)+' álbumes en uno'); SELSET.clear(); SELMODE=false; selRepaint(); load(); }
+    if(r.ok){ SELSET.clear(); SELMODE=false; selRepaint(); load(); undoToast('Combinados '+((r.count||0)+1)+' álbumes en uno', r.undoId); }
     else if(window.toast)toast(r.error||'error'); }catch(e){ if(window.toast)toast('error: '+e.message); }
 };
 

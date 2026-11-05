@@ -168,7 +168,7 @@ function openArtistEdit(){
       if(r.ok){ close(); toast('Artista renombrado'); load(); } else msg(r.error||'No se pudo guardar',false); }catch(e){ msg('Error de red',false); } };
   const doMerge=async(fromIds)=>{ if(!fromIds.length) return msg('Nada seleccionado',false);
     try{ const r=await fetch('/api/artist/merge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({into:id,from:fromIds})}).then(x=>x.json());
-      if(r.ok){ close(); toast('Unido: '+r.merged+' artista(s)'); load(); } else msg(r.error||'No se pudo unir',false); }catch(e){ msg('Error de red',false); } };
+      if(r.ok){ close(); load(); undoToast('Unido: '+r.merged+' artista(s)', r.undoId); } else msg(r.error||'No se pudo unir',false); }catch(e){ msg('Error de red',false); } };
   const am=document.getElementById('aemerge'); if(am) am.onclick=()=>doMerge([...wrap.querySelectorAll('.adupchk:checked')].map(c=>+c.dataset.id));
   const sb=document.getElementById('aesearch'); let st=null;
   sb.addEventListener('input',()=>{ clearTimeout(st); const q=sb.value.trim(); const box=document.getElementById('aeresults'); if(q.length<2){ box.innerHTML=''; return; }
@@ -188,6 +188,12 @@ document.addEventListener('escucharrr:changed',load);
 // ── edición de metadatos del artista ("tus datos mandan") ──
 let toastT=null;
 function toast(msg){let t=document.getElementById('toast');if(!t){t=document.createElement('div');t.id='toast';t.setAttribute('style','position:fixed;left:50%;bottom:80px;transform:translateX(-50%);z-index:80;background:var(--text);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.25);opacity:0;transition:opacity .15s');document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(toastT);toastT=setTimeout(()=>t.style.opacity='0',1800);}
+function undoToast(msg, undoId){ if(!undoId){ toast(msg); return; }
+  let t=document.getElementById('undotoast'); if(t)t.remove(); t=document.createElement('div'); t.id='undotoast';
+  t.style.cssText='position:fixed;left:50%;bottom:80px;transform:translateX(-50%);z-index:130;background:var(--text);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.3);display:flex;gap:14px;align-items:center';
+  t.innerHTML='<span>'+msg+'</span><a href="#" id="undolink" style="color:#9ecbff;font-weight:600;text-decoration:none">Deshacer</a>'; document.body.appendChild(t);
+  const close=()=>t.remove(); const to=setTimeout(close,9000);
+  t.querySelector('#undolink').onclick=async(e)=>{ e.preventDefault(); clearTimeout(to); try{ const r=await fetch('/api/merge/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:undoId})}).then(x=>x.json()); close(); toast(r.ok?'Deshecho':(r.error||'error')); load(); }catch(err){ toast('error'); } }; }
 function editField(field,value){return fetch('/api/edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subject_type:'artist',subject_id:id,field,value})}).then(r=>r.json());}
 document.addEventListener('click',e=>{
   const tc=e.target.closest('#app .tchip'); if(tc){ editField('tier',tc.dataset.tier).then(r=>{ if(r.ok){toast(tc.dataset.tier?'Tier actualizado':'Tier quitado');load();}else toast(r.error||'error'); }); return; }

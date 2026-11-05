@@ -105,7 +105,8 @@ function initAppSchema(d) {
   CREATE TABLE IF NOT EXISTS radio_station (id INTEGER PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, homepage TEXT, favicon TEXT, created_at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS skipped_file (path TEXT, reason TEXT, at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS smart_playlist (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, rules TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
-  CREATE TABLE IF NOT EXISTS genre_map (raw TEXT PRIMARY KEY, canonical TEXT, hidden INTEGER DEFAULT 0);`);
+  CREATE TABLE IF NOT EXISTS genre_map (raw TEXT PRIMARY KEY, canonical TEXT, hidden INTEGER DEFAULT 0);
+  CREATE TABLE IF NOT EXISTS merge_undo (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, keep_id INTEGER, label TEXT, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));`);
   // Índices sobre las claves foráneas del grafo: sin ellos, recorrer release_group -> release -> medium -> track -> local_file
   // hace scans anidados por álbum (inviable con decenas de miles de discos). Cada uno en su try por si el grafo aún no existe.
   for (const ix of [
@@ -1506,8 +1507,16 @@ function mergeArtists(into, fromIds) {
   return { into, merged: ids.length };
 }
 async function handleArtistMerge(req, res) {
-  try { const b = await readBody(req); const r = mergeArtists(b.into, b.from); sseBroadcast('library'); return sendJSON(res, { ok: true, ...r }); }
-  catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+  try {
+    const b = await readBody(req);
+    const into = parseInt(b.into, 10);
+    const fromIds = [...new Set((b.from || []).map(x => parseInt(x, 10)).filter(x => x && x !== into))];
+    const snaps = fromIds.map(snapshotArtistDrop).filter(Boolean);   // snapshot ANTES de borrar
+    const r = mergeArtists(b.into, b.from);
+    const undoId = recordMergeUndo('artist', into, (db.prepare('SELECT name FROM artist WHERE id=?').get(into) || {}).name || 'artista', snaps);
+    sseBroadcast('library');
+    return sendJSON(res, { ok: true, ...r, undoId });
+  } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 // Renombrar un artista: cambia artist.name y, por defecto, los nombres de crédito que coincidían
 // (para que el cambio se vea en los álbumes, cuyo "artista" sale de artist_credit_name.name).
@@ -3143,6 +3152,83 @@ function mergeAlbumsTx(keep, drop) {
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
 }
+// ── Deshacer un merge (Roon tiene unmerge; nuestro merge borraba la entidad → era irreversible). Antes de
+// combinar guardamos un snapshot de lo necesario para revertir; el endpoint de undo lo reconstruye. ──
+const _SUBJ_TABLES = ['rating_tier', 'rating', 'rating_event', 'flag', 'user_edit', 'tag_item', 'provenance', 'obsidian_link'];
+function snapshotAlbumDrop(drop) {
+  const rg = db.prepare('SELECT mbid,title,artist_credit_id,primary_type,first_release,about,cover_path,cover_mime,spotify_album_id,spotify_url FROM release_group WHERE id=?').get(drop);
+  if (!rg) return null;
+  const releaseIds = db.prepare('SELECT id FROM "release" WHERE release_group_id=?').all(drop).map(r => r.id);
+  const genres = db.prepare('SELECT genre_id FROM release_group_genre WHERE release_group_id=?').all(drop).map(r => r.genre_id);
+  const subjects = {};
+  for (const t of _SUBJ_TABLES) { try { subjects[t] = db.prepare(`SELECT * FROM ${t} WHERE subject_type='release_group' AND subject_id=?`).all(drop); } catch (e) { subjects[t] = []; } }
+  return { drop, rg, releaseIds, genres, subjects };
+}
+function recordMergeUndo(kind, keepId, label, drops) {
+  if (!drops.length) return null;
+  return Number(db.prepare(`INSERT INTO merge_undo(kind,keep_id,label,payload) VALUES(?,?,?,?)`).run(kind, keepId, label, JSON.stringify({ drops })).lastInsertRowid);
+}
+function _restoreRows(table, rows, newSubjectId) {
+  for (const row of (rows || [])) {
+    const r = Object.assign({}, row, { subject_id: newSubjectId });
+    const cols = Object.keys(r), ph = cols.map(() => '?').join(',');
+    try { db.prepare(`INSERT OR IGNORE INTO ${table}(${cols.join(',')}) VALUES(${ph})`).run(...cols.map(c => r[c])); } catch (e) {}
+  }
+}
+function undoAlbumMerge(payload) {
+  let restored = 0;
+  db.exec('BEGIN');
+  try {
+    for (const d of payload.drops) {
+      const g = d.rg;
+      const newId = Number(db.prepare(`INSERT INTO release_group(mbid,title,artist_credit_id,primary_type,first_release,about,cover_path,cover_mime,spotify_album_id,spotify_url) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+        .run(g.mbid, g.title, g.artist_credit_id, g.primary_type, g.first_release, g.about, g.cover_path, g.cover_mime, g.spotify_album_id, g.spotify_url).lastInsertRowid);
+      if (d.releaseIds.length) db.prepare(`UPDATE "release" SET release_group_id=? WHERE id IN (${d.releaseIds.map(() => '?').join(',')})`).run(newId, ...d.releaseIds);
+      for (const gid of d.genres) { try { db.prepare('INSERT OR IGNORE INTO release_group_genre(release_group_id,genre_id) VALUES(?,?)').run(newId, gid); } catch (e) {} }
+      for (const t of _SUBJ_TABLES) _restoreRows(t, d.subjects[t], newId);
+      try { db.prepare(`INSERT INTO search_fts(name,kind,subject_type,subject_id) VALUES(?,'album','release_group',?)`).run(g.title, newId); } catch (e) {}
+      restored++;
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return restored;
+}
+function snapshotArtistDrop(from) {
+  const a = db.prepare('SELECT name,sort_name,mbid,type,disambiguation,country,founded,bio FROM artist WHERE id=?').get(from);
+  if (!a) return null;
+  const acn = db.prepare('SELECT artist_credit_id, position FROM artist_credit_name WHERE artist_id=?').all(from);
+  const credits = db.prepare('SELECT id FROM credit WHERE artist_id=?').all(from).map(r => r.id);
+  const subjects = {};
+  for (const t of _SUBJ_TABLES) { try { subjects[t] = db.prepare(`SELECT * FROM ${t} WHERE subject_type='artist' AND subject_id=?`).all(from); } catch (e) { subjects[t] = []; } }
+  return { from, a, acn, credits, subjects };
+}
+function undoArtistMerge(payload) {
+  let restored = 0;
+  db.exec('BEGIN');
+  try {
+    for (const d of payload.drops) {
+      const a = d.a;
+      const newId = Number(db.prepare(`INSERT INTO artist(name,sort_name,mbid,type,disambiguation,country,founded,bio) VALUES(?,?,?,?,?,?,?,?)`)
+        .run(a.name, a.sort_name, a.mbid, a.type, a.disambiguation, a.country, a.founded, a.bio).lastInsertRowid);
+      for (const c of d.acn) { try { db.prepare('UPDATE artist_credit_name SET artist_id=? WHERE artist_credit_id=? AND position=?').run(newId, c.artist_credit_id, c.position); } catch (e) {} }
+      if (d.credits.length) { try { db.prepare(`UPDATE credit SET artist_id=? WHERE id IN (${d.credits.map(() => '?').join(',')})`).run(newId, ...d.credits); } catch (e) {} }
+      for (const t of _SUBJ_TABLES) _restoreRows(t, d.subjects[t], newId);
+      try { db.prepare(`INSERT INTO search_fts(name,kind,subject_type,subject_id) VALUES(?,'artist','artist',?)`).run(a.name, newId); } catch (e) {}
+      restored++;
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return restored;
+}
+function handleUndoMerge(id) {
+  const row = db.prepare('SELECT * FROM merge_undo WHERE id=?').get(id);
+  if (!row) throw new Error('no se encuentra esa operación para deshacer');
+  const payload = JSON.parse(row.payload);
+  const n = row.kind === 'artist' ? undoArtistMerge(payload) : undoAlbumMerge(payload);
+  db.prepare('DELETE FROM merge_undo WHERE id=?').run(id);
+  sseBroadcast('library');
+  return { kind: row.kind, restored: n };
+}
 async function handleMergeAlbums(req, res) {
   try {
     const b = await readBody(req);
@@ -3151,9 +3237,11 @@ async function handleMergeAlbums(req, res) {
     if (!db.prepare('SELECT 1 FROM release_group WHERE id=?').get(keep) || !db.prepare('SELECT 1 FROM release_group WHERE id=?').get(drop)) {
       res.writeHead(404); return res.end(JSON.stringify({ ok: false, error: 'álbum no encontrado' }));
     }
+    const snap = snapshotAlbumDrop(drop);
     mergeAlbumsTx(keep, drop);
+    const undoId = recordMergeUndo('album', keep, (snap && snap.rg.title) || 'álbum', snap ? [snap] : []);
     sseBroadcast('library');
-    return sendJSON(res, { ok: true, keep, dropped: drop });
+    return sendJSON(res, { ok: true, keep, dropped: drop, undoId });
   } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 // Combinar en BLOQUE (Serge): varios álbumes → uno. keep = el que se queda (si no se da, el de más pistas);
@@ -3170,9 +3258,11 @@ async function handleMergeBulk(req, res) {
       keep = exist.map(id => ({ id, n: (Q.trackCountOf.get(id) || {}).n || 0 })).sort((a, z) => z.n - a.n || a.id - z.id)[0].id;
     }
     const drops = exist.filter(id => id !== keep);
-    for (const drop of drops) mergeAlbumsTx(keep, drop);
+    const snaps = [];
+    for (const drop of drops) { const s = snapshotAlbumDrop(drop); if (s) snaps.push(s); mergeAlbumsTx(keep, drop); }
+    const undoId = recordMergeUndo('album', keep, (db.prepare('SELECT title FROM release_group WHERE id=?').get(keep) || {}).title || 'álbum', snaps);
     sseBroadcast('library');
-    return sendJSON(res, { ok: true, keep, dropped: drops, count: drops.length });
+    return sendJSON(res, { ok: true, keep, dropped: drops, count: drops.length, undoId });
   } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
 }
 // Candidatos a combinar: otros álbumes del MISMO artista (para elegir el duplicado).
@@ -3314,6 +3404,10 @@ http.createServer((req, res) => {
   if (req.method === 'POST' && u.pathname === '/api/album/merge') return void handleMergeAlbums(req, res);
   if (req.method === 'POST' && u.pathname === '/api/album/merge-bulk') return void handleMergeBulk(req, res);
   if (req.method === 'POST' && u.pathname === '/api/album/cover') return void handleAlbumCover(req, res);
+  if (req.method === 'POST' && u.pathname === '/api/merge/undo') return void (async () => {
+    try { const b = await readBody(req); const r = handleUndoMerge(parseInt(b.id, 10)); return sendJSON(res, { ok: true, ...r }); }
+    catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+  })();
   if (req.method === 'POST' && u.pathname === '/api/album/make-primary') return void (async () => {
     try {
       const b = await readBody(req); const rg = parseInt(b.rg, 10), rel = parseInt(b.rel, 10);

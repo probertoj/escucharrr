@@ -328,7 +328,7 @@ async function openMergePicker(){
       const drop=+el.dataset.id, dt=el.dataset.title;
       if(!confirm('¿Combinar «'+dt+'» dentro de «'+a.title+'»?\nEl duplicado desaparecerá (tus valoraciones y etiquetas se conservan; no se tocan los ficheros).')) return;
       try{ const r=await fetch('/api/album/merge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keep:a.id,drop})}).then(x=>x.json());
-        if(r.ok){ toast('Álbumes combinados'); close(); load(); } else toast(r.error||'error'); }catch(e){ toast('Error: '+e.message); }
+        if(r.ok){ close(); load(); undoToast('Álbumes combinados', r.undoId); } else toast(r.error||'error'); }catch(e){ toast('Error: '+e.message); }
     });
   });
 }
@@ -484,6 +484,12 @@ function pickPlaylist(anchor,onPick){
 }
 let toastT=null;
 function toast(msg){let t=document.getElementById('toast');if(!t){t=document.createElement('div');t.id='toast';t.setAttribute('style','position:fixed;left:50%;bottom:80px;transform:translateX(-50%);z-index:80;background:var(--text);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.25);opacity:0;transition:opacity .15s');document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(toastT);toastT=setTimeout(()=>t.style.opacity='0',1800);}
+function undoToast(msg, undoId){ if(!undoId){ toast(msg); return; }
+  let t=document.getElementById('undotoast'); if(t)t.remove(); t=document.createElement('div'); t.id='undotoast';
+  t.style.cssText='position:fixed;left:50%;bottom:80px;transform:translateX(-50%);z-index:130;background:var(--text);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.3);display:flex;gap:14px;align-items:center';
+  t.innerHTML='<span>'+msg+'</span><a href="#" id="undolink" style="color:#9ecbff;font-weight:600;text-decoration:none">Deshacer</a>'; document.body.appendChild(t);
+  const close=()=>t.remove(); const to=setTimeout(close,9000);
+  t.querySelector('#undolink').onclick=async(e)=>{ e.preventDefault(); clearTimeout(to); try{ const r=await fetch('/api/merge/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:undoId})}).then(x=>x.json()); close(); toast(r.ok?'Deshecho':(r.error||'error')); load(); }catch(err){ toast('error'); } }; }
 
 // ── Portada manual: elegir desde una URL o examinar un archivo (como Plex) ──
 function openCoverPicker(){
