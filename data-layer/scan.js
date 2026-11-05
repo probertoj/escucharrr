@@ -192,11 +192,29 @@ const S = {
   setRelMbid: db.prepare('UPDATE "release" SET mbid=? WHERE id=? AND mbid IS NULL'),
   setRecMbid: db.prepare('UPDATE recording SET mbid=? WHERE id=? AND mbid IS NULL'),
   setRecIsrc: db.prepare('UPDATE recording SET isrc=COALESCE(isrc,?), acoustid=COALESCE(acoustid,?) WHERE id=?'),
+  // Compositor desde el tag COMPOSER (TCOM/©wrt/VORBIS): obra + crédito de composición, para que salga en el
+  // navegador de compositores aunque no haya enriquecido de MusicBrainz. No pisa las obras de MB (con mbid).
+  workByTitle: db.prepare('SELECT id FROM work WHERE title=? AND mbid IS NULL LIMIT 1'),
+  insWork: db.prepare('INSERT INTO work(title) VALUES(?)'),
+  setRecWork: db.prepare('UPDATE recording SET work_id=? WHERE id=? AND work_id IS NULL'),
+  recWorkId: db.prepare('SELECT work_id FROM recording WHERE id=?'),
+  workCreditExists: db.prepare("SELECT id FROM credit WHERE entity_type='work' AND entity_id=? AND artist_id=? AND role='composición' LIMIT 1"),
+  insWorkCredit: db.prepare("INSERT INTO credit(entity_type,entity_id,artist_id,role) VALUES('work',?,?,'composición')"),
 };
 // mbid es UNIQUE: si otra fila ya lo tiene, el tag está duplicado -> lo ignoramos sin romper.
 const trySet = (stmt, ...a) => { try { stmt.run(...a); } catch (e) { if (!/UNIQUE/i.test(e.message)) throw e; } };
 const ensureArtist = (name) => { const r = S.artistByName.get(name); return r ? r.id : Number(S.insArtist.run(name, name).lastInsertRowid); };
 const ensureCredit = (aid, name) => { const r = S.creditFor.get(aid, name); if (r) return r.id; const c = Number(S.insCredit.run().lastInsertRowid); S.insCreditName.run(c, aid, name); return c; };
+// Ingesta del tag COMPOSER: enlaza la grabación a una obra (por título) y añade el crédito de composición de
+// cada compositor. Respeta lo que ya trajo MusicBrainz (si la grabación ya tiene work_id, no lo toca).
+function ingestComposer(recId, recTitle, composerStr) {
+  const names = String(composerStr || '').split(/\s*[;/]\s*|\s+feat\.?\s+/i).map(s => _clean(s)).filter(Boolean);
+  if (!names.length) return;
+  const cur = S.recWorkId.get(recId);
+  let workId = cur && cur.work_id;
+  if (!workId) { const w = S.workByTitle.get(recTitle); workId = w ? w.id : Number(S.insWork.run(recTitle).lastInsertRowid); S.setRecWork.run(workId, recId); }
+  for (const nm of names) { const aid = ensureArtist(nm); if (!S.workCreditExists.get(workId, aid)) S.insWorkCredit.run(workId, aid); }
+}
 const ensureRg = (title, cid, year) => { const r = S.rgBy.get(title, cid); return r ? r.id : Number(S.insRg.run(title, cid, 'album', year).lastInsertRowid); };
 // Versiones por carpeta (estilo Roon): un `release` por copia física (carpeta de álbum). Clave = (rg, source_dir).
 // Si ya existe esa carpeta, se reutiliza; si no, se ADOPTA un release antiguo sin source_dir (migración, para no
@@ -370,6 +388,7 @@ try {
       const med = ensureMed(rel, discNo, fmtLabel);
       const tcid = t.ARTIST ? ensureCredit(ensureArtist(t.ARTIST), t.ARTIST) : cid;
       recId = ensureRec(title, tcid, inf.durationMs);
+      if (t.COMPOSER) ingestComposer(recId, title, t.COMPOSER);   // compositor desde el tag -> obra + crédito
       const ex = S.trackBy.get(med, trackNo);
       trackId = ex ? ex.id : Number(S.insTrack.run(med, trackNo, recId, title, tcid, inf.durationMs).lastInsertRowid);
       // propagar los MBID/ISRC del tag al grafo (solo si aún no los tiene)

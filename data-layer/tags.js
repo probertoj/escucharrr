@@ -48,7 +48,7 @@ function id3TextPair(buf) {
   return [id3Text(Buffer.concat([Buffer.from([enc]), body.subarray(0, i)])), id3Text(Buffer.concat([Buffer.from([enc]), body.subarray(i + 1)]))];
 }
 
-const ID3_TEXT = { TIT2: 'TITLE', TPE1: 'ARTIST', TPE2: 'ALBUMARTIST', TALB: 'ALBUM', TRCK: 'TRACKNUMBER', TPOS: 'DISCNUMBER', TCON: 'GENRE', TSRC: 'ISRC', TDRC: 'DATE', TYER: 'DATE', TDRL: 'DATE', TDAT: '_DATE2', TCMP: 'COMPILATION', TCP: 'COMPILATION' };
+const ID3_TEXT = { TIT2: 'TITLE', TPE1: 'ARTIST', TPE2: 'ALBUMARTIST', TALB: 'ALBUM', TRCK: 'TRACKNUMBER', TPOS: 'DISCNUMBER', TCON: 'GENRE', TSRC: 'ISRC', TDRC: 'DATE', TYER: 'DATE', TDRL: 'DATE', TDAT: '_DATE2', TCMP: 'COMPILATION', TCP: 'COMPILATION', TCOM: 'COMPOSER' };
 const TXXX_MAP = { 'MUSICBRAINZ ALBUM ID': 'MUSICBRAINZ_ALBUMID', 'MUSICBRAINZ RELEASE GROUP ID': 'MUSICBRAINZ_RELEASEGROUPID', 'MUSICBRAINZ RELEASE TRACK ID': 'MUSICBRAINZ_TRACKID', 'ACOUSTID ID': 'ACOUSTID_ID', 'ACOUSTID FINGERPRINT': 'ACOUSTID_FINGERPRINT', 'TCMP': 'COMPILATION', 'COMPILATION': 'COMPILATION' };
 
 // Analiza el CUERPO de un ID3v2 (bytes tras la cabecera de 10) → { tags, apic }. Compartido por MP3
@@ -193,7 +193,7 @@ function findAtom(buf, path) {   // path: ['trak','mdia',...] baja por contenedo
   }
   return cur;
 }
-const MP4_TEXT = { '\xa9nam': 'TITLE', '\xa9ART': 'ARTIST', 'aART': 'ALBUMARTIST', '\xa9alb': 'ALBUM', '\xa9day': 'DATE', '\xa9gen': 'GENRE', 'cprt': '_C' };
+const MP4_TEXT = { '\xa9nam': 'TITLE', '\xa9ART': 'ARTIST', 'aART': 'ALBUMARTIST', '\xa9alb': 'ALBUM', '\xa9day': 'DATE', '\xa9gen': 'GENRE', '\xa9wrt': 'COMPOSER', 'cprt': '_C' };
 const MP4_FREE = { 'MUSICBRAINZ ALBUM ID': 'MUSICBRAINZ_ALBUMID', 'MUSICBRAINZ RELEASE GROUP ID': 'MUSICBRAINZ_RELEASEGROUPID', 'MUSICBRAINZ RELEASE TRACK ID': 'MUSICBRAINZ_TRACKID', 'ACOUSTID ID': 'ACOUSTID_ID', 'ACOUSTID FINGERPRINT': 'ACOUSTID_FINGERPRINT', 'ISRC': 'ISRC' };
 function ilstDataValue(payload) {   // devuelve {type, buf} del subátomo 'data'
   let out = null; eachAtom(payload, (t, pay) => { if (!out && t === 'data') out = { type: pay.readUInt32BE(0) & 0xffffff, buf: pay.subarray(8) }; }); return out;
