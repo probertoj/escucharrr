@@ -183,6 +183,7 @@ async function lfmAuthCall(method, extra) {
 }
 
 const coverfetch = require('../data-layer/coverfetch');   // descarga perezosa de portadas (Cover Art Archive)
+const artistimages = require('../data-layer/artist-images');   // descarga perezosa de fotos de artista (Wikidata/Wikipedia)
 const acoustidLib = require('../data-layer/acoustid');     // identificación automática por huella (AcoustID)
 // Config de AcoustID (clave gratuita de acoustid.org + ruta opcional de fpcalc/Chromaprint). Fichero en app/.
 const ACOUSTID_PATH = path.join(__dirname, 'acoustid.json');
@@ -481,6 +482,8 @@ function buildQ(db) { return {
   about: db.prepare(`SELECT value v FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='about'`),
   aboutExt: db.prepare(`SELECT about v FROM release_group WHERE id=?`),   // reseña editorial externa (Wikipedia)
   coverOf: db.prepare(`SELECT cover_path, cover_mime, mbid FROM release_group WHERE id=?`),   // carátula cacheada (Cover Art Archive) + mbid (para la descarga perezosa)
+  artistImageOf: db.prepare(`SELECT image_path, image_mime, mbid FROM artist WHERE id=?`),   // foto de artista cacheada + mbid (descarga perezosa)
+  artistImageTried: db.prepare(`SELECT 1 FROM provenance WHERE subject_type='artist' AND subject_id=? AND field='image'`),   // ¿ya se consultó la foto? (hubo o no)
   coverTried: db.prepare(`SELECT 1 FROM provenance WHERE subject_type='release_group' AND subject_id=? AND field='cover'`),   // ¿ya se consultó la portada en CAA? (hubo o no)
   coverPref: db.prepare(`SELECT value FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='cover_pref'`),   // preferencia de fuente de portada (Roon: use_file/use_meta/use_best/clear)
   flagGet: db.prepare(`SELECT 1 FROM flag WHERE subject_type=? AND subject_id=? AND flag=? LIMIT 1`),
@@ -2147,6 +2150,42 @@ function pumpCoverQueue() {
       .finally(() => { _coverActive--; setTimeout(pumpCoverQueue, 350); });   // cortesía con CAA/archive.org
   }
 }
+// ── Fotos de artista: servir cacheada o bajar perezosamente (Wikidata P18 / Wikipedia) ──
+const _artImgTried = new Set();     // artist ids ya intentados en caliente
+const _artImgQueue = [];
+let _artImgActive = 0;
+const ARTIMG_CONC = 2;
+function queueArtistImage(id, mbid) {
+  if (!mbid || _artImgTried.has(id)) return;
+  if (Q.artistImageTried.get(id)) { _artImgTried.add(id); return; }   // ya consultado alguna vez
+  if (_artImgQueue.some(x => x.id === id)) return;
+  _artImgTried.add(id);
+  _artImgQueue.push({ id, mbid });
+  pumpArtistImageQueue();
+}
+function pumpArtistImageQueue() {
+  while (_artImgActive < ARTIMG_CONC && _artImgQueue.length) {
+    const job = _artImgQueue.shift(); _artImgActive++;
+    artistimages.fetchArtistImageFor(db, { id: job.id, mbid: job.mbid, appDir: __dirname })
+      .then(r => { if (r && r.found) sseBroadcast('library'); else if (r && !r.miss && r.status) _artImgTried.delete(job.id); })
+      .catch(() => { _artImgTried.delete(job.id); })
+      .finally(() => { _artImgActive--; setTimeout(pumpArtistImageQueue, 300); });
+  }
+}
+function serveArtistImage(res, id) {
+  if (!Number.isFinite(id)) { res.writeHead(404); return res.end(); }
+  const row = Q.artistImageOf.get(id);
+  if (row && row.image_path) {
+    const p = path.join(__dirname, row.image_path);
+    if (p.startsWith(__dirname) && fs.existsSync(p)) {
+      res.writeHead(200, { 'Content-Type': row.image_mime || 'image/jpeg', 'Cache-Control': 'public, max-age=86400' });
+      return void fs.createReadStream(p).pipe(res);
+    }
+  }
+  if (row && row.mbid) queueArtistImage(id, row.mbid);   // bájala en 2º plano; la próxima carga la trae
+  res.writeHead(404, { 'Cache-Control': 'no-store' }); res.end();   // sin foto → la UI cae a las iniciales
+}
+
 // Portada según la preferencia del usuario por álbum (Roon: archivo/metadatos/mejor/ninguna).
 // Por defecto 'auto' = descargada > embebida > SVG. El SVG de respaldo no se cachea.
 function serveCover(res, id) {
@@ -2952,6 +2991,7 @@ http.createServer((req, res) => {
   try {
     if (u.pathname === '/api/stream') return streamAudio(req, res, parseInt(u.searchParams.get('track'), 10));
     if (u.pathname === '/api/cover') return serveCover(res, parseInt(u.searchParams.get('rg'), 10));
+    if (u.pathname === '/api/artist/image') return serveArtistImage(res, parseInt(u.searchParams.get('id'), 10));
     if (u.pathname === '/api/album/similar') return void handleAlbumSimilar(req, res, u);
     if (u.pathname === '/api/album/acoustid') return void handleAlbumAcoustid(req, res, u);
     if (u.pathname === '/api/covers/backfill') {   // descarga de CAA todas las portadas que falten (una sola instancia)

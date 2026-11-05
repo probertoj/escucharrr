@@ -86,7 +86,7 @@ function renderArtist(a){
     : '<div class="count">Sin álbumes en tu biblioteca todavía.</div>';
   app.innerHTML=`
     <div class="ahero">
-      <div class="ava" style="background:${ava}">${esc((a.name||'?').slice(0,2).toUpperCase())}</div>
+      <div class="ava" style="background:${ava};position:relative;overflow:hidden"><span>${esc((a.name||'?').slice(0,2).toUpperCase())}</span><img src="/api/artist/image?id=${a.id}" alt="" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .25s" onload="this.style.opacity=1" onerror="this.remove()"></div>
       <div style="flex:1;min-width:220px">
         <div style="color:var(--text-2);font-size:13px">${esc(sub||'artista')}</div>
         <h1>${esc(a.name)}</h1>

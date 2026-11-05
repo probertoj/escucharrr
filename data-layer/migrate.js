@@ -63,6 +63,8 @@ function migrate(db) {
   if (addCol(db, 'release_group', 'about', 'TEXT')) added.push('release_group.about');   // reseña editorial externa (Wikipedia); el user_edit 'about' de Obsidian manda
   if (addCol(db, 'release_group', 'cover_path', 'TEXT')) added.push('release_group.cover_path');   // carátula cacheada (Cover Art Archive)
   if (addCol(db, 'release_group', 'cover_mime', 'TEXT')) added.push('release_group.cover_mime');
+  if (addCol(db, 'artist', 'image_path', 'TEXT')) added.push('artist.image_path');   // foto del artista cacheada (Wikidata P18 / Wikipedia)
+  if (addCol(db, 'artist', 'image_mime', 'TEXT')) added.push('artist.image_mime');
   if (addCol(db, 'release_group', 'spotify_album_id', 'TEXT')) added.push('release_group.spotify_album_id');   // guardado en la biblioteca de Spotify
   if (addCol(db, 'release_group', 'spotify_url', 'TEXT')) added.push('release_group.spotify_url');
   // Escaneo tolerante a red (modelo Roon, ver memoria roon-storage-scanner): no equiparar "no lo vi"
