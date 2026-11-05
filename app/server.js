@@ -513,7 +513,20 @@ const _aovArtistId = `CASE
       THEN NULL
     ELSE (SELECT acn.artist_id FROM artist_credit_name acn JOIN release_group rg ON rg.artist_credit_id=acn.artist_credit_id WHERE rg.id=a.id ORDER BY acn.position LIMIT 1)
   END`;
-function buildQ(db) { return {
+// Normaliza un nombre de artista en JS igual que `_anA` en SQL (para comparar la columna normalizada con un
+// único parámetro, evitando repetir el placeholder). Quita el «the » inicial para pillar «The X»/«X».
+function normArtist(s) {
+  let n = String(s == null ? '' : s).replace(/[.,]/g, '').replace(/-/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (n.startsWith('the ')) n = n.slice(4);
+  return n;
+}
+function buildQ(db) {
+  // Normaliza un nombre de artista para detectar duplicados (minúsculas, sin puntuación, guiones→espacio,
+  // espacios colapsados) y, además, quita el artículo inicial «the » para pillar «The Microphones»/«Microphones».
+  // Se deja el artículo español («la/el/los/las») para no sobre-fusionar (p. ej. «La Bien Querida»).
+  const _an = (c) => `replace(replace(trim(lower(replace(replace(replace(replace(${c},'.',''),',',''),'-',' '),'  ',' '))),'  ',' '),'  ',' ')`;
+  const _anA = (c) => `(CASE WHEN ${_an(c)} LIKE 'the %' THEN substr(${_an(c)},5) ELSE ${_an(c)} END)`;
+  return {
   genresOf: db.prepare(`SELECT group_concat(g.name,'|') gs FROM release_group_genre rgg JOIN genre g ON g.id=rgg.genre_id WHERE rgg.release_group_id=?`),
   formatOf: db.prepare(`SELECT rel.format f FROM "release" rel WHERE rel.release_group_id=? LIMIT 1`),
   rgsByMbid: db.prepare(`SELECT id, title, substr(first_release,1,4) year FROM release_group WHERE mbid=?`),   // versiones: mismo release-group
@@ -705,12 +718,10 @@ function buildQ(db) { return {
      WHERE acn.artist_id=? GROUP BY rgg.genre_id ORDER BY n DESC LIMIT 12`),
   // ── editar / unir artistas ──
   artistAlbumCount: db.prepare(`SELECT COUNT(DISTINCT rg.id) n FROM artist_credit_name acn JOIN release_group rg ON rg.artist_credit_id=acn.artist_credit_id WHERE acn.artist_id=?`),
-  // Duplicados: nombre NORMALIZADO igual (minúsculas, sin puntuación, guiones→espacio, espacios colapsados) para
-  // pillar variantes como «blink-182»/«blink 182», «Jay-Z»/«Jay Z», «R.E.M.»/«REM», espacios dobles o finales.
+  // Duplicados: nombre NORMALIZADO igual (minúsculas, sin puntuación, guiones→espacio, espacios colapsados,
+  // «the » inicial fuera) para pillar «blink-182»/«blink 182», «Jay-Z»/«Jay Z», «R.E.M.»/«REM», «The Microphones»/«Microphones».
   artistDupes: db.prepare(`SELECT a.id, a.name, a.disambiguation, a.mbid FROM artist a WHERE a.id!=?
-      AND replace(replace(trim(lower(replace(replace(replace(replace(a.name,'.',''),',',''),'-',' '),'  ',' '))),'  ',' '),'  ',' ')
-        = replace(replace(trim(lower(replace(replace(replace(replace(?,'.',''),',',''),'-',' '),'  ',' '))),'  ',' '),'  ',' ')
-      ORDER BY a.name`),
+      AND ${_anA('a.name')} = ? ORDER BY a.name`),
   artistSearch: db.prepare(`SELECT a.id, a.name, a.disambiguation FROM artist a WHERE a.id!=? AND a.name LIKE ? ORDER BY (lower(a.name)=lower(?)) DESC, a.name LIMIT 20`),
   // ── género ──
   genreAlbums: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
@@ -1435,7 +1446,7 @@ function artist(id) {
     .map(x => ({ id: x.id, title: x.title, year: x.year, artist: x.artist, roles: (x.roles || '').split(',').filter(Boolean) }));
   a.album_count = (Q.artistAlbumCount.get(id) || {}).n || 0;
   // duplicados exactos de nombre (p. ej. 4 «blink-182») para ofrecer unirlos, con su nº de álbumes
-  a.dupes = Q.artistDupes.all(id, a.name).map(d => ({ id: d.id, name: d.name, disambiguation: d.disambiguation, mbid: d.mbid, album_count: (Q.artistAlbumCount.get(d.id) || {}).n || 0 }));
+  a.dupes = Q.artistDupes.all(id, normArtist(a.name)).map(d => ({ id: d.id, name: d.name, disambiguation: d.disambiguation, mbid: d.mbid, album_count: (Q.artistAlbumCount.get(d.id) || {}).n || 0 }));
   return a;
 }
 // ── Biografía editorial del artista desde Wikipedia (INGLÉS por defecto), bajo demanda ──
