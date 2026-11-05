@@ -126,6 +126,11 @@ function folderMeta(dir) {   // "Artista - Álbum" (con espacios o pegado) → {
 // que "Discovery" (sin dígito) y "Use Your Illusion II" (no empieza por cd/disc/vol/digital media) NO casan.
 const _DISC_DIR_RE = /^(?:cd|dis[ck]|disco|disque|volume|vol|digital\s*media)\s*\.?\s*0*(\d{1,2})(?:[\s._\-–—:()\[\]].*)?$/i;
 const _DISC_TITLE_RE = /[\s\-–—_]*[\[(]?\s*(?:cd|dis[ck]|disco|disque)\s*\.?\s*0*(\d{1,2})\s*[)\]]?\s*$/i;   // "… CD1", "… (Disc 2)" al final del título
+// Artista del ÁLBUM cuando NO hay ALBUMARTIST: quita el "feat./ft./featuring…" del ARTIST de la pista, para que
+// todas las colaboraciones de un mismo disco resuelvan al MISMO release_group (bug Charli XCX: 11 pistas con
+// distinto «feat.» → 11 álbumes). El crédito de CADA PISTA conserva su ARTIST completo (tcid, abajo).
+const _FEAT_RE = /\s*[\(\[]?\s*(?:feat\.?|ft\.?|featuring|f\/)\s+.*$/i;
+function _albumArtistBase(s) { if (!s) return s; const b = String(s).replace(_FEAT_RE, '').trim(); return b || String(s).trim(); }
 // Carpeta-ARTISTA que marca recopilatorio (convención MB/Roon). Estricto: NO incluye "desconocido/unknown"
 // (eso es artista desconocido, no VA) ni "varios" a secas.
 const _VA_FOLDER_RE = /^(?:various\s*artists|varios\s*artistas|v\.?\s*a\.?|va)$/i;
@@ -331,7 +336,7 @@ try {
     const rawAlbum = t.ALBUM || fm.album || path.basename(albumDir);
     const di = discInfo(albumDir, rawAlbum);                  // quita "CDn/Disc n" del final del título
     const album = di.album;
-    let artistName = t.ALBUMARTIST || t.ARTIST || fm.artist;
+    let artistName = t.ALBUMARTIST || _albumArtistBase(t.ARTIST) || fm.artist;   // sin ALBUMARTIST: base sin «feat.» (no partir el álbum)
     if (!artistName && !isComp) { const gp = path.dirname(albumDir); if (nrm(gp) !== nrm(ROOT) && path.basename(gp)) artistName = _clean(path.basename(gp)); }   // carpeta abuela del álbum = artista
     artistName = isComp ? 'Various Artists' : (artistName || 'Artista desconocido');
     const title = t.TITLE || titleFromName(file, artistName);
