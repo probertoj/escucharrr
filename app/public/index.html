@@ -5,6 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>escucharrr — biblioteca</title>
 <link rel="stylesheet" href="styles.css">
+<style>
+.selmark{position:absolute;top:6px;left:6px;width:22px;height:22px;border-radius:50%;border:2px solid #fff;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.4);z-index:2}
+.selmark.on{background:var(--accent);border-color:var(--accent)}
+.card.selected{outline:3px solid var(--accent);outline-offset:-1px;border-radius:12px}
+body.selmode .card{cursor:pointer}
+#selbar{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:120;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 36px rgba(0,0,0,.4);padding:10px 14px;display:none;gap:10px;align-items:center;flex-wrap:wrap;max-width:94vw}
+#selbar.on{display:flex}
+#selbar button{padding:7px 12px}
+</style>
 </head>
 <body>
 <div class="wrap">
@@ -30,12 +39,21 @@
     </select>
     <input id="filter" type="search" placeholder="Filtrar">
     <button id="viewtoggle" title="Rejilla / Lista" style="display:inline-flex;align-items:center;padding:6px 10px"></button>
+    <button id="selbtn" title="Seleccionar varios (combinar, editar en bloque)">Seleccionar</button>
   </div>
 
   <div class="chips" id="bmbar" style="margin:4px 0"></div>
   <div class="focus" id="focus" hidden><div class="facets" id="facets"></div></div>
   <div class="chips" id="chips"></div>
   <div class="grid" id="grid"></div>
+</div>
+<div id="selbar">
+  <span id="selcount" style="font-weight:600"></span>
+  <button id="selmerge" class="btn-accent" title="Fundir los seleccionados en un solo álbum">Combinar</button>
+  <button id="selfav" title="Marcar como favoritos">♥ Favorito</button>
+  <select id="seltier" title="Poner tier a los seleccionados"><option value="">Tier…</option><option value="excel">Excel</option><option value="si">Sí</option><option value="ok">Ok</option><option value="meh">Meh</option><option value="no">No</option></select>
+  <button id="selclear">Deseleccionar</button>
+  <button id="selexit">Salir</button>
 </div>
 
 <script>
@@ -138,12 +156,13 @@ function renderChips(){
 let VIS=[];   // lista filtrada + ordenada actual
 let VIEW=(()=>{try{return localStorage.getItem('escucharrr.libview')==='list'?'list':'grid';}catch(e){return 'grid';}})();
 const VG={cols:0,colW:0,cardH:0,rowH:0,gx:18,gy:26,min:158,buf:3,raf:0,refined:false};
-function cardHTML(a){return `<a class="card" href="album.html?id=${a.id}">
-    <div class="cov">${cover(a.id)}
+const selMark=id=>SELMODE?`<span class="selmark${SELSET.has(id)?' on':''}">${SELSET.has(id)?'✓':''}</span>`:'';
+function cardHTML(a){return `<a class="card${SELMODE&&SELSET.has(a.id)?' selected':''}" data-id="${a.id}" href="album.html?id=${a.id}">
+    <div class="cov">${cover(a.id)}${selMark(a.id)}
       ${a.tier_key?`<span class="badge" style="background:${TC[a.tier_key][0]};color:${TC[a.tier_key][1]}">${TN[a.tier_key]}</span>`:''}
       ${a.is_favorite?'<span class="fav">♥</span>':''}</div>
     <div class="t">${esc0(a.title)}</div><div class="s">${esc0(a.artist)} · ${a.year||'—'}</div></a>`;}
-function rowHTML(a){return `<a class="card" href="album.html?id=${a.id}" style="display:flex;align-items:center;gap:12px;padding:0 8px;border-bottom:1px solid var(--border);text-decoration:none;color:inherit;height:52px;box-sizing:border-box">
+function rowHTML(a){return `<a class="card${SELMODE&&SELSET.has(a.id)?' selected':''}" data-id="${a.id}" href="album.html?id=${a.id}" style="display:flex;align-items:center;gap:12px;padding:0 8px;border-bottom:1px solid var(--border);text-decoration:none;color:inherit;height:52px;box-sizing:border-box">${SELMODE?`<span class="selmark${SELSET.has(a.id)?' on':''}" style="position:static;flex:none">${SELSET.has(a.id)?'✓':''}</span>`:''}
     <div style="width:40px;height:40px;border-radius:6px;overflow:hidden;flex:none">${cover(a.id)}</div>
     <div style="flex:1;min-width:0"><div style="font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc0(a.title)}</div><div style="font-size:12.5px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc0(a.artist)} · ${a.year||'—'}</div></div>
     ${a.tier_key?`<span class="badge" style="position:static;background:${TC[a.tier_key][0]};color:${TC[a.tier_key][1]}">${TN[a.tier_key]}</span>`:''}${a.is_favorite?'<span style="color:var(--accent)">♥</span>':''}</a>`;}
@@ -199,6 +218,28 @@ function updateViewBtn(){const b=document.getElementById('viewtoggle');if(b)b.in
 document.getElementById('viewtoggle').onclick=()=>{VIEW=VIEW==='list'?'grid':'list';try{localStorage.setItem('escucharrr.libview',VIEW);}catch(e){}updateViewBtn();VG.refined=false;vMeasure();vPaint();window.scrollTo(0,0);};
 updateViewBtn();
 document.getElementById('filter').oninput=(e)=>{txt=e.target.value.toLowerCase().trim();render();};
+
+// ── multi-selección + acciones en bloque (Serge) ──
+let SELMODE=false; const SELSET=new Set();
+const selG=id=>document.getElementById(id);
+function selRepaint(){ document.body.classList.toggle('selmode',SELMODE); const b=selG('selbtn'); b.textContent=SELMODE?'Hecho':'Seleccionar'; b.classList.toggle('btn-accent',SELMODE); const n=SELSET.size; selG('selbar').classList.toggle('on',SELMODE&&n>0); selG('selcount').textContent=n+' seleccionado'+(n===1?'':'s'); if(typeof vPaint==='function')vPaint(); }
+selG('selbtn').onclick=()=>{ SELMODE=!SELMODE; if(!SELMODE)SELSET.clear(); selRepaint(); };
+document.addEventListener('click',e=>{ if(!SELMODE)return; const c=e.target.closest('.card'); if(c&&c.dataset.id){ e.preventDefault(); e.stopPropagation(); const id=+c.dataset.id; if(SELSET.has(id))SELSET.delete(id); else SELSET.add(id); selRepaint(); } },true);
+selG('selclear').onclick=()=>{ SELSET.clear(); selRepaint(); };
+selG('selexit').onclick=()=>{ SELMODE=false; SELSET.clear(); selRepaint(); };
+async function selEdit(field,value){ for(const id of [...SELSET]){ try{ await fetch('/api/edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subject_type:'release_group',subject_id:id,field,value})}); }catch(e){} } }
+selG('selfav').onclick=async()=>{ await selEdit('favorite',true); if(window.toast)toast('Marcados como favoritos'); load(); };
+selG('seltier').onchange=async(e)=>{ const v=e.target.value; if(!v)return; await selEdit('tier',v); e.target.value=''; if(window.toast)toast('Tier aplicado'); load(); };
+selG('selmerge').onclick=async()=>{
+  const ids=[...SELSET]; if(ids.length<2){ if(window.toast)toast('Elige al menos 2 álbumes'); return; }
+  const sel=ALBUMS.filter(a=>SELSET.has(a.id)); const arts=[...new Set(sel.map(a=>a.artist))];
+  let msg='Combinar '+ids.length+' álbumes en uno. El que más pistas tenga se queda; los demás se funden en él (como versiones). Solo afecta a la app, no a tus ficheros.';
+  if(arts.length>1) msg='⚠ Son de artistas distintos ('+arts.slice(0,4).join(', ')+').\n\n'+msg;
+  if(!confirm(msg))return;
+  try{ const r=await fetch('/api/album/merge-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})}).then(x=>x.json());
+    if(r.ok){ if(window.toast)toast('Combinados '+((r.count||0)+1)+' álbumes en uno'); SELSET.clear(); SELMODE=false; selRepaint(); load(); }
+    else if(window.toast)toast(r.error||'error'); }catch(e){ if(window.toast)toast('error: '+e.message); }
+};
 
 function load(){fetch('/api/library').then(r=>r.json()).then(d=>{d.forEach(a=>a._rnd=Math.random());ALBUMS=d;render();}).catch(e=>document.getElementById('count').textContent='error: '+e.message);}
 load();

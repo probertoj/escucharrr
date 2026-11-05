@@ -26,6 +26,7 @@ const TORD=['excel','si','ok','meh','no'];
 let rawAbout='';   // markdown crudo de la reseña EDITABLE (tuya/Obsidian) para el editor
 let reviews=[], reviewIdx=0;   // todas las fuentes de reseña + la seleccionada (selector estilo Roon)
 let albumTracks=[];   // pistas del álbum (para "reproducir disco")
+let TRKSEL=false; const TRKSET=new Set();   // multi-selección de pistas (poner varias en un disco de golpe)
 const mdRender=s=>window.mdToHtml?window.mdToHtml(s):esc(s);
 const provRefOf=ref=>!ref?'':(/^https?:/.test(ref)?' · <a href="'+esc(ref)+'" target="_blank" rel="noopener" style="color:var(--text-2)">'+esc(ref.replace(/^https?:\/\/(www\.)?/,''))+'</a>':' · '+esc(ref));
 function showReview(i){const r=reviews[i];if(!r)return;reviewIdx=i;
@@ -73,9 +74,9 @@ function renderAlbum(a){
   const _lnk=(u,t)=>u?`<a href="${u}" target="_blank" rel="noopener" style="color:var(--accent)">${t}</a>`:'';
   const extLinks=(_lfmUrl||_mbUrl||_dcUrl||_rymUrl||_rcUrl)?`<div style="margin-top:9px;font-size:13px;display:flex;gap:14px;flex-wrap:wrap;align-items:center"><span class="k" style="opacity:.7">Enlaces</span>${_lnk(_mbUrl,'MusicBrainz')}${_lnk(_dcUrl,'Discogs')}${_lnk(_rcUrl,'Record Club')}${_lnk(_lfmUrl,'Last.fm')}${_lnk(_rymUrl,'RateYourMusic')}</div>`:'';
   const multiDisc=(a.tracks||[]).some(t=>t.disc>1);
-  const trackRow=(t,i)=>`<div class="track"><button class="play" data-idx="${i}" aria-label="Reproducir" title="Reproducir" style="border:none;background:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0 4px;display:inline-flex;align-items:center">${window.icon('play',14)}</button><span class="pos">${t.pos}</span><span style="flex:1;min-width:0">${esc(t.title)}${(t.artist&&a.artist&&t.artist!==a.artist)?`<div style="font-size:12px;color:var(--text-2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.artist_id?`<a href="artist.html?id=${t.artist_id}" style="color:var(--text-2)">${esc(t.artist)}</a>`:esc(t.artist)}</div>`:''}${(t.work||t.composers)?`<div style="font-size:12px;color:var(--text-2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.work_id?`<a href="work.html?id=${t.work_id}" style="color:var(--text-2)">${esc(t.work||'obra')}</a>`:esc(t.work||'')}${t.composers?` · ${esc(t.composers.replace(/,/g,', '))}`:''}</div>`:''}</span><span class="edittrk" data-idx="${i}" title="Editar pista (nº, título, artista)" style="cursor:pointer;color:var(--text-2);font-size:14px;padding:0 6px;display:inline-flex;align-items:center;opacity:.6">${window.icon('edit',14)}</span><span class="addtrk" data-tid="${t.trackId}" title="Añadir a una lista" style="cursor:pointer;color:var(--text-2);font-size:14px;padding:0 6px;display:inline-flex;align-items:center">${window.icon('plus',15)}</span><span class="dur">${mmss(t.length_ms)}</span></div>`;
+  const trackRow=(t,i)=>`<div class="track${TRKSET.has(t.trackId)?' trkon':''}" data-tid="${t.trackId}"><span class="trkmark">${TRKSET.has(t.trackId)?'✓':''}</span><button class="play" data-idx="${i}" aria-label="Reproducir" title="Reproducir" style="border:none;background:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0 4px;display:inline-flex;align-items:center">${window.icon('play',14)}</button><span class="pos">${t.pos}</span><span style="flex:1;min-width:0">${esc(t.title)}${(t.artist&&a.artist&&t.artist!==a.artist)?`<div style="font-size:12px;color:var(--text-2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.artist_id?`<a href="artist.html?id=${t.artist_id}" style="color:var(--text-2)">${esc(t.artist)}</a>`:esc(t.artist)}</div>`:''}${(t.work||t.composers)?`<div style="font-size:12px;color:var(--text-2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.work_id?`<a href="work.html?id=${t.work_id}" style="color:var(--text-2)">${esc(t.work||'obra')}</a>`:esc(t.work||'')}${t.composers?` · ${esc(t.composers.replace(/,/g,', '))}`:''}</div>`:''}</span><span class="edittrk" data-idx="${i}" title="Editar pista (nº, título, artista)" style="cursor:pointer;color:var(--text-2);font-size:14px;padding:0 6px;display:inline-flex;align-items:center;opacity:.6">${window.icon('edit',14)}</span><span class="addtrk" data-tid="${t.trackId}" title="Añadir a una lista" style="cursor:pointer;color:var(--text-2);font-size:14px;padding:0 6px;display:inline-flex;align-items:center">${window.icon('plus',15)}</span><span class="dur">${mmss(t.length_ms)}</span></div>`;
   let tracks='';
-  if((a.tracks||[]).length){ tracks='<div class="sec">Pistas</div>'; let cur=null;
+  if((a.tracks||[]).length){ tracks='<div class="sec">Pistas <span id="trkseltog" style="font-size:12px;font-weight:400;color:var(--accent);cursor:pointer;margin-left:8px">Seleccionar</span></div>'; let cur=null;
     a.tracks.forEach((t,i)=>{ if(multiDisc && t.disc!==cur){ cur=t.disc; tracks+=`<div class="dischdr"><span class="dh">${window.icon('music',14)} Disco ${t.disc}</span><button class="playdisc" data-disc="${t.disc}" title="Reproducir este disco">${window.icon('play',12)} Reproducir disco</button></div>`; } tracks+=trackRow(t,i); }); }
   const INST={'bass':'bajo','electric bass':'bajo eléctrico','double bass':'contrabajo','guitar':'guitarra','acoustic guitar':'guitarra acústica','electric guitar':'guitarra eléctrica','drums':'batería','percussion':'percusión','piano':'piano','keyboards':'teclados','synthesizer':'sintetizador','organ':'órgano','cello':'violonchelo','violin':'violín','viola':'viola','trumpet':'trompeta','trombone':'trombón','saxophone':'saxofón','flute':'flauta','clarinet':'clarinete','harmonica':'armónica','accordion':'acordeón','vibraphone':'vibráfono'};
   const tInst=i=>i?(INST[i.toLowerCase()]||i.toLowerCase()):i;
@@ -482,7 +483,32 @@ function pickPlaylist(anchor,onPick){
 }
 let toastT=null;
 function toast(msg){let t=document.getElementById('toast');if(!t){t=document.createElement('div');t.id='toast';t.setAttribute('style','position:fixed;left:50%;bottom:80px;transform:translateX(-50%);z-index:80;background:var(--text);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.25);opacity:0;transition:opacity .15s');document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(toastT);toastT=setTimeout(()=>t.style.opacity='0',1800);}
+
+// ── multi-selección de pistas: poner varias en un disco de golpe (Serge) ──
+function trkRepaint(){ document.body.classList.toggle('trksel',TRKSEL); const tog=document.getElementById('trkseltog'); if(tog)tog.textContent=TRKSEL?'Hecho':'Seleccionar'; const n=TRKSET.size; document.getElementById('trkbar').classList.toggle('on',TRKSEL&&n>0); document.getElementById('trkcount').textContent=n+' pista'+(n===1?'':'s'); document.querySelectorAll('#app .track').forEach(el=>{ const on=TRKSET.has(+el.dataset.tid); el.classList.toggle('trkon',on); const m=el.querySelector('.trkmark'); if(m)m.textContent=on?'✓':''; }); }
+document.addEventListener('click',e=>{
+  if(e.target.closest('#trkseltog')){ e.preventDefault(); e.stopPropagation(); TRKSEL=!TRKSEL; if(!TRKSEL)TRKSET.clear(); trkRepaint(); return; }
+  if(TRKSEL){ const row=e.target.closest('#app .track'); if(row&&row.dataset.tid){ e.preventDefault(); e.stopPropagation(); const id=+row.dataset.tid; if(TRKSET.has(id))TRKSET.delete(id); else TRKSET.add(id); trkRepaint(); } }
+},true);
+document.getElementById('trkselclear').onclick=()=>{ TRKSET.clear(); trkRepaint(); };
+document.getElementById('trkselexit').onclick=()=>{ TRKSEL=false; TRKSET.clear(); trkRepaint(); };
+document.getElementById('trkapplydisc').onclick=async()=>{ const d=document.getElementById('trkdiscin').value.trim(); if(!d){toast('Pon un nº de disco');return;} const ids=[...TRKSET]; if(!ids.length)return; for(const id of ids){ try{ await editTrack(id,'disc_no',d); }catch(e){} } toast(ids.length+' pistas → disco '+d); TRKSET.clear(); TRKSEL=false; trkRepaint(); load(); };
 </script>
+<style>
+.trkmark{display:none;width:20px;height:20px;border-radius:50%;border:2px solid var(--border);align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:700;flex:none;margin-right:4px}
+body.trksel .trkmark{display:inline-flex}
+body.trksel .track{cursor:pointer}
+.track.trkon{background:var(--accent-bg)} .track.trkon .trkmark{background:var(--accent);border-color:var(--accent)}
+#trkbar{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:120;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 36px rgba(0,0,0,.4);padding:10px 14px;display:none;gap:10px;align-items:center;flex-wrap:wrap;max-width:94vw}
+#trkbar.on{display:flex} #trkbar input{width:64px} #trkbar button{padding:7px 12px}
+</style>
+<div id="trkbar">
+  <span id="trkcount" style="font-weight:600"></span>
+  <label style="font-size:13px;color:var(--text-2)">Disco <input id="trkdiscin" type="number" min="1" value="2"></label>
+  <button id="trkapplydisc" class="btn-accent">Poner en disco</button>
+  <button id="trkselclear">Deseleccionar</button>
+  <button id="trkselexit">Salir</button>
+</div>
 <script src="md.js" defer></script>
 <script src="icons.js" defer></script>
 <script src="nav.js" defer></script>

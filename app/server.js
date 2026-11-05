@@ -3098,6 +3098,25 @@ async function handleMergeAlbums(req, res) {
     return sendJSON(res, { ok: true, keep, dropped: drop });
   } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
 }
+// Combinar en BLOQUE (Serge): varios álbumes → uno. keep = el que se queda (si no se da, el de más pistas);
+// el resto se funden en él (reparent de releases → versiones, como el merge de a uno). Solo BD.
+async function handleMergeBulk(req, res) {
+  try {
+    const b = await readBody(req);
+    const ids = [...new Set((Array.isArray(b.ids) ? b.ids : []).map(x => parseInt(x, 10)).filter(Boolean))];
+    if (ids.length < 2) { res.writeHead(400); return res.end(JSON.stringify({ ok: false, error: 'elige al menos 2 álbumes' })); }
+    const exist = ids.filter(id => db.prepare('SELECT 1 FROM release_group WHERE id=?').get(id));
+    if (exist.length < 2) { res.writeHead(404); return res.end(JSON.stringify({ ok: false, error: 'álbumes no encontrados' })); }
+    let keep = parseInt(b.keep, 10) || 0;
+    if (!keep || !exist.includes(keep)) {   // por defecto, el que más pistas tiene (el "real")
+      keep = exist.map(id => ({ id, n: (Q.trackCountOf.get(id) || {}).n || 0 })).sort((a, z) => z.n - a.n || a.id - z.id)[0].id;
+    }
+    const drops = exist.filter(id => id !== keep);
+    for (const drop of drops) mergeAlbumsTx(keep, drop);
+    sseBroadcast('library');
+    return sendJSON(res, { ok: true, keep, dropped: drops, count: drops.length });
+  } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+}
 // Candidatos a combinar: otros álbumes del MISMO artista (para elegir el duplicado).
 function mergeCandidates(rg) {
   const a = db.prepare(`SELECT acn.artist_id aid FROM artist_credit_name acn JOIN release_group g ON g.artist_credit_id=acn.artist_credit_id WHERE g.id=? ORDER BY acn.position LIMIT 1`).get(rg);
@@ -3235,6 +3254,7 @@ http.createServer((req, res) => {
   if (u.pathname === '/api/history') return sendJSON(res, history(parseInt(u.searchParams.get('n'), 10), parseInt(u.searchParams.get('offset'), 10)));
   if (req.method === 'POST' && u.pathname === '/api/edit') return void handleEdit(req, res);
   if (req.method === 'POST' && u.pathname === '/api/album/merge') return void handleMergeAlbums(req, res);
+  if (req.method === 'POST' && u.pathname === '/api/album/merge-bulk') return void handleMergeBulk(req, res);
   if (req.method === 'POST' && u.pathname === '/api/album/make-primary') return void (async () => {
     try {
       const b = await readBody(req); const rg = parseInt(b.rg, 10), rel = parseInt(b.rel, 10);
