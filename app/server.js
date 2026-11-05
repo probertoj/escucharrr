@@ -402,6 +402,14 @@ async function handleLiderarrr(req, res, u) {
 // URIs de redirección (que el usuario registra en Spotify / que Last.fm usa de callback)
 const SPOTIFY_REDIRECT = 'http://127.0.0.1:' + PORT + '/api/spotify/callback';
 const LASTFM_CALLBACK = 'http://127.0.0.1:' + PORT + '/api/lastfm/callback';
+// Callback de Last.fm derivado del Host de la petición: si abres escucharrr por localhost, 127.0.0.1 o la IP
+// de la LAN (p. ej. desde el móvil), el navegador debe VOLVER a ese mismo origen tras autorizar — clavarlo a
+// 127.0.0.1 rompía esos casos. Last.fm honra el cb que le pasamos, así que no hace falta registrar callback.
+function lastfmCallbackFor(req) {
+  const host = (req && req.headers && req.headers.host) ? String(req.headers.host) : ('127.0.0.1:' + PORT);
+  if (!/^[A-Za-z0-9.\-:\[\]]+$/.test(host)) return LASTFM_CALLBACK;   // Host inválido/raro → fallback seguro
+  return 'http://' + host + '/api/lastfm/callback';
+}
 // Guarda spotify.json (clientId/clientSecret) con la Redirect URI fija; borra el token si cambian las claves.
 function saveSpotifyCfg(clientId, clientSecret) {
   const changed = !spotifyCfg || spotifyCfg.clientId !== clientId || spotifyCfg.clientSecret !== clientSecret;
@@ -1883,19 +1891,27 @@ async function handleLastfm(req, res, u) {
   try {
     if (sub === 'connect') {
       if (!(scrobCfg && scrobCfg.lastfm && scrobCfg.lastfm.apiKey && scrobCfg.lastfm.apiSecret)) { res.writeHead(302, { Location: '/settings.html?lastfm=noconfig' }); return res.end(); }
-      // con cb, Last.fm devuelve a nuestro callback con ?token=... (sin guardar nada en memoria)
-      const url = 'https://www.last.fm/api/auth/?api_key=' + encodeURIComponent(scrobCfg.lastfm.apiKey) + '&cb=' + encodeURIComponent(LASTFM_CALLBACK);
+      // con cb, Last.fm devuelve a nuestro callback con ?token=... (sin guardar nada en memoria). El cb se deriva
+      // del Host para que el navegador vuelva al MISMO origen desde el que abriste escucharrr.
+      const url = 'https://www.last.fm/api/auth/?api_key=' + encodeURIComponent(scrobCfg.lastfm.apiKey) + '&cb=' + encodeURIComponent(lastfmCallbackFor(req));
       res.writeHead(302, { Location: url }); return res.end();
     }
     if (sub === 'callback') {
       const token = u.searchParams.get('token');
-      if (!token) { res.writeHead(302, { Location: '/settings.html?lastfm=error' }); return res.end(); }
+      if (!token) {   // el usuario denegó el acceso, o Last.fm no devolvió token
+        const denied = u.searchParams.get('error') || 'sin_token';
+        console.error('[lastfm] callback sin token:', denied, u.search);
+        res.writeHead(302, { Location: '/settings.html?lastfm=error&reason=' + encodeURIComponent('Last.fm no devolvió un token (¿denegaste el acceso?).') }); return res.end();
+      }
       try { const j = await lfmAuthCall('auth.getSession', { token }); saveScrobbleCfg({ lastfm: { sessionKey: j.session.key } }); }
-      catch (e) { res.writeHead(302, { Location: '/settings.html?lastfm=error' }); return res.end(); }
+      catch (e) {   // el error REAL de Last.fm (firma, token no autorizado, etc.) — ya no se traga
+        console.error('[lastfm] auth.getSession falló:', e.message);
+        res.writeHead(302, { Location: '/settings.html?lastfm=error&reason=' + encodeURIComponent(e.message) }); return res.end();
+      }
       res.writeHead(302, { Location: '/settings.html?lastfm=ok' }); return res.end();
     }
     res.writeHead(404); res.end('{}');
-  } catch (e) { res.writeHead(302, { Location: '/settings.html?lastfm=error' }); res.end(); }
+  } catch (e) { console.error('[lastfm] error inesperado:', e.message); res.writeHead(302, { Location: '/settings.html?lastfm=error&reason=' + encodeURIComponent(e.message) }); res.end(); }
 }
 
 // ── scrobbling: now-playing (efímero) + submit (cola) + estado ──────────────
