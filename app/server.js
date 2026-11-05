@@ -921,6 +921,49 @@ function versionGroup(id, mbid, title) {
   if (list.length) list[0].primary = true;
   return list;
 }
+// Mapea una carpeta absoluta del disco (p. ej. release.source_dir) a {root, rel} para el navegador de
+// Carpetas (folders.html / /api/folders): root = índice de la raíz configurada, rel = ruta relativa dentro.
+// Devuelve null si la carpeta no cuelga de ninguna raíz vigilada. Comparación normalizada (Windows).
+// Normaliza SIN path.resolve: source_dir ya viene colapsado a una barra (\diskstation\…) y resolve lo
+// reinterpretaría como C:\… (relativo a disco). Solo colapsamos separadores y bajamos a minúsculas, igual
+// en los dos lados de la comparación (raíz UNC y ruta del álbum).
+function _nrmPath(p) { return String(p).replace(/[\\/]+/g, '\\').replace(/\\+$/, '').toLowerCase(); }
+function folderTarget(absDir) {
+  if (!absDir) return null;
+  const roots = (watchConfig() && watchConfig().music) || [];
+  const na = _nrmPath(absDir);
+  // segmentos de la ruta en su CASE ORIGINAL (el share puede ser case-sensitive: el rel debe ir con el case
+  // real, no en minúsculas, o readdir da ENOENT).
+  const parts = String(absDir).replace(/[\\/]+/g, '\\').replace(/\\+$/, '').split('\\').filter(Boolean);
+  for (let i = 0; i < roots.length; i++) {
+    const nr = _nrmPath(roots[i]);
+    if (na === nr) return { root: i, rel: '', path: absDir };
+    const pref = nr.endsWith('\\') ? nr : nr + '\\';
+    if (na.startsWith(pref)) {
+      const relSegs = na.slice(pref.length).split('\\').filter(Boolean).length;   // cuántos segmentos tras la raíz
+      const rel = parts.slice(parts.length - relSegs).join('\\');                  // esos segmentos, en case original
+      return { root: i, rel, path: absDir };
+    }
+  }
+  return null;
+}
+// Abre una carpeta en el Explorador del SO (Windows). Seguridad: SOLO rutas que cuelgan de una carpeta de
+// música configurada (nunca una ruta arbitraria del cliente). No mueve ni cambia nada: solo la muestra.
+async function handleReveal(req, res) {
+  const body = await readBody(req);
+  const p = String(body.path || '').trim();
+  if (!p) return sendJSON(res, { ok: false, error: 'falta la ruta' });
+  const roots = (watchConfig() && watchConfig().music) || [];
+  const np = _nrmPath(p);
+  const allowed = roots.some(r => { const nr = _nrmPath(r); return np === nr || np.startsWith(nr.endsWith('\\') ? nr : nr + '\\'); });
+  if (!allowed) return sendJSON(res, { ok: false, error: 'la ruta no está dentro de tus carpetas de música' });
+  if (process.platform !== 'win32') return sendJSON(res, { ok: false, error: 'abrir en el explorador solo está disponible en Windows' });
+  try {
+    const win = p.replace(/\//g, '\\');
+    cp.spawn('explorer.exe', [win], { detached: true, stdio: 'ignore' }).unref();   // explorer suele devolver 1; no es error
+    return sendJSON(res, { ok: true });
+  } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+}
 function album(id, relId) {
   const a = Q.album.get(id); if (!a) return null;
   a.genres = gmList((Q.genresOf.get(id).gs || '').split('|').filter(Boolean));
@@ -952,6 +995,24 @@ function album(id, relId) {
   a.release_id = selRel;
   const selMeta = rels.find(r => r.id === selRel) || null;
   if (selMeta && selMeta.format) a.format = selMeta.format;   // formato de la copia mostrada
+  // Carpeta en disco de la copia mostrada (para «Ir a la carpeta», estilo Roon — útil en discos sin
+  // identificar). Tomamos el directorio de un fichero REAL de la copia (ruta con mayúsculas y UNC correcto,
+  // a diferencia de source_dir que viene normalizado). Si es una carpeta de disco (CD1/CD2…), subimos al
+  // álbum. Así «Abrir en el Explorador» recibe una ruta válida y las migas muestran la ruta de verdad.
+  a.folder = null;
+  if (selRel) {
+    try {
+      // Varias rutas por si la copia tiene ficheros en más de una ubicación (p. ej. C: y el NAS): nos
+      // quedamos con la PRIMERA que cuelga de una raíz vigilada (folderTarget devuelve null si no mapea).
+      const files = db.prepare('SELECT DISTINCT lf.path FROM local_file lf JOIN track tr ON tr.id=lf.track_id JOIN medium m ON m.id=tr.medium_id WHERE m.release_id=? AND lf.path IS NOT NULL LIMIT 12').all(selRel);
+      for (const f of files) {
+        let d = path.dirname(f.path);
+        if (/^(cd|dis[ck]|disco|disque|vol(ume)?|digital\s*media)\s*\.?\s*\d/i.test(path.basename(d))) d = path.dirname(d);   // carpeta de disco → sube al álbum
+        const t = folderTarget(d);
+        if (t) { a.folder = t; break; }
+      }
+    } catch (e) {}
+  }
   // versiones hermanas (otros release_groups con el mismo título base / mbid): otros álbumes "versión".
   const sib = versionGroup(id, a.mbid, a.title).filter(v => v.id !== id)
     .map(v => ({ id: v.id, title: v.title, year: v.year, format: v.format, tracks: v.tracks, primary: v.primary ? 1 : 0 }));
@@ -2862,6 +2923,7 @@ http.createServer((req, res) => {
   if (u.pathname === '/api/artist/editorial' && req.method === 'GET') return void handleArtistEditorial(req, res, u);
   if (u.pathname === '/api/artist/search' && req.method === 'GET') { const id = parseInt(u.searchParams.get('id'), 10) || 0; const q = (u.searchParams.get('q') || '').trim(); if (q.length < 2) return sendJSON(res, { ok: true, items: [] }); return sendJSON(res, { ok: true, items: Q.artistSearch.all(id, '%' + q + '%', q).map(a => ({ id: a.id, name: a.name, disambiguation: a.disambiguation, album_count: (Q.artistAlbumCount.get(a.id) || {}).n || 0 })) }); }
   if (u.pathname === '/api/album/reanalyze' && req.method === 'POST') return void handleReanalyze(req, res);
+  if (u.pathname === '/api/reveal' && req.method === 'POST') return void handleReveal(req, res);   // abrir carpeta en el Explorador del SO
   if (u.pathname === '/api/playlists' || u.pathname === '/api/playlist' || u.pathname.startsWith('/api/playlist/')) return void handlePlaylists(req, res, u);
   if (u.pathname === '/api/smartlists' || u.pathname === '/api/smartlist' || u.pathname.startsWith('/api/smartlist/')) return void handleSmart(req, res, u);
   try {
