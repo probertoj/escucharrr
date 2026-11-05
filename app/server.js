@@ -228,6 +228,57 @@ const LIDERARRR_PATH = path.join(__dirname, 'liderarrr.json');
 let liderarrrCfg = null;
 function loadLiderarrr() { try { liderarrrCfg = fs.existsSync(LIDERARRR_PATH) ? JSON.parse(fs.readFileSync(LIDERARRR_PATH, 'utf8')) : null; } catch (e) { liderarrrCfg = null; } return liderarrrCfg; }
 loadLiderarrr();
+
+// ── Plex (SOLO LECTURA): scrapea las fechas de edición y rellena las que nos faltan. No reproduce ni sincroniza. ──
+const PLEX_PATH = path.join(__dirname, 'plex.json');
+const plexLib = require('../data-layer/plex');
+let plexCfg = null;
+function loadPlex() { try { plexCfg = fs.existsSync(PLEX_PATH) ? JSON.parse(fs.readFileSync(PLEX_PATH, 'utf8')) : null; } catch (e) { plexCfg = null; } return plexCfg; }
+loadPlex();
+function plexUrl() { return plexLib.cleanUrl(plexCfg && plexCfg.url); }
+function plexConfigured() { return !!(plexUrl() && plexCfg && plexCfg.token); }
+function savePlex(url, token) {
+  const clean = plexLib.cleanUrl(url);
+  if (clean) {
+    const prev = plexCfg || {};
+    const finalTok = (token != null && String(token).trim() !== '') ? String(token).trim() : prev.token;   // en blanco = conserva el guardado
+    const cfg = { url: clean }; if (finalTok) cfg.token = finalTok;
+    fs.writeFileSync(PLEX_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+  } else { try { if (fs.existsSync(PLEX_PATH)) fs.unlinkSync(PLEX_PATH); } catch (e) {} }
+  loadPlex(); return plexUrl();
+}
+// Aplica una lista de álbumes de Plex ({artist,title,date}) a la biblioteca: rellena release_group.first_release
+// SOLO donde nos falta la fecha completa (año suelto o vacío). Nunca pisa una fecha ya completa. Solo nuestra BD.
+function applyPlexDates(albums) {
+  const idx = new Map();   // matchKey -> {id, first_release}
+  for (const a of db.prepare('SELECT rg.id, rg.first_release, v.artist, v.title FROM release_group rg JOIN v_album v ON v.id=rg.id').all()) {
+    idx.set(lidMatchKey(a.artist, a.title), { id: a.id, cur: a.first_release || '' });
+  }
+  const upd = db.prepare(`UPDATE release_group SET first_release=?, updated_at=datetime('now') WHERE id=?`);
+  const prov = db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at)
+      VALUES('release_group',?,'first_release','plex',?,datetime('now'))
+      ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source='plex', source_ref=excluded.source_ref, fetched_at=datetime('now')`);
+  let withDate = 0, matched = 0, updated = 0, already = 0;
+  const seen = new Set();
+  for (const al of (albums || [])) {
+    if (!al || !al.date) continue;   // Plex no tiene fecha completa para este
+    withDate++;
+    const k = lidMatchKey(al.artist, al.title);
+    const hit = idx.get(k);
+    if (!hit || seen.has(hit.id)) continue;
+    matched++;
+    if (hit.cur && hit.cur.length >= 10) { already++; continue; }   // ya tenemos fecha completa: no se pisa
+    try { upd.run(al.date, hit.id); prov.run(hit.id, al.date); updated++; seen.add(hit.id); } catch (e) {}
+  }
+  return { plexAlbums: (albums || []).length, plexWithDate: withDate, matched, updated, alreadyComplete: already };
+}
+async function backfillPlexDates() {
+  if (!plexConfigured()) throw new Error('Plex no configurado');
+  const albums = await plexLib.listMusicAlbums(plexCfg);
+  const r = applyPlexDates(albums);
+  if (r.updated) sseBroadcast('library');
+  return r;
+}
 function liderarrrUrl() { const u = liderarrrCfg && liderarrrCfg.url; return u ? String(u).replace(/\/+$/, '') : ''; }
 // Liderarrr usa Basic Auth OPCIONAL (env LIDERARRR_AUTH="usuario:contraseña", o solo contraseña → usuario
 // "liderarrr"). Si el usuario guarda una contraseña, mandamos Authorization: Basic base64(usuario:contraseña).
@@ -2525,6 +2576,7 @@ async function handleConfig(req, res, u) {
           builtin: usingBuiltin, canConnect: !!(eff.apiKey && eff.apiSecret) },
         spotify: { configured: spotifyConfigured(), authorized: !!spotifyTok, clientId: (spotifyCfg && spotifyCfg.clientId) || '', redirectUri: SPOTIFY_REDIRECT, matched: Q.spotifyCount.get().n },
         liderarrr: { url: liderarrrUrl(), connected: !!liderarrrUrl(), hasAuth: !!(liderarrrCfg && liderarrrCfg.pass), user: (liderarrrCfg && liderarrrCfg.user) || '' },
+        plex: { url: plexUrl(), connected: plexConfigured(), hasToken: !!(plexCfg && plexCfg.token) },
         acoustid: { hasKey: !!acoustidKey(), fpcalcPath: acoustidFpcalc(), fpcalc: await acoustidLib.fpcalcAvailable(acoustidFpcalc()) },
         enabled: scrobble.enabledServices(scrobEff() || {}), pending: scrobble.pendingCount(db, scrobEff() || {}) });
     }
@@ -2572,6 +2624,20 @@ async function handleConfig(req, res, u) {
         if (r.status === 401 || r.status === 403) return sendJSON(res, { ok: false, error: 'Liderarrr responde ' + r.status + ': requiere autenticación. Tu Liderarrr tiene LIDERARRR_AUTH activado — pon la contraseña (y el usuario si no es «liderarrr»).' });
         return sendJSON(res, { ok: false, error: 'Responde con HTTP ' + r.status + ' (¿es la URL correcta?).' });
       } catch (e) { saveLiderarrr(''); return sendJSON(res, { ok: false, error: 'No responde: ' + e.message }); }
+    }
+    // Plex (solo lectura): guarda URL+token y valida con /identity. Clear para desconectar.
+    if (sub === 'plex') {
+      if (body.clear) { savePlex(''); return sendJSON(res, { ok: true, connected: false }); }
+      const url = String(body.url || '').trim(); if (!url) return sendJSON(res, { ok: false, error: 'Pon la URL de tu Plex (p. ej. http://192.168.1.50:32400).' });
+      savePlex(url, body.token);
+      if (!plexConfigured()) return sendJSON(res, { ok: false, error: 'Falta el token de Plex (X-Plex-Token).' });
+      try {
+        const p = await plexLib.ping(plexCfg);
+        if (p.ok) return sendJSON(res, { ok: true, connected: true, url: plexUrl() });
+        savePlex('');
+        if (p.status === 401) return sendJSON(res, { ok: false, error: 'Plex responde 401: el token no es válido.' });
+        return sendJSON(res, { ok: false, error: 'Plex responde HTTP ' + p.status + ' (¿URL correcta?).' });
+      } catch (e) { savePlex(''); return sendJSON(res, { ok: false, error: 'No responde: ' + e.message }); }
     }
     if (sub === 'acoustid') {   // identificación por huella: clave de acoustid.org + ruta opcional de fpcalc
       if (body.clear) { saveAcoustid('', ''); return sendJSON(res, { ok: true, hasKey: false }); }
@@ -3158,6 +3224,10 @@ http.createServer((req, res) => {
   if (u.pathname.startsWith('/api/spotify/')) return void handleSpotify(req, res, u);
   if (u.pathname.startsWith('/api/lastfm/')) return void handleLastfm(req, res, u);
   if (u.pathname.startsWith('/api/liderarrr/')) return void handleLiderarrr(req, res, u);
+  if (u.pathname === '/api/plex/import-dates' && req.method === 'POST') return void (async () => {
+    try { const r = await backfillPlexDates(); return sendJSON(res, { ok: true, ...r }); }
+    catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+  })();
   if (u.pathname === '/api/config' || u.pathname.startsWith('/api/config/')) return void handleConfig(req, res, u);
   if (u.pathname.startsWith('/api/dsp/')) return void handleDsp(req, res, u);
   if (u.pathname.startsWith('/api/radio/')) return void handleRadio(req, res, u);
