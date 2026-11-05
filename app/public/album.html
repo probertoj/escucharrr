@@ -61,15 +61,17 @@ function renderAlbum(a){
   const edCountry=(a.editions||[]).map(e=>e.country).find(Boolean)||null;   // país de edición
   const edBarcode=(a.editions||[]).map(e=>e.barcode).find(Boolean)||null;   // código de barras (EAN/UPC)
   albumTracks=a.tracks||[];
-  // Enlaces externos del álbum (Serge): ficha en Last.fm/MusicBrainz y búsqueda en RateYourMusic/Record Club
-  // (estos dos no exponen id estable, así que enlazamos a su buscador: siempre resuelve).
+  // Enlaces externos del álbum. Record Club: abre el disco DIRECTO por su MBID de release-group
+  // (record.club/import/<mbid>), como hace Liderarrr; cae a búsqueda solo si no está identificado.
+  // Discogs/RateYourMusic/Last.fm: por nombre (no exponen id estable para esto).
   const _albQ=[a.artist,a.title].filter(Boolean).join(' ');
   const _lfmUrl=(a.artist&&a.title)?`https://www.last.fm/music/${encodeURIComponent(a.artist)}/${encodeURIComponent(a.title)}`:null;
   const _mbUrl=a.mbid?`https://musicbrainz.org/release-group/${a.mbid}`:null;
+  const _dcUrl=_albQ?`https://www.discogs.com/search/?q=${encodeURIComponent(_albQ)}&type=master`:null;
   const _rymUrl=_albQ?`https://rateyourmusic.com/search?searchterm=${encodeURIComponent(_albQ)}&searchtype=l`:null;
-  const _rcUrl=_albQ?`https://record.club/search?q=${encodeURIComponent(_albQ)}`:null;
+  const _rcUrl=a.mbid?`https://record.club/import/${a.mbid}`:(_albQ?`https://record.club/search?q=${encodeURIComponent(_albQ)}`:null);
   const _lnk=(u,t)=>u?`<a href="${u}" target="_blank" rel="noopener" style="color:var(--accent)">${t}</a>`:'';
-  const extLinks=(_lfmUrl||_mbUrl||_rymUrl||_rcUrl)?`<div style="margin-top:9px;font-size:13px;display:flex;gap:14px;flex-wrap:wrap;align-items:center"><span class="k" style="opacity:.7">Enlaces</span>${_lnk(_lfmUrl,'Last.fm')}${_lnk(_mbUrl,'MusicBrainz')}${_lnk(_rymUrl,'RateYourMusic')}${_lnk(_rcUrl,'Record Club')}</div>`:'';
+  const extLinks=(_lfmUrl||_mbUrl||_dcUrl||_rymUrl||_rcUrl)?`<div style="margin-top:9px;font-size:13px;display:flex;gap:14px;flex-wrap:wrap;align-items:center"><span class="k" style="opacity:.7">Enlaces</span>${_lnk(_mbUrl,'MusicBrainz')}${_lnk(_dcUrl,'Discogs')}${_lnk(_rcUrl,'Record Club')}${_lnk(_lfmUrl,'Last.fm')}${_lnk(_rymUrl,'RateYourMusic')}</div>`:'';
   const multiDisc=(a.tracks||[]).some(t=>t.disc>1);
   const trackRow=(t,i)=>`<div class="track"><button class="play" data-idx="${i}" aria-label="Reproducir" title="Reproducir" style="border:none;background:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0 4px;display:inline-flex;align-items:center">${window.icon('play',14)}</button><span class="pos">${t.pos}</span><span style="flex:1;min-width:0">${esc(t.title)}${(t.artist&&a.artist&&t.artist!==a.artist)?`<div style="font-size:12px;color:var(--text-2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.artist_id?`<a href="artist.html?id=${t.artist_id}" style="color:var(--text-2)">${esc(t.artist)}</a>`:esc(t.artist)}</div>`:''}${(t.work||t.composers)?`<div style="font-size:12px;color:var(--text-2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.work_id?`<a href="work.html?id=${t.work_id}" style="color:var(--text-2)">${esc(t.work||'obra')}</a>`:esc(t.work||'')}${t.composers?` · ${esc(t.composers.replace(/,/g,', '))}`:''}</div>`:''}</span><span class="edittrk" data-idx="${i}" title="Editar pista (nº, título, artista)" style="cursor:pointer;color:var(--text-2);font-size:14px;padding:0 6px;display:inline-flex;align-items:center;opacity:.6">${window.icon('edit',14)}</span><span class="addtrk" data-tid="${t.trackId}" title="Añadir a una lista" style="cursor:pointer;color:var(--text-2);font-size:14px;padding:0 6px;display:inline-flex;align-items:center">${window.icon('plus',15)}</span><span class="dur">${mmss(t.length_ms)}</span></div>`;
   let tracks='';
