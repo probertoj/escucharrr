@@ -107,6 +107,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input id="obsvault" placeholder="ruta del vault" style="flex:1;min-width:200px"><button id="browseobs">Explorar…</button><input id="obsfolder" placeholder="carpeta de álbumes" style="width:160px"><button id="saveobs">Guardar</button></div></div>
     <div class="row"><div class="lbl"><div class="k">Reescanear la biblioteca ahora</div><div class="d" id="rescanstatus">vuelve a escanear las carpetas y la fuente Obsidian</div></div><button id="rescanbtn">Reescanear ahora</button></div>
     <div class="row"><div class="lbl"><div class="k">Reparar renombrados / movimientos</div><div class="d" id="repairstatus">si renombraste o moviste carpetas en tu disco, re-vincula los ficheros a su ruta nueva por identidad de contenido (sin re-escanear todo) y funde duplicados. Solo lee el disco: no mueve ni renombra nada tuyo.</div></div><button id="repairbtn">Reparar ahora</button></div>
+    <div class="row"><div class="lbl"><div class="k">Identificar los «no identificados»</div><div class="d" id="idallstatus">reintenta identificar con MusicBrainz todos los álbumes sin identificar de golpe (por nº de pistas y duraciones). Útil tras corregir nombres o artistas: no hay que ir uno a uno con la lupa. Va en segundo plano; solo aplica las coincidencias fiables.</div></div><button id="idallbtn">Identificar todos</button></div>
     <div class="row" style="display:block"><div class="k" style="margin-bottom:6px">Ficheros saltados en el último escaneo <span id="skipcount" style="color:var(--muted);font-weight:400"></span></div><div id="skiplist" class="d" style="max-height:220px;overflow:auto;font-size:12px;line-height:1.5">cargando…</div></div>
   </div></div>
 
@@ -433,6 +434,24 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('rescanbtn').addEventListener('click', async () => { const b = document.getElementById('rescanbtn'), st = document.getElementById('rescanstatus'); b.disabled = true; b.textContent = 'Reescaneando…'; st.textContent = 'reescaneando… (puede tardar)'; try { const r = await fetch('/api/config/rescan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ what: ['music', 'vault'] }) }).then(x => x.json()); if (r.ok) { const m = (r.music || []).map(x => x.result).filter(Boolean).join(' · '); st.textContent = 'Listo. ' + (m || '') + (r.vault ? ' · ' + r.vault : ''); } else st.textContent = 'Error: ' + (r.error || ''); } catch (e) { st.textContent = 'Error de red.'; } b.disabled = false; b.textContent = 'Reescanear ahora'; });
   const repairBtn = document.getElementById('repairbtn');
   if (repairBtn) repairBtn.addEventListener('click', async () => { const b = repairBtn, st = document.getElementById('repairstatus'); const prev = st.textContent; b.disabled = true; b.textContent = 'Reparando…'; st.textContent = 'buscando renombrados y moviéndolos en la base de datos… (puede tardar en carpetas de red)'; try { const r = await fetch('/api/config/repair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(x => x.json()); if (r.ok) st.textContent = `Listo. ${r.orphans} huérfano(s) · ${r.rebound} re-vinculado(s) · ${r.merged} duplicado(s) fundido(s)` + (r.unresolved ? ` · ${r.unresolved} sin resolver (borrados de verdad)` : '') + '.'; else st.textContent = 'Error: ' + (r.error || ''); } catch (e) { st.textContent = 'Error de red.'; } b.disabled = false; b.textContent = 'Reparar ahora'; });
+  // identificar todos los «no identificados» (lote en 2º plano, con progreso y cancelación)
+  const idallBtn = document.getElementById('idallbtn'), idallSt = document.getElementById('idallstatus');
+  const IDALL_BASE = 'reintenta identificar con MusicBrainz todos los álbumes sin identificar de golpe (por nº de pistas y duraciones). Útil tras corregir nombres o artistas: no hay que ir uno a uno con la lupa. Va en segundo plano; solo aplica las coincidencias fiables.';
+  let idallPoll = null;
+  function idallRender(s) {
+    if (!idallBtn) return;
+    if (s.running) { idallBtn.textContent = 'Detener'; idallBtn.disabled = false; idallSt.textContent = `Identificando… ${s.done}/${s.total} · ${s.identified} identificados` + (s.skipped ? ` · ${s.skipped} sin match` : '') + '. En segundo plano; puedes cerrar Ajustes.'; }
+    else { idallBtn.textContent = 'Identificar todos'; idallBtn.disabled = false; idallSt.textContent = ((s.done != null && (s.done || s.identified)) ? `Última vez: ${s.identified} identificados de ${s.done} intentados. ` : IDALL_BASE + ' ') + (s.unidentified ? `Quedan ${s.unidentified} sin identificar.` : 'Todos identificados.'); }
+  }
+  function idallTick() { fetch('/api/identify/all/status').then(r => r.json()).then(s => { idallRender(s); if (s.running) { if (!idallPoll) idallPoll = setInterval(idallTick, 2500); } else if (idallPoll) { clearInterval(idallPoll); idallPoll = null; } }).catch(() => {}); }
+  if (idallBtn) {
+    idallBtn.addEventListener('click', async () => {
+      const stopping = idallBtn.textContent === 'Detener'; idallBtn.disabled = true;
+      try { const r = await fetch(stopping ? '/api/identify/all/stop' : '/api/identify/all', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(x => x.json()); idallRender(r); if (r.running && !idallPoll) idallPoll = setInterval(idallTick, 2500); }
+      catch (e) { idallSt.textContent = 'Error de red.'; idallBtn.disabled = false; }
+    });
+    idallTick();   // estado inicial + reanuda el polling si ya hay un lote en marcha
+  }
 
   // ── copia de seguridad: crear / listar / descargar / restaurar / borrar ──
   let BACKUPS = [];

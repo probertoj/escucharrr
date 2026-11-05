@@ -101,6 +101,7 @@ async function suggest(db, rgId, opts = {}) {
   if (!profile) throw new Error('release_group ' + rgId + ' no existe');
   const mb = opts.mb || makeMb();
   const onProgress = opts.onProgress || (() => {});
+  const maxFetches = opts.candidateFetches || CANDIDATE_FETCHES;   // el lote «identificar todos» baja esto para ir más rápido
   const esc = (s) => String(s).replace(/["\\]/g, '\\$&');
   // 1) buscar ediciones candidatas por artista+título (barato: una petición; sin duraciones aún)
   const query = `artist:"${esc(profile.artist)}" AND release:"${esc(profile.title)}"`;
@@ -115,7 +116,7 @@ async function suggest(db, rgId, opts = {}) {
   }));
   // 2) prefiltro: prioriza nº de pistas cercano y buen score de texto; pide duraciones solo a los mejores.
   cands.sort((a, b) => (Math.abs((a.trackCount || 0) - profile.trackCount) - Math.abs((b.trackCount || 0) - profile.trackCount)) || (b.searchScore - a.searchScore));
-  const top = cands.slice(0, CANDIDATE_FETCHES);
+  const top = cands.slice(0, maxFetches);
   // 3) traer duraciones de cada candidato y puntuar
   const scored = [];
   for (let i = 0; i < top.length; i++) {

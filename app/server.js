@@ -2851,6 +2851,57 @@ async function handleIdentifyApply(req, res) {
 // POST /api/album/reanalyze {rg} → recalcula loudness/ReplayGain (analyze.js) y la barra
 // de onda (waveform.js) SOLO de ese disco, con --force, en procesos aparte (WAL + busy_timeout
 // sostienen al escritor extra). Fire-and-forget: responde al momento y avisa por SSE al terminar.
+// ── IDENTIFICAR TODOS los «no identificados» (lote, estilo Roon/Liderarrr) ───────
+// Tras corregir nombres/artistas, reintenta la identificación de cada release_group SIN mbid contra
+// MusicBrainz y aplica la coincidencia SOLO si es fiable (mismo nº de pistas + barcode o buen perfil de
+// duraciones). Proceso de fondo, una sola instancia, cancelable; salta los ya intentados cuyo título no
+// cambió desde la última vez (re-ejecutar es barato y se centra en lo que tocaste).
+let _idAll = null;
+function identifyAllStatus() {
+  const unidentified = (() => { try { return db.prepare('SELECT COUNT(*) n FROM release_group WHERE mbid IS NULL').get().n; } catch (e) { return 0; } })();
+  if (!_idAll) return { running: false, unidentified };
+  return { running: _idAll.running, total: _idAll.total, done: _idAll.done, identified: _idAll.identified, skipped: _idAll.skipped, failed: _idAll.failed, unidentified };
+}
+function startIdentifyAll() {
+  if (_idAll && _idAll.running) return identifyAllStatus();
+  const rgs = db.prepare(`SELECT rg.id, COALESCE((SELECT ue.value FROM user_edit ue WHERE ue.subject_type='release_group' AND ue.subject_id=rg.id AND ue.field='title'), rg.title) AS title
+     FROM release_group rg WHERE rg.mbid IS NULL
+       AND EXISTS (SELECT 1 FROM "release" rel JOIN medium m ON m.release_id=rel.id JOIN track tr ON tr.medium_id=m.id WHERE rel.release_group_id=rg.id)
+     ORDER BY rg.id`).all();
+  const triedStmt = db.prepare(`SELECT source_ref FROM provenance WHERE subject_type='release_group' AND subject_id=? AND field='identify-auto'`);
+  const pending = rgs.filter(r => { const t = triedStmt.get(r.id); return !t || t.source_ref !== r.title; });
+  _idAll = { running: true, total: pending.length, done: 0, identified: 0, skipped: 0, failed: 0, startedAt: Date.now() };
+  (async () => {
+    const mb = identifyAlbum.makeMb();
+    const markTried = db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at)
+       VALUES('release_group',?,'identify-auto','auto',?,datetime('now'))
+       ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source_ref=excluded.source_ref, fetched_at=datetime('now')`);
+    let anyApplied = false;
+    for (const r of pending) {
+      if (!_idAll.running) break;   // cancelado
+      try {
+        const { candidates, profile } = await identifyAlbum.suggest(db, r.id, { mb, candidateFetches: 4 });
+        const top = candidates[0];
+        if (top && top.trackCount === profile.trackCount && (top.parts.barcode > 0 || (top.parts.dur || 0) >= 0.80)) {
+          await identifyAlbum.applyMbid(db, r.id, top.mbid, { mb });
+          _idAll.identified++; anyApplied = true;
+        } else { _idAll.skipped++; }
+        try { markTried.run(r.id, r.title); } catch (e) {}
+      } catch (e) { _idAll.failed++; }
+      _idAll.done++;
+      if (_idAll.done % 3 === 0) sseBroadcast('library');
+    }
+    _idAll.running = false; _idAll.finishedAt = Date.now();
+    sseBroadcast('library');
+    console.log(`[identify-all] listo: ${_idAll.identified} identificados, ${_idAll.skipped} sin match fiable, ${_idAll.failed} error (de ${_idAll.total})`);
+    if (anyApplied) {   // enriquecer y bajar portadas de lo recién identificado — UNA pasada de cada, tras el lote
+      _spawnIngest([path.join(_DL, 'enrich.js'), '--db', DB_PATH, '--have-mbid']).then(o => { if (o) console.log('  [identify-all] enrich:', o); sseBroadcast('library'); }).catch(() => {});
+      spawnCoversBackfill('identify-all');
+    }
+  })();
+  return identifyAllStatus();
+}
+
 async function handleReanalyze(req, res) {
   try {
     const b = await readBody(req);
@@ -3060,6 +3111,9 @@ http.createServer((req, res) => {
   if (u.pathname === '/api/lyrics') return void getLyrics(parseInt(u.searchParams.get('track'), 10)).then(r => sendJSON(res, r)).catch(() => sendJSON(res, { found: false }));
   if (u.pathname === '/api/identify' && req.method === 'GET') return void handleIdentifySuggest(req, res, u);
   if (u.pathname === '/api/identify/apply' && req.method === 'POST') return void handleIdentifyApply(req, res);
+  if (u.pathname === '/api/identify/all' && req.method === 'POST') return void sendJSON(res, { ok: true, ...startIdentifyAll() });
+  if (u.pathname === '/api/identify/all/status' && req.method === 'GET') return void sendJSON(res, { ok: true, ...identifyAllStatus() });
+  if (u.pathname === '/api/identify/all/stop' && req.method === 'POST') { if (_idAll) _idAll.running = false; return void sendJSON(res, { ok: true, ...identifyAllStatus() }); }
   if (u.pathname === '/api/artist/merge' && req.method === 'POST') return void handleArtistMerge(req, res);
   if (u.pathname === '/api/artist/edit' && req.method === 'POST') return void handleArtistEdit(req, res);
   if (u.pathname === '/api/artist/editorial' && req.method === 'GET') return void handleArtistEditorial(req, res, u);
