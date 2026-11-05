@@ -24,6 +24,7 @@
     zone: '<rect x="6" y="3" width="12" height="18" rx="2.5"/><circle cx="12" cy="14" r="3.6"/><circle cx="12" cy="7" r="1.1"/>',
     zonegroup: '<rect x="3" y="6" width="10" height="14" rx="2.2"/><circle cx="8" cy="14" r="2.5"/><circle cx="8" cy="9" r="1"/><path d="M16 6.5h1.8A2.2 2.2 0 0 1 20 8.7v9.1a2.2 2.2 0 0 1-2.2 2.2H16"/>',
     lyrics: '<path d="M5 7h14M5 12h14M5 17h9"/>',
+    quill: '<path d="M4.5 19.5c2-6.5 7.5-12.5 15-15.5-1 7.5-5.5 13-12 15.5z"/><path d="M4.5 19.5l4.5-4.5"/><path d="M9.5 10.5l4 4"/>',
     queue: '<path d="M4 7h11M4 12h11M4 17h7"/><path d="M18 14.5 22 17l-4 2.5z" fill="currentColor" stroke="none"/>',
     shuffle: '<path d="M4 7h4l9 10h3"/><path d="M4 17h4l9-10h3"/><path d="M18 4l3 3-3 3M18 14l3 3-3 3"/>',
     repeat: '<path d="M17 2.5 20.5 6 17 9.5"/><path d="M20.5 6H8A4.5 4.5 0 0 0 3.5 10.5v.5"/><path d="M7 21.5 3.5 18 7 14.5"/><path d="M3.5 18H16a4.5 4.5 0 0 0 4.5-4.5v-.5"/>',

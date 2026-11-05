@@ -31,6 +31,7 @@
       { href: 'index.html', label: 'Álbumes', ico: 'library', root: true },
       { href: 'tracks.html', label: 'Pistas', ico: 'music' },
       { href: 'works.html', label: 'Obras', ico: 'lyrics' },
+      { href: 'composers.html', label: 'Compositores', ico: 'quill' },
       { href: 'playlists.html', label: 'Listas', ico: 'lists' },
       { href: 'smartlists.html', label: 'Inteligentes', ico: 'filter' },
       { href: 'folders.html', label: 'Carpetas', ico: 'folder' },

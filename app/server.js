@@ -3596,6 +3596,33 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/tracks/facets') return sendJSON(res, trackFacets());
     if (u.pathname === '/api/folders') return sendJSON(res, folderList({ root: u.searchParams.get('root'), path: u.searchParams.get('path') }));
     if (u.pathname === '/api/works') return sendJSON(res, { items: db.prepare(`SELECT w.id, w.title, w.type, (SELECT group_concat(DISTINCT a.name) FROM credit c JOIN artist a ON a.id=c.artist_id WHERE c.entity_type='work' AND c.entity_id=w.id AND c.role='composición') composer, (SELECT COUNT(DISTINCT tr.id) FROM recording r JOIN track tr ON tr.recording_id=r.id WHERE r.work_id=w.id) perf FROM work w ORDER BY w.title`).all() });
+    if (u.pathname === '/api/composers') {
+      // navegador de compositores (Roon: composer_browser): artistas con crédito de composición sobre obras,
+      // con nº de obras y de álbumes donde suenan. Solo los que tienen al menos una obra interpretada o no.
+      const items = db.prepare(`
+        SELECT a.id, a.name, COUNT(DISTINCT c.entity_id) nworks,
+          (SELECT COUNT(DISTINCT rg.id) FROM credit c2 JOIN recording r ON r.work_id=c2.entity_id
+             JOIN track tr ON tr.recording_id=r.id JOIN medium m ON m.id=tr.medium_id
+             JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id
+             WHERE c2.entity_type='work' AND c2.role LIKE 'compos%' AND c2.artist_id=a.id) nalbums
+        FROM artist a JOIN credit c ON c.artist_id=a.id AND c.entity_type='work' AND c.role LIKE 'compos%'
+        GROUP BY a.id, a.name HAVING nworks>0 ORDER BY a.name COLLATE NOCASE`).all();
+      return sendJSON(res, { count: items.length, items });
+    }
+    if (u.pathname === '/api/composer') {
+      const id = parseInt(u.searchParams.get('id'), 10);
+      const a = db.prepare('SELECT id, name FROM artist WHERE id=?').get(id);
+      if (!a) { res.writeHead(404); return res.end('{}'); }
+      const works = db.prepare(`SELECT DISTINCT w.id, w.title, w.type FROM work w
+        JOIN credit c ON c.entity_id=w.id AND c.entity_type='work' AND c.role LIKE 'compos%' AND c.artist_id=?
+        ORDER BY w.title COLLATE NOCASE`).all(id);
+      const albQ = db.prepare(`SELECT DISTINCT rg.id, rg.title FROM recording r
+        JOIN track tr ON tr.recording_id=r.id JOIN medium m ON m.id=tr.medium_id
+        JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id
+        WHERE r.work_id=? ORDER BY rg.title COLLATE NOCASE`);
+      for (const w of works) w.albums = albQ.all(w.id);
+      return sendJSON(res, { id: a.id, name: a.name, works });
+    }
     if (u.pathname === '/api/skipped') {
       let total = 0, items = [], byReason = [];
       try {
