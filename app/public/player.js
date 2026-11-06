@@ -83,8 +83,11 @@ window.player = (function () {
   try { const p = JSON.parse(localStorage.getItem(PEQKEY)); if (p) { peqOn = !!p.on; if (Array.isArray(p.bands)) peqBands = p.bands.map(b => ({ type: b.type | 0, freq: +b.freq || 1000, q: +b.q || 1, gain: +b.gain || 0 })).slice(0, 16); } } catch (e) {}
   let convOn = false, convFile = '';
   try { const c = JSON.parse(localStorage.getItem(CONVKEY)); if (c) { convOn = !!c.on; convFile = c.file || ''; } } catch (e) {}
+  let cfOn = false, cfNodes = [];   // crossfeed para auriculares (Roon crossfeed): mezcla cruzada L↔R filtrada y retrasada
+  try { cfOn = localStorage.getItem('escucharrr.crossfeed') === '1'; } catch (e) {}
   const persistPeq = () => { try { localStorage.setItem(PEQKEY, JSON.stringify({ on: peqOn, bands: peqBands })); } catch (e) {} };
   const persistConv = () => { try { localStorage.setItem(CONVKEY, JSON.stringify({ on: convOn, file: convFile })); } catch (e) {} };
+  const persistCf = () => { try { localStorage.setItem('escucharrr.crossfeed', cfOn ? '1' : '0'); } catch (e) {} };
   // normalización ReplayGain: 'track' (cada tema a -18 LUFS) | 'album' (misma ganancia por disco, conserva dinámica) | 'off'
   let rgMode = 'track'; try { const m = localStorage.getItem(RGKEY); if (m === 'track' || m === 'album' || m === 'off') rgMode = m; } catch (e) {}
   const persistRg = () => { try { localStorage.setItem(RGKEY, rgMode); } catch (e) {} };
@@ -126,7 +129,8 @@ window.player = (function () {
     try { dspIn.disconnect(); } catch (e) {}
     peqNodes.forEach(n => { try { n.disconnect(); } catch (e) {} });
     if (convNode) { try { convNode.disconnect(); } catch (e) {} }
-    peqNodes = [];
+    cfNodes.forEach(n => { try { n.disconnect(); } catch (e) {} });
+    peqNodes = []; cfNodes = [];
     let node = dspIn;
     if (peqOn && peqBands.length) {
       const nyq = ctx.sampleRate / 2 - 1;
@@ -141,6 +145,18 @@ window.player = (function () {
       });
     }
     if (convOn && convNode && convBuffer) { node.connect(convNode); node = convNode; }
+    // Crossfeed (auriculares): cada canal recibe algo del otro, pasado por un lowpass (~700 Hz) y un retardo
+    // (~0,3 ms), como el bs2b. Reduce la separación extrema del estéreo con cascos. Mono-compatible.
+    if (cfOn) {
+      const split = ctx.createChannelSplitter(2), merge = ctx.createChannelMerger(2);
+      node.connect(split);
+      const dL = ctx.createGain(), dR = ctx.createGain(); dL.gain.value = 1; dR.gain.value = 1;
+      split.connect(dL, 0); split.connect(dR, 1); dL.connect(merge, 0, 0); dR.connect(merge, 0, 1);   // directo
+      const cross = (fromCh, toCh) => { const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 700; const dl = ctx.createDelay(0.01); dl.delayTime.value = 0.0003; const g = ctx.createGain(); g.gain.value = 0.4; split.connect(lp, fromCh); lp.connect(dl); dl.connect(g); g.connect(merge, 0, toCh); cfNodes.push(lp, dl, g); };
+      cross(0, 1); cross(1, 0);   // L→R y R→L
+      cfNodes.push(split, dL, dR, merge);
+      node = merge;
+    }
     node.connect(dspOut);
   }
   // Carga un impulso WAV del servidor en el ConvolverNode (normalize=false para respetar la IR tal cual).
@@ -413,6 +429,8 @@ window.player = (function () {
         if (eqOn) procs.push('EQ gráfico');
         if (peqOn && peqBands.length) procs.push('EQ paramétrico');
         if (convOn && convFile) procs.push('Convolución');
+        if (cfOn) procs.push('Crossfeed');
+        if (preampDb) procs.push('Headroom ' + (preampDb > 0 ? '+' : '') + preampDb + ' dB');
         if (vol < 1) procs.push('Volumen ' + volDbLabel(vol));
       }
       const bitperfect = exclusive || (!net && procs.length === 0);
@@ -427,6 +445,8 @@ window.player = (function () {
         ${chain('Fuente', esc(srcLine), true)}
         ${chain('ReplayGain', exclusive || net ? 'omitido en esta salida' : (rgMode === 'off' ? 'desactivado' : (rgMode === 'album' ? 'álbum' : 'pista') + ' · ' + (applied === 0 ? 'sin cambio' : (applied > 0 ? '+' : '') + applied + ' dB')), !exclusive && !net && rgMode !== 'off' && applied !== 0)}
         ${chain('Ecualizador', exclusive || net ? 'omitido' : (eqOn ? 'gráfico' : 'plano') + (peqOn && peqBands.length ? ' · paramétrico (' + peqBands.length + ')' : '') + (convOn && convFile ? ' · convolución' : ''), !exclusive && !net && (eqOn || (peqOn && peqBands.length) || (convOn && convFile)))}
+        ${chain('Crossfeed', exclusive || net ? 'omitido' : (cfOn ? 'activado' : 'desactivado'), !exclusive && !net && cfOn)}
+        ${chain('Headroom', exclusive || net ? 'en el aparato' : (preampDb ? (preampDb > 0 ? '+' : '') + preampDb + ' dB' : 'sin cambio'), !exclusive && !net && !!preampDb)}
         ${chain('Volumen', exclusive || net ? 'en el aparato' : volDbLabel(vol) + ' · ' + Math.round(volToPos(vol) * 100) + '%', !exclusive && !net && vol < 1)}
         ${chain('Salida', esc(outName), false)}
         <div style="font-size:12px;color:var(--text-2);margin:16px 0 2px">Datos técnicos</div>
@@ -1158,7 +1178,8 @@ window.player = (function () {
   }
   function toggleDspPanel() { ensureDspPanel(); if (dsppanel.style.display === 'block') { dsppanel.style.display = 'none'; return; } if (eqpanel) eqpanel.style.display = 'none'; if (zpanel) zpanel.style.display = 'none'; dsppanel.style.display = 'block'; renderDspPanel(); loadDspLists().then(() => { if (dsppanel.style.display === 'block') renderDspPanel(); }); }
   async function loadDspLists() { try { const [im, pr] = await Promise.all([fetch('/api/dsp/impulses').then(x => x.json()), fetch('/api/dsp/presets').then(x => x.json())]); dspImpulses = (im && im.impulses) || []; dspPresets = (pr && pr.presets) || []; } catch (e) {} }
-  function markEqBtn() { const on = eqOn || xfade > 0 || peqOn || convOn; document.querySelectorAll('#nowbar [data-act="eq"], #npfs [data-act="eq"]').forEach(b => { b.style.color = on ? 'var(--accent)' : 'var(--text-2)'; }); }
+  function markEqBtn() { const on = eqOn || xfade > 0 || peqOn || convOn || cfOn; document.querySelectorAll('#nowbar [data-act="eq"], #npfs [data-act="eq"]').forEach(b => { b.style.color = on ? 'var(--accent)' : 'var(--text-2)'; }); }
+  function setCfEnabled(on) { cfOn = !!on; persistCf(); ensureGraph(); rebuildDsp(); markEqBtn(); if (nativeMode) nativeDspApply(); renderDspPanel(); }
   function dspChanged() { persistPeq(); rebuildDsp(); markEqBtn(); if (nativeMode) nativeDspApply(); }
   function setPeqEnabled(on) { peqOn = on; dspChanged(); renderDspPanel(); }
   function addPeqBand() { if (peqBands.length >= 16) return; peqBands.push({ type: 0, freq: 1000, q: 1, gain: 0 }); if (!peqOn) peqOn = true; dspChanged(); renderDspPanel(); }
@@ -1232,6 +1253,7 @@ window.player = (function () {
     h += `<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px"><span style="font-weight:600;font-size:12.5px">Convolución</span><span data-act="convtoggle" style="cursor:pointer;font-size:12px;padding:2px 10px;border-radius:999px;background:${convOn ? 'var(--accent)' : 'var(--surface-2)'};color:${convOn ? '#fff' : 'var(--text-2)'}">${convOn ? 'Activada' : 'Desactivada'}</span></div>`;
     h += `<div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap"><select id="convsel" style="flex:1;min-width:150px;font-size:11.5px"><option value="">— ningún impulso —</option>${dspImpulses.map(im => `<option value="${esc(im.file)}" ${im.file === convFile ? 'selected' : ''}>${esc(im.file)}</option>`).join('')}</select><span data-act="convbrowse" style="cursor:pointer;color:var(--accent);font-size:12px;padding:3px 9px;border:1px solid var(--border);border-radius:7px">Explorar…</span></div>`;
     h += `<div style="font-size:11px;color:var(--text-2);margin-top:5px">Impulso WAV para corrección de sala / cabezal de altavoz. Convolución por FFT (~85 ms de latencia).</div></div>`;
+    h += `<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px"><span style="font-weight:600;font-size:12.5px">Crossfeed</span><span data-act="cftoggle" style="cursor:pointer;font-size:12px;padding:2px 10px;border-radius:999px;background:${cfOn ? 'var(--accent)' : 'var(--surface-2)'};color:${cfOn ? '#fff' : 'var(--text-2)'}">${cfOn ? 'Activado' : 'Desactivado'}</span></div><div style="font-size:11px;color:var(--text-2)">Para auriculares: mezcla algo de cada canal en el otro (filtrado y retrasado) para suavizar la separación extrema del estéreo. Déjalo apagado con altavoces.</div></div>`;
     h += `<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px"><div style="font-weight:600;font-size:12.5px;margin-bottom:6px">Presets</div><div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap"><select id="dsppre" style="flex:1;min-width:130px;font-size:11.5px"><option value="">— cargar preset —</option>${dspPresets.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('')}</select><span data-act="dspsave" style="cursor:pointer;color:var(--accent);font-size:12px;padding:3px 9px;border:1px solid var(--border);border-radius:7px">Guardar…</span><span data-act="dspdel" title="Borrar preset seleccionado" style="cursor:pointer;color:var(--text-2);padding:3px 6px;display:inline-flex">${ic('trash', 14)}</span></div></div>`;
     dsppanel.innerHTML = h;
   }
@@ -1265,6 +1287,7 @@ window.player = (function () {
       else if (act === 'peqtoggle') setPeqEnabled(!peqOn);
       else if (act === 'peqadd') addPeqBand();
       else if (act === 'convtoggle') setConvEnabled(!convOn);
+      else if (act === 'cftoggle') setCfEnabled(!cfOn);
       else if (act === 'convbrowse') browseImpulse();
       else if (act === 'dspsave') savePreset();
       else if (act === 'dspdel') { const sel = document.getElementById('dsppre'); if (sel && sel.value) deletePreset(sel.value); }
@@ -1419,5 +1442,5 @@ window.player = (function () {
 
   return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain, getZone, getAudio, getNative, setNativeMode, setRadio, undo,
     getSettings, setXfade, setRgMode, setEqEnabled, setEqBand, setPreset, openOutput: toggleZPanel, openEq: toggleEqPanel, openDsp: toggleDspPanel,
-    playRadio, stopRadio, getRadio, radioFrom, thumbDown, playMix, moveInQueue, addNext, enqueue, setShuffle, setVolLimit, cycleRepeat };
+    playRadio, stopRadio, getRadio, radioFrom, thumbDown, playMix, moveInQueue, addNext, enqueue, setShuffle, setVolLimit, cycleRepeat, setCfEnabled };
 })();

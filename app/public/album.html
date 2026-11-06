@@ -76,7 +76,11 @@ function renderAlbum(a){
   const multiDisc=(a.tracks||[]).some(t=>t.disc>1);
   const trackRow=(t,i)=>`<div class="track${TRKSET.has(t.trackId)?' trkon':''}" data-tid="${t.trackId}"><span class="trkmark">${TRKSET.has(t.trackId)?'✓':''}</span><button class="play" data-idx="${i}" aria-label="Reproducir" title="Reproducir" style="border:none;background:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0 4px;display:inline-flex;align-items:center">${window.icon('play',14)}</button><span class="pos">${t.pos}</span><span style="flex:1;min-width:0">${esc(t.title)}${(t.artist&&a.artist&&t.artist!==a.artist)?`<div style="font-size:12px;color:var(--text-2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.artist_id?`<a href="artist.html?id=${t.artist_id}" style="color:var(--text-2)">${esc(t.artist)}</a>`:esc(t.artist)}</div>`:''}${(t.work||t.composers)?`<div style="font-size:12px;color:var(--text-2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.work_id?`<a href="work.html?id=${t.work_id}" style="color:var(--text-2)">${esc(t.work||'obra')}</a>`:esc(t.work||'')}${t.composers?` · ${esc(t.composers.replace(/,/g,', '))}`:''}</div>`:''}</span><span class="edittrk" data-idx="${i}" title="Editar pista (nº, título, artista)" style="cursor:pointer;color:var(--text-2);font-size:14px;padding:0 6px;display:inline-flex;align-items:center;opacity:.6">${window.icon('edit',14)}</span><span class="addtrk" data-tid="${t.trackId}" title="Añadir a una lista" style="cursor:pointer;color:var(--text-2);font-size:14px;padding:0 6px;display:inline-flex;align-items:center">${window.icon('plus',15)}</span><span class="dur">${mmss(t.length_ms)}</span></div>`;
   let tracks='';
-  if((a.tracks||[]).length){ tracks='<div class="sec">Pistas <span id="trkseltog" style="font-size:12px;font-weight:400;color:var(--accent);cursor:pointer;margin-left:8px">Seleccionar</span></div>'; let cur=null;
+  // duración total del álbum (Roon: album_length): «N pistas · 47 min» o «… · 1 h 12 min»
+  const _totMs=(a.tracks||[]).reduce((s,t)=>s+(t.length_ms||0),0);
+  const _durLbl=(ms=>{if(!ms)return '';const m=Math.round(ms/60000);return m>=60?`${Math.floor(m/60)} h ${m%60} min`:`${m} min`;})(_totMs);
+  const _nt=(a.tracks||[]).length;
+  if((a.tracks||[]).length){ tracks=`<div class="sec">Pistas <span style="font-size:13px;font-weight:400;color:var(--text-2)">· ${_nt} pista${_nt===1?'':'s'}${_durLbl?' · '+_durLbl:''}</span><span id="trkseltog" style="font-size:12px;font-weight:400;color:var(--accent);cursor:pointer;margin-left:8px">Seleccionar</span></div>`; let cur=null;
     a.tracks.forEach((t,i)=>{ if(multiDisc && t.disc!==cur){ cur=t.disc; tracks+=`<div class="dischdr"><span class="dh">${window.icon('music',14)} Disco ${t.disc}</span><button class="playdisc" data-disc="${t.disc}" title="Reproducir este disco">${window.icon('play',12)} Reproducir disco</button></div>`; } tracks+=trackRow(t,i); }); }
   const INST={'bass':'bajo','electric bass':'bajo eléctrico','double bass':'contrabajo','guitar':'guitarra','acoustic guitar':'guitarra acústica','electric guitar':'guitarra eléctrica','drums':'batería','percussion':'percusión','piano':'piano','keyboards':'teclados','synthesizer':'sintetizador','organ':'órgano','cello':'violonchelo','violin':'violín','viola':'viola','trumpet':'trompeta','trombone':'trombón','saxophone':'saxofón','flute':'flauta','clarinet':'clarinete','harmonica':'armónica','accordion':'acordeón','vibraphone':'vibráfono'};
   const tInst=i=>i?(INST[i.toLowerCase()]||i.toLowerCase()):i;
@@ -108,6 +112,8 @@ function renderAlbum(a){
   // Más del artista (profundizar en su discografía) y artistas afines de tu biblioteca (profundizar en sonidos), estilo Roon.
   const artNm=esc(a.artist||'');
   const moreBy=(a.more_albums||[]).length?`<div class="sec">Más de ${a.artist_id?`<a href="artist.html?id=${a.artist_id}" style="color:inherit;text-decoration:none">${artNm}</a>`:artNm}</div><div class="shelf">`+a.more_albums.map(al=>`<a class="shcard" href="album.html?id=${al.id}" title="${esc(al.title)}"><div class="cv"><img src="/api/cover?rg=${al.id}" alt="" loading="lazy"></div><div class="nm">${esc(al.title)}</div><div class="yr">${al.year||''}</div></a>`).join('')+`</div>`:'';
+  // "También de" (Roon also_from): más del mismo sello en tu biblioteca
+  const moreLabel=(a.also_from_label||[]).length?`<div class="sec">También de ${esc(a.label_name||'este sello')} <span style="font-size:13px;font-weight:400;color:var(--text-2)">· sello</span></div><div class="shelf">`+a.also_from_label.map(al=>`<a class="shcard" href="album.html?id=${al.id}" title="${esc(al.title)} — ${esc(al.artist||'')}"><div class="cv"><img src="/api/cover?rg=${al.id}" alt="" loading="lazy"></div><div class="nm">${esc(al.title)}</div><div class="yr">${esc(al.artist||'')}${al.year?' · '+al.year:''}</div></a>`).join('')+`</div>`:'';
   app.innerHTML=`
     <div class="hero">
       <div style="flex:none"><div class="cov"><img src="/api/cover?rg=${a.id}&p=${encodeURIComponent(a.cover_pref||'auto')}" alt="" draggable="false" style="width:100%;height:100%;object-fit:cover;display:block"></div><div class="coverpref">${[['auto','Auto'],['file','Archivo'],['download','Descargada'],['none','Ninguna']].map(([v,l])=>`<span class="cpref${(a.cover_pref||'auto')===v?' on':''}" data-v="${v}" title="Fuente de la portada">${l}</span>`).join('')}<span class="setcover" title="Elegir portada desde una URL o un archivo" style="cursor:pointer;color:var(--accent)">Cambiar…</span></div></div>
@@ -141,6 +147,7 @@ function renderAlbum(a){
     ${tracks}
     ${versions}
     ${moreBy}
+    ${moreLabel}
     <div id="similarslot"></div>
     ${credits}`;
   renderTags(a.tags||[]);

@@ -588,6 +588,13 @@ function buildQ(db) {
   performersAll: db.prepare(`SELECT release_group_id id, group_concat(DISTINCT artist_name) ns
      FROM v_album_credits WHERE role IN ('instrumento','voz','interpretación','conductor','performing orchestra','orchestrator')
      GROUP BY release_group_id`),
+  // facetas Focus extra (Roon): álbum con ficheros en VARIOS formatos, y álbum con obras (contenido clásico)
+  multiFmtAll: db.prepare(`SELECT rgid id FROM (
+       SELECT DISTINCT rel.release_group_id rgid, lf.format FROM local_file lf JOIN track tr ON tr.id=lf.track_id
+       JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE lf.format IS NOT NULL
+     ) GROUP BY rgid HAVING COUNT(*)>1`),
+  worksAll: db.prepare(`SELECT DISTINCT rel.release_group_id id FROM recording r JOIN track tr ON tr.recording_id=r.id
+     JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE r.work_id IS NOT NULL`),
   album: db.prepare(`SELECT a.id,a.title,a.orig_title,a.artist,a.orig_artist,a.year,a.primary_type,a.tier_key,a.tier_rank,
       (SELECT label FROM tier WHERE key=a.tier_key) tier_label, a.album_stars, a.is_favorite,
       EXISTS(SELECT 1 FROM flag f WHERE f.subject_type='release_group' AND f.subject_id=a.id AND f.flag='listen_later') listen_later,
@@ -638,6 +645,11 @@ function buildQ(db) {
   radioDelete: db.prepare(`DELETE FROM radio_station WHERE id=?`),
   prov: db.prepare(`SELECT field,source,source_ref FROM provenance WHERE subject_type='release_group' AND subject_id=?`),
   editions: db.prepare(`SELECT rel.format, rel.date, rel.country, rel.barcode, l.name label FROM "release" rel LEFT JOIN label l ON l.id=rel.label_id WHERE rel.release_group_id=? ORDER BY rel.date`),
+  // "También de" (Roon also_from): el sello del álbum + otros álbumes del mismo sello en tu biblioteca
+  albumLabel: db.prepare(`SELECT l.name FROM "release" rel JOIN label l ON l.id=rel.label_id WHERE rel.release_group_id=? AND rel.label_id IS NOT NULL LIMIT 1`),
+  albumsByLabel: db.prepare(`SELECT DISTINCT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
+     FROM "release" rel JOIN v_album a ON a.id=rel.release_group_id
+     WHERE rel.label_id=(SELECT id FROM label WHERE name=? LIMIT 1) AND a.id<>? ORDER BY a.first_release DESC, a.title LIMIT 14`),
   // versiones/ediciones del álbum = release_groups hermanos (mismo artista + título base), estilo Roon
   albumMainArtist: db.prepare(`SELECT acn.name FROM artist_credit_name acn JOIN release_group rg ON rg.artist_credit_id=acn.artist_credit_id WHERE rg.id=? AND acn.position=1 LIMIT 1`),
   rgsByArtistName: db.prepare(`SELECT rg.id, rg.title, substr(rg.first_release,1,4) year FROM release_group rg JOIN artist_credit_name acn ON acn.artist_credit_id=rg.artist_credit_id AND acn.position=1 WHERE acn.name=?`),
@@ -1037,6 +1049,7 @@ function search(q, n) {
 const VER_DISC_RE = /\b(disc|cd|vol(?:ume)?)\s*\.?\s*\d|\[\s*disc|\(\s*disc/i;   // box sets: cada disco es distinto, no una "versión"
 const COMP_ARTIST_RE = /^(various artists|various|v\.?a\.?|varios artistas|varios|aa\.?\s*vv\.?)$/i;   // artista de recopilatorio (VA) → faceta Focus "compilation"
 const LIVE_TITLE_RE = /\(\s*live[\s)]|\blive\s+(at|in|from|on)\b|\ben\s+(vivo|directo)\b|\bunplugged\b|\bconcert\b|\bin concert\b|\[\s*live/i;   // directo (heurística por título)
+const BOOTLEG_RE = /\bbootleg\b|\bunofficial\b|\bsoundboard\b|\baudience\s+recording\b/i;   // grabación no oficial (faceta Roon bootleg)
 function baseTitle(t) {
   let s = String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
   s = s.replace(/[\[(][^\])]*(flac|bit|khz|mp3|aac|vinyl|wav|lossless)[^\])]*[\])]/gi, ' ');   // [FLAC 16bit 44.1kHz]
@@ -1201,6 +1214,10 @@ function album(id, relId) {
   // similares» van aparte (carga perezosa vía Last.fm): el género local es demasiado grueso (85% de los
   // álbumes tienen un solo género) para dar afinidad fiable.
   a.more_albums = a.artist_id ? Q.artistAlbums.all(a.artist_id).filter(x => x.id !== id).slice(0, 14) : [];
+  // "También de" (Roon also_from): más del mismo sello en tu biblioteca
+  const _lbl = Q.albumLabel.get(id);
+  a.label_name = _lbl ? _lbl.name : null;
+  a.also_from_label = a.label_name ? Q.albumsByLabel.all(a.label_name, id) : [];
   const sp = Q.spotifyOf.get(id) || {};   // ¿este disco está en tu biblioteca de Spotify?
   a.spotify_enabled = spotifyConfigured() && !!spotifyTok;
   a.spotify_saved = !!sp.spotify_album_id;
@@ -1317,6 +1334,8 @@ function libraryList() {
   const tags = new Map(Q.tagsAll.all().map(r => [r.id, (r.gs || '').split('|').filter(Boolean)]));
   const withLyrics = new Set(Q.lyricsAlbums.all().map(r => r.id));   // faceta Roon "has lyrics"
   const performers = new Map(Q.performersAll.all().map(r => [r.id, (r.ns || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 8)]));   // faceta Roon "performer" (clásica)
+  const multiFmt = new Set(Q.multiFmtAll.all().map(r => r.id));   // faceta Roon "multiple_formats"
+  const withWorks = new Set(Q.worksAll.all().map(r => r.id));      // faceta Roon "performance_count" (contenido con obras/clásica)
   // posibles duplicados (mismo artista + título normalizado en >1 álbum): faceta Roon "duplicates"
   const dupKeyCount = new Map();
   for (const a of rows) { const k = String(a.artist || '').toLowerCase() + '||' + String(a.title || '').toLowerCase(); dupKeyCount.set(k, (dupKeyCount.get(k) || 0) + 1); }
@@ -1345,6 +1364,10 @@ function libraryList() {
     a.has_lyrics = withLyrics.has(a.id) ? 1 : 0;
     a.performers = performers.get(a.id) || [];
     a.maybe_dup = (dupKeyCount.get(String(a.artist || '').toLowerCase() + '||' + String(a.title || '').toLowerCase()) || 1) > 1 ? 1 : 0;
+    a.multi_format = multiFmt.has(a.id) ? 1 : 0;   // ficheros en varios formatos (faceta Roon)
+    a.has_works = withWorks.has(a.id) ? 1 : 0;     // obras/clásica (faceta Roon performance_count)
+    a.is_bootleg = BOOTLEG_RE.test(String(a.title || '')) ? 1 : 0;   // directo no oficial (heurística por título)
+    a.dated = (parseInt(a.year, 10) >= 1000) ? 1 : 0;   // tiene fecha (faceta Roon has_date; su inversa = "sin fecha")
   }
   // "con otras versiones": agrupa por artista + título base (misma lógica que versionsOf) y marca
   // los que tienen hermanos. Set-based en una pasada sobre las filas ya cargadas.
