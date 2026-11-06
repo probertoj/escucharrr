@@ -132,7 +132,7 @@ function renderAlbum(a){
           ${a.folder?`<span><span class="k">Carpeta</span> <a href="folders.html?root=${a.folder.root}&path=${encodeURIComponent(a.folder.rel)}" title="Ir a la carpeta" style="color:var(--accent);word-break:break-all">${esc(a.folder.path)}</a> · <span class="revealfolder" data-path="${esc(a.folder.path)}" title="Abrir esta carpeta en el Explorador de Windows" style="cursor:pointer;color:var(--text-2);white-space:nowrap">Abrir en el Explorador</span></span>`:''}
         </div>
         <div>${genres}</div>
-        ${a.spotify_enabled?`<div style="margin-top:9px;font-size:13px">${a.spotify_saved?`<span style="color:#1DB954;font-weight:600">● En tu biblioteca de Spotify</span>${a.spotify_url?` · <a href="${esc(a.spotify_url)}" target="_blank" rel="noopener" style="color:var(--text-2)">abrir</a>`:''}`:'<span style="color:var(--text-2)">○ No está en tu biblioteca de Spotify</span>'}</div>`:''}
+        ${a.spotify_enabled?`<div style="margin-top:9px;font-size:13px">${a.spotify_saved?`<span style="color:#1DB954;font-weight:600">● En tu biblioteca de Spotify</span>${a.spotify_url?` · <a href="${esc(a.spotify_url)}" target="_blank" rel="noopener" style="color:var(--text-2)">abrir</a>`:''}`:`<span style="color:var(--text-2)">○ No está en tu biblioteca de Spotify</span> · <a href="https://open.spotify.com/search/${encodeURIComponent(((a.artist||'')+' '+(a.title||'')).trim())}/albums" target="_blank" rel="noopener" style="color:#1DB954;font-weight:600">Buscar en Spotify para añadirlo</a>`}</div>`:''}
         ${extLinks}
         <div id="tagbox" style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
       </div>
