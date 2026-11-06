@@ -104,6 +104,34 @@ catálogo de streaming ni fuente editorial).
 9. **Afinar versiones-por-carpeta** (~18%, alto riesgo).
 10. **Visualizador de audio** (móvil) y **sync de cuenta** — de la lista de Serge.
 
+## 3.bis Estado tras arrancar el roadmap (6 nov, commit e91da4a)
+
+Al implementar se confirmó que **más cosas de las que la auditoría creía ya estaban** (corrección honesta:
+no se leyó bastante hondo la 1ª vez):
+- **Signal path por etapas YA existía** (página «Señal» con cadena Fuente→RG→EQ→Volumen→Salida y punto de
+  calidad bit-perfect/procesado). Esta ronda lo **enriqueció**: filas **Crossfeed** y **Headroom**.
+- **Visualizador de audio YA existía** (`#npviz`, varios estilos).
+- **«Novedades para ti · ya disponibles» + «Próximamente» + «Porque escuchaste» YA estaban** en Inicio.
+
+Hecho esta ronda (verificado en vivo):
+- **P1 ✔** Facetas Focus: No oficial (bootleg), Con obras, Varios formatos, Con fecha (multi_format 285 /
+  con obras 326 / bootleg 5 / sin fecha 346).
+- **P1 ✔** Duración total del álbum («90 pistas · 5 h 17 min»).
+- **P1 ✔** Signal path: filas Crossfeed + Headroom.
+- **P2 ✔** Crossfeed para auriculares (etapa DSP + toggle, persistido).
+- **P2 ✔** «También de» (más del mismo sello) en la ficha de álbum.
+- **P2 (cubierto)** Ajustes de zona: zonas/volumen/exclusivo WASAPI/dispositivo ya estaban; DSD/clock master
+  son de RAAT (N/A).
+- **P2 (ya estaba)** «Nuevos lanzamientos para ti» → Inicio ya lo tiene.
+- **P3 (ya hecho)** Clásica: filas de interpretación (director/conjunto/solistas) añadidas antes;
+  visualizador ya existía.
+
+Deliberadamente **fuera de alcance** (riesgo/escala, no por olvido):
+- Vistas `phone_*` dedicadas (más allá de la barra inferior ya hecha y el responsive).
+- Afinar versiones-por-carpeta (~18%, alto riesgo de acotar álbum a un release).
+- Sync de cuenta / nube (proyecto grande, externo).
+- Ubicación/venue clásica (requiere ingestar relaciones *place* de MusicBrainz).
+
 ## 4. Veredicto
 
 Tras P1–P3 y la pasada de rendimiento, escucharrr cubre **todas las pantallas núcleo de Roon y la mayor
