@@ -901,8 +901,40 @@ window.player = (function () {
     d.el.play().catch(() => {});
     trackStarted();
     render();
+    preloadNext();                               // 2º plano: deja la siguiente pista buferizada en el otro deck
   }
-  function onEnded() { if (fading) return; if (repeat === 'one') { start(idx); return; } next(); }   // repetir una: al acabar la pista, la misma
+  function onEnded() { if (fading) return; if (repeat === 'one') { start(idx); return; }
+    if (bgMode && !nativeMode && !upnpMode && !irStation && (idx + 1 < q.length || (repeat === 'all' && q.length))) return advanceBg();   // 2º plano: salta al deck ya precargado
+    next(); }
+  // Precarga la siguiente pista en el OTRO deck (solo 2º plano). Al terminar, advanceBg() salta a ese deck ya
+  // buferizado en vez de pedir una descarga nueva — iOS no deja iniciar una carga+play nueva con la app detrás
+  // o la pantalla apagada. Reusa el segundo deck (en 2º plano no hay crossfade, así que está libre).
+  function preloadNext() {
+    if (!bgMode || nativeMode || upnpMode || irStation) return;
+    const ni = idx + 1 < q.length ? idx + 1 : (repeat === 'all' && q.length ? 0 : -1);
+    if (ni < 0) return;
+    const nt = q[ni]; if (!nt || nt.playable === false) return;
+    const nd = other(), url = '/api/stream?track=' + nt.trackId;
+    if (nd.trackIdx === ni && nd.el.src && nd.el.src.indexOf('track=' + nt.trackId) >= 0) return;   // ya precargada
+    try { nd.el.pause(); } catch (e) {}
+    nd.el.preload = 'auto'; nd.trackIdx = ni; nd.el.src = url; try { nd.el.load(); } catch (e) {}
+  }
+  // Avance en 2º plano: cambia al otro deck (que ya trae la siguiente pista buferizada) y lo reproduce al
+  // instante, sin carga de red nueva; así la cola sigue sola con la pantalla apagada. Encadena la precarga.
+  function advanceBg() {
+    const ni = idx + 1 < q.length ? idx + 1 : 0;
+    const nd = other();
+    if (!(nd.trackIdx === ni && nd.el.src)) return start(ni);   // no precargada (cola cambió, etc.) → camino normal
+    const od = active();
+    cur0 = 1 - cur0;                 // el deck precargado pasa a ser el activo
+    idx = ni; save(); loggedIdx = -1;
+    try { od.el.pause(); } catch (e) {}
+    applyVol();                      // volumen (2º plano = el.volume) al nuevo deck activo
+    nd.el.play().catch(() => {});
+    trackStarted();
+    render();
+    preloadNext();                   // encadena la precarga de la siguiente
+  }
   function next() { if (nativeMode) { if (idx < q.length - 1) nativePlay(idx + 1); else if (repeat === 'all' && q.length) nativePlay(0); else if (radioOn) maybeRadio(); else { playing = false; stopNativePoll(); render(); } return; } if (upnpMode) { if (idx < q.length - 1) upnpPlay(idx + 1); else if (repeat === 'all' && q.length) upnpPlay(0); else if (radioOn) maybeRadio(); else { playing = false; stopUpnpPoll(); render(); } return; } if (idx < q.length - 1) start(idx + 1); else if (repeat === 'all' && q.length) start(0); else if (radioOn) maybeRadio(); else { playing = false; active().el.pause(); render(); } }
   function prev() { if (nativeMode) { if (nativePos > 3 || idx <= 0) nativePlay(idx, { seekSec: 0 }); else nativePlay(idx - 1); return; } if (upnpMode) { if (upnpPos > 3 || idx <= 0) upnpPlay(idx, { seekSec: 0 }); else upnpPlay(idx - 1); return; } const d = active(); if (d.trackIdx === idx && d.el.currentTime > 3) { d.el.currentTime = 0; } else if (idx > 0) start(idx - 1); else d.el.currentTime = 0; }
   function toggle() { if (irStation) return toggleRadio(); if (nativeMode) return nativeToggle(); if (upnpMode) return upnpToggle(); const c = cur(); if (!c || c.playable === false) return; const d = active(); if (d.trackIdx !== idx) return start(idx); if (d.el.paused) { ensureGraph(); if (ctx && ctx.state === 'suspended') ctx.resume(); d.el.play().catch(() => {}); } else d.el.pause(); }
