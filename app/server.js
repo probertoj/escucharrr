@@ -1383,9 +1383,10 @@ const INSPECTOR_BUCKETS = {
         SELECT r2.id FROM "release" r2 WHERE r2.release_group_id=a.id
         ORDER BY (SELECT COUNT(*) FROM medium mm JOIN track t ON t.medium_id=mm.id WHERE mm.release_id=r2.id) DESC, r2.date DESC, r2.id ASC LIMIT 1)) > 1` },
 };
+let _inspectorCache = null;   // los conteos del Inspector (~0,9 s) solo cambian al editar/escanear → cache hasta sseBroadcast('library')
 function inspectorCounts() {
-  const rows = db.prepare('SELECT a.id, a.title, a.artist FROM v_album a').all();
-  const total = rows.length;
+  if (_inspectorCache) return _inspectorCache;
+  const total = db.prepare('SELECT COUNT(*) n FROM v_album').get().n;
   const out = { total, buckets: {} };
   for (const [key, def] of Object.entries(INSPECTOR_BUCKETS)) {
     out.buckets[key] = { label: def.label, hint: def.hint, count: db.prepare(`SELECT COUNT(*) n FROM v_album a JOIN release_group rg ON rg.id=a.id WHERE ${def.where}`).get().n };
@@ -1395,6 +1396,7 @@ function inspectorCounts() {
   // posibles duplicados: mismo artista + título exactos en más de un álbum (importación doble)
   const dupGroups = db.prepare(`SELECT lower(artist)||'||'||lower(title) k, COUNT(*) n FROM v_album GROUP BY k HAVING n>1`).all();
   out.buckets.duplicates = { label: 'Posibles duplicados', hint: 'Mismo artista y título en varios álbumes (importación doble). Revisa y, si procede, oculta uno.', count: dupGroups.reduce((s, g) => s + g.n, 0), computed: 'dup' };
+  _inspectorCache = out;
   return out;
 }
 function inspectorBucket(bucket, limit, offset) {
@@ -1425,7 +1427,7 @@ function tracksList(opts) {
   const offset = Math.max(parseInt(opts.offset, 10) || 0, 0);
   const q = String(opts.q || '').trim();
   const dir = opts.dir === 'desc' ? 'DESC' : 'ASC';
-  const orderExpr = opts.sort === 'album' ? 'alb' : opts.sort === 'duration' ? 'len' : 'r.title';   // título (indexado) por defecto
+  const orderExpr = opts.sort === 'album' ? 'rg.title' : opts.sort === 'duration' ? 'COALESCE(tr.length_ms, r.length_ms)' : 'r.title';   // título (indexado) por defecto
   // filtros de faceta Focus de pista (sobre local_file; join por track_id, que cubre el 99,6%)
   const lfConds = [], lfArgs = [];
   if (opts.format) { lfConds.push('lf.format=?'); lfArgs.push(String(opts.format)); }
@@ -1901,7 +1903,14 @@ function streamAudio(req, res, trackId) {
     fs.createReadStream(row.path).pipe(res);
   }
 }
-function sendJSON(res, obj) { const b = JSON.stringify(obj); res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(b); }
+function sendJSON(res, obj) {
+  const b = JSON.stringify(obj);
+  // gzip para respuestas grandes si el cliente lo acepta (res._gz lo fija el handler); byte-length real, no .length
+  if (res._gz && Buffer.byteLength(b) > 1400) {
+    try { const gz = zlib.gzipSync(b); res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'gzip', 'Vary': 'Accept-Encoding' }); return res.end(gz); } catch (e) {}
+  }
+  res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(b);
+}
 function readBody(req) { return new Promise(resolve => { let b = ''; req.on('data', c => { b += c; if (b.length > 1e5) req.destroy(); }); req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch (e) { resolve({}); } }); }); }
 
 // ── motor nativo: salida WASAPI como zona del servidor ──────────────────────
@@ -2531,7 +2540,7 @@ function settingsInfo() {
 
 // ── biblioteca en vivo: watcher de carpetas + eventos SSE a la UI ───────────────
 const sseClients = new Set();
-function sseBroadcast(type) { if (type === 'library') { _trackFacetsCache = null; _folderCache = new Map(); _libCache = null; } const line = `data: ${JSON.stringify({ type, t: Date.now() })}\n\n`; for (const r of sseClients) { try { r.write(line); } catch (e) {} } }
+function sseBroadcast(type) { if (type === 'library') { _trackFacetsCache = null; _folderCache = new Map(); _libCache = null; _inspectorCache = null; } const line = `data: ${JSON.stringify({ type, t: Date.now() })}\n\n`; for (const r of sseClients) { try { r.write(line); } catch (e) {} } }
 // Facetas del explorador de pistas (formato/profundidad/frecuencia/canales). Se calculan sobre
 // local_file en una pasada y se cachean (solo cambian al reescanear).
 let _trackFacetsCache = null;
@@ -3658,6 +3667,7 @@ async function handleObsidianWrite(req, res) {
 
 http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
+  res._gz = /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''));   // ¿el cliente acepta gzip? (lo usa sendJSON para respuestas grandes)
   if (u.pathname === '/api/events') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
     res.write('retry: 3000\n\n'); sseClients.add(res);
@@ -3868,7 +3878,11 @@ http.createServer((req, res) => {
   maybeOpenBrowser();
   startWatching();
   autoBackupIfStale();   // copia de seguridad "programada": una al arrancar si la última es antigua
-  setTimeout(() => { try { libraryListJSON(); console.log('biblioteca: caché lista'); } catch (e) {} }, 400);   // precalienta la lista (JSON+gzip) para que la 1ª navegación a «Álbumes» sea instantánea
+  // precalienta las cachés pesadas (lista de biblioteca JSON+gzip, facetas de pista, Inspector) para que la
+  // PRIMERA navegación a esas pantallas sea instantánea. Escalonado para no bloquear el arranque de golpe.
+  setTimeout(() => { try { libraryListJSON(); } catch (e) {} }, 400);
+  setTimeout(() => { try { trackFacets(); } catch (e) {} }, 900);
+  setTimeout(() => { try { inspectorCounts(); console.log('cachés precalentadas (biblioteca, facetas, inspector)'); } catch (e) {} }, 1400);
   const svc = scrobble.enabledServices(scrobEff() || {});
   if (svc.length) { console.log('scrobbling activo:', svc.join(', ')); setInterval(() => scrobble.drain(db, scrobEff(), console.log).catch(() => {}), 30000); }
   else console.log('scrobbling: desactivado (crea app/scrobble.json a partir de scrobble.example.json)');
