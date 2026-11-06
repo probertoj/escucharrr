@@ -121,6 +121,33 @@ nuestro EQ/convolución ya cubre lo genérico.
 8. **Vistas móviles dedicadas** — más allá del responsive-CSS.
 9. **Presets de auriculares en DSP** — nicho.
 
+## 3.bis Estado tras la ronda P1–P3 (6 nov 2026, commit 52fed1c)
+
+Implementado y verificado en vivo sobre :7733 con datos reales:
+
+- **P1 ✔** Facetas de Focus que faltaban — compilation (VA, 233 álbumes), en directo (396, heurística
+  por título), con letras (28), duplicados (365) e **intérprete** (189 álbumes con créditos de ejecución).
+- **P1 ✔** Unmerge persistente — `GET /api/merges` + pantalla en Ajustes que lista artista/álbum/fold y
+  deshace cuando quieras (reutiliza el undo ya probado).
+- **P2 ✔** Top tracks del artista — pestaña «Más escuchadas» por nº de escuchas (p. ej. Le Mans, 12).
+- **P2 ✔** Créditos de álbum agrupados — Intérpretes / Composición / Producción / Edición (+ Otros).
+- **P2 ✔** Performing music of — `/api/composer` devuelve los intérpretes que tocan sus obras; chips en
+  la ficha de compositor.
+- **P3 ✔** Profundidad clásica — filas de interpretación (director/conjunto/solistas) por grabación en la
+  ficha de obra. (La *ubicación/venue* sigue sin estar en nuestros datos: MB no se ingesta a ese nivel.)
+- **P3 ✔** Descubrimiento heurístico — «Selección del día» (afinidad × semilla diaria estable) y «En su
+  mejor momento» (artista del día + sus mejores discos) en Descubrir.
+- **P3 ✔** Vistas móviles — barra inferior de pestañas (phone footer) con el núcleo al pulgar; el player se
+  apila sobre ella. (Es un refuerzo responsive del layout, no documentos `phone_*` separados.)
+- **P3 ✔** EQ por auriculares — 11 modelos (Audeze, Sennheiser, HiFiMan, Beyerdynamic, AKG, Grado, Sony,
+  Apple…) como curvas orientativas sobre las 7 bandas.
+- **Rendimiento (QA):** `/api/composers` de ~27 s → ~27 ms (reescritura set-based con CTE + índice
+  `ix_recording_work`).
+
+Pendiente real que queda: `has_lyrics` crecerá según se descarguen letras; la *ubicación* de interpretación
+clásica exige ingestar relaciones place de MusicBrainz (no hecho); vistas `phone_*` plenamente dedicadas
+siguen siendo responsive-CSS, no páginas aparte; presets Audeze son aproximaciones (no las curvas oficiales).
+
 ## 4. Veredicto
 Las **pantallas núcleo están cubiertas** y esta ronda cerró los gaps de componente que quedaban (compositores,
 colaboraciones/afines, ficheros saltados, radio por emisoras, fundir tracklists, unmerge de artistas). Lo que
