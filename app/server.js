@@ -2810,7 +2810,7 @@ function writeWatchFolders(folders) {
   if (!cfg.obsidianConfig) cfg.obsidianConfig = './obsidian.json';
   fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 }
-function writeObsidian(vault, albumsFolder) {
+function writeObsidian(vault, albumsFolder, artistsFolder) {
   const cfgPath = path.join(__dirname, 'watch.json');
   let wcfg = {}; try { if (fs.existsSync(cfgPath)) wcfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch (e) {}
   let base = {};   // preserva fields/tierMap del config actual o del ejemplo
@@ -2818,6 +2818,7 @@ function writeObsidian(vault, albumsFolder) {
   try { if (curPath && fs.existsSync(curPath)) base = JSON.parse(fs.readFileSync(curPath, 'utf8')); } catch (e) {}
   if (!base.fields) { try { base = JSON.parse(fs.readFileSync(path.join(_DL, 'config.example.json'), 'utf8')); } catch (e) {} }
   base.vault = vault; base.albumsFolder = albumsFolder;
+  if (artistsFolder !== undefined) base.artistsFolder = artistsFolder;   // carpeta de bios (p. ej. «00. Índices»); admite ruta absoluta
   fs.writeFileSync(path.join(__dirname, 'obsidian.json'), JSON.stringify(base, null, 2));
   if (!wcfg.music) wcfg.music = [];
   wcfg.obsidianConfig = './obsidian.json';
@@ -2826,7 +2827,7 @@ function writeObsidian(vault, albumsFolder) {
 function configInfo() {
   const c = watchConfig();
   let empty = false; try { empty = !db.prepare('SELECT 1 FROM release_group LIMIT 1').get(); } catch (e) {}
-  return { active: !!c, folders: (c && c.music) || [], obsidian: (c && c.obs) ? { vault: c.vault, albumsFolder: c.obs.albumsFolder || '' } : null,
+  return { active: !!c, folders: (c && c.music) || [], obsidian: (c && c.obs) ? { vault: c.vault, albumsFolder: c.obs.albumsFolder || '', artistsFolder: (c.obs.artistsFolder || c.obs.biosFolder || '') } : null,
     // standalone: estado del entorno para Ajustes y el onboarding del primer arranque.
     ffmpeg: !!FFMPEG, ffmpegPath: FFMPEG && FFMPEG !== 'ffmpeg' ? FFMPEG : '', empty, firstRun: freshDb };
 }
@@ -2987,7 +2988,7 @@ async function handleConfig(req, res, u) {
         warn: fpcalc ? '' : 'No encuentro fpcalc (Chromaprint). Instálalo o indica su ruta para poder identificar por huella.' });
     }
     if (sub === 'folders') { writeWatchFolders(Array.isArray(body.folders) ? body.folders : []); startWatching(); if (watchConfig() && watchConfig().music.length) _ingSchedule('music'); return sendJSON(res, { ok: true, ...configInfo() }); }
-    if (sub === 'obsidian') { writeObsidian(String(body.vault || '').trim(), String(body.albumsFolder || '').trim()); startWatching(); _ingSchedule('vault'); return sendJSON(res, { ok: true, ...configInfo() }); }
+    if (sub === 'obsidian') { writeObsidian(String(body.vault || '').trim(), String(body.albumsFolder || '').trim(), body.artistsFolder === undefined ? undefined : String(body.artistsFolder || '').trim()); startWatching(); _ingSchedule('vault'); return sendJSON(res, { ok: true, ...configInfo() }); }
     if (sub === 'rescan') { const r = await rescanNow(Array.isArray(body.what) ? body.what : ['music', 'vault']); return sendJSON(res, { ok: true, ...r }); }
     // Reparar renombrados/movimientos SIN re-escanear toda la biblioteca: rebind por identidad de contenido
     // (tamaño) de los ficheros huérfanos (carpeta renombrada) a su nueva ruta, y fusión de duplicados. Solo
@@ -3745,27 +3746,42 @@ async function writeObsidianNote(subjectType, subjectId, field, value) {
   const c = watchConfig();
   if (!c || !c.vault || !fs.existsSync(c.vault)) throw new Error('Obsidian no está configurado (añade el vault en Ajustes)');
   const vault = c.vault;
+  // Carpeta destino de la nota, respetando la estructura del vault del usuario:
+  //   release_group → albumsFolder (p. ej. «Discos»)
+  //   artist (bio)  → artistsFolder (p. ej. «00. Índices»). Admite ruta ABSOLUTA para
+  //                   escribir en una carpeta HERMANA del vault sin tener que reubicarlo.
+  const obs = c.obs || {};
+  const artFolderCfg = String(obs.artistsFolder || obs.biosFolder || '').trim();
+  const artFolderAbs = (artFolderCfg && path.isAbsolute(artFolderCfg)) ? path.resolve(artFolderCfg) : '';
   const existing = Q.noteForSubject.get(subjectType, subjectId);
   let relPath, absPath, created = false;
   if (existing && existing.path) {
     relPath = existing.path;
-    absPath = path.join(vault, relPath);
+    absPath = path.isAbsolute(relPath) ? relPath : path.join(vault, relPath);   // una bio puede estar fuera del vault (carpeta hermana)
   } else {                                           // crear nota nueva
     let fname;
     if (subjectType === 'release_group') { const a = Q.albumName.get(subjectId); if (!a) throw new Error('álbum no encontrado'); fname = sanitizeName((a.artist ? a.artist + ' - ' : '') + a.title) + '.md'; }
     else { const a = Q.artistName.get(subjectId); if (!a) throw new Error('artista no encontrado'); fname = sanitizeName(a.name) + '.md'; }
-    const af = (c.obs && c.obs.albumsFolder && fs.existsSync(path.join(vault, c.obs.albumsFolder))) ? c.obs.albumsFolder : '';
-    relPath = af ? path.join(af, fname) : fname;
-    absPath = path.join(vault, relPath);
+    if (subjectType === 'artist' && artFolderAbs) {
+      absPath = path.join(artFolderAbs, fname); relPath = absPath;              // bio en carpeta hermana absoluta
+    } else {
+      const folderCfg = subjectType === 'artist' ? artFolderCfg : (obs.albumsFolder || '');
+      const af = (folderCfg && fs.existsSync(path.join(vault, folderCfg))) ? folderCfg : '';
+      relPath = af ? path.join(af, fname) : fname;
+      absPath = path.join(vault, relPath);
+    }
     created = true;
   }
-  // guard: dentro del vault y .md
+  // guard: dentro del vault (o de la carpeta de bios configurada) y .md
   const rp = path.resolve(absPath);
-  if (!rp.startsWith(path.resolve(vault) + path.sep) || !/\.md$/i.test(rp)) throw new Error('ruta de nota inválida');
+  const inVault = rp.startsWith(path.resolve(vault) + path.sep);
+  const inArt = artFolderAbs && rp.startsWith(artFolderAbs + path.sep);
+  if ((!inVault && !inArt) || !/\.md$/i.test(rp)) throw new Error('ruta de nota inválida');
   // construir contenido: conservar frontmatter existente; si es nueva, frontmatter mínimo para re-emparejar
   let head = '';
   if (fs.existsSync(absPath)) { head = splitFrontmatter(fs.readFileSync(absPath, 'utf8')).head; }
   else if (subjectType === 'release_group') { const a = Q.albumName.get(subjectId); head = `---\nartist: ${a.artist || ''}\nalbum: ${a.title || ''}\n---\n\n`; }
+  else if (subjectType === 'artist') { const a = Q.artistName.get(subjectId); head = `---\nartist: ${a.name || ''}\n---\n\n`; }
   const content = head + text + '\n';
   // Escritura directa con reintentos. En vaults de OneDrive el rename sobre un fichero existente
   // falla (EPERM: el fichero está bloqueado mientras se sincroniza) y dejaría temporales huérfanos;
