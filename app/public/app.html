@@ -152,7 +152,7 @@ if ('serviceWorker' in navigator) {
     wrapAEL(document); wrapAEL(window);
     document.addEventListener('click', onClick, { _shell: true });           // intercepción de enlaces (persistente)
     window.addEventListener('popstate', function () { loadRoute(location.pathname + location.search + location.hash, false); }, { _shell: true });
-    var start = location.pathname === '/' || location.pathname === '' ? '/index.html' : location.pathname;
+    var start = location.pathname === '/' || location.pathname === '' ? '/home.html' : location.pathname;   // la app abre en Inicio
     loadRoute(start + location.search + location.hash, false);
     refreshOnboard();
   }
