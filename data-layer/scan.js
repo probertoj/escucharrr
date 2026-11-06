@@ -382,7 +382,12 @@ try {
     let trackId = null, recId = null;
     if (haveGraph) {
       const aid = ensureArtist(artistName), cid = ensureCredit(aid, artistName);
-      const rg = ensureRg(album, cid, (t.DATE || '').slice(0, 4) || null);
+      // first_release: conserva la FECHA COMPLETA del tag (YYYY-MM-DD) si la hay — así «En este día» funciona
+      // sin depender de Plex/MusicBrainz. Si el tag solo trae el año, guarda el año. (El enriquecido puede
+      // sobrescribir luego con la fecha autoritativa del release-group.)
+      const _d = String(t.DATE || '');
+      const rgDate = /^\d{4}-\d{2}-\d{2}/.test(_d) ? _d.slice(0, 10) : (_d.slice(0, 4) || null);
+      const rg = ensureRg(album, cid, rgDate);
       if (t.GENRE) S.linkGenre.run(rg, ensureGenre(t.GENRE.toLowerCase()));  // minúscula: convención común con MB/Discogs
       const rel = ensureRel(rg, album, cid, t.DATE || null, fmtLabel, nrm(albumDir));   // una copia (versión) por carpeta de álbum
       const med = ensureMed(rel, discNo, fmtLabel);

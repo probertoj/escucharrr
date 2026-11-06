@@ -82,6 +82,20 @@ function migrate(db) {
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_acoustid ON recording(acoustid)');
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_work ON recording(work_id)');   // obra→grabaciones (compositores/obras)
   db.exec('CREATE INDEX IF NOT EXISTS ix_file_size ON local_file(size_bytes)');   // para reconciliar movimientos/renombrados por identidad
+  // Promociona a release_group.first_release la FECHA COMPLETA que ya guardamos en release.date, cuando el
+  // grupo solo tiene el año. Así «En este día» funciona en bibliotecas ya escaneadas, sin reescanear ni Plex.
+  // Solo añade precisión (mes-día); exige que el año coincida, para no cambiar el año visible. Idempotente.
+  try {
+    const promoted = db.prepare(`UPDATE release_group SET first_release = (
+         SELECT MIN(rel.date) FROM "release" rel
+         WHERE rel.release_group_id = release_group.id AND length(rel.date) >= 10
+           AND (COALESCE(release_group.first_release,'') = '' OR substr(rel.date,1,4) = substr(release_group.first_release,1,4))
+       ), updated_at=datetime('now')
+       WHERE length(COALESCE(first_release,'')) < 10
+         AND EXISTS(SELECT 1 FROM "release" rel2 WHERE rel2.release_group_id=release_group.id AND length(rel2.date) >= 10
+           AND (COALESCE(release_group.first_release,'') = '' OR substr(rel2.date,1,4) = substr(release_group.first_release,1,4)))`).run();
+    if (promoted && promoted.changes) added.push('first_release: ' + promoted.changes + ' fechas completas promocionadas desde release.date (En este día)');
+  } catch (e) {}
   if (dropMbidUnique(db)) added.push('release_group.mbid: UNIQUE quitado (modelo de versiones, estilo Roon)');
   // v_album.title ahora prioriza el título editado por el usuario (user_edit field='title') sobre rg.title.
   // Recreamos la vista en BD existentes (CREATE VIEW IF NOT EXISTS no la actualizaría). El título original
