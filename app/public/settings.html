@@ -118,6 +118,14 @@ window.addEventListener('DOMContentLoaded', async () => {
     <div class="row" style="display:block"><div class="k" style="margin-bottom:8px">Copias guardadas</div>
       <div id="bklist" class="d">cargando…</div>
       <div id="bkmsg" style="font-size:12.5px;margin-top:8px;display:none"></div></div>
+    <div class="row" style="display:block"><div class="k" style="margin-bottom:6px">Llevar tu capa de usuario a otra instalación (sync)</div>
+      <div class="d" style="margin-bottom:10px">Exporta <b>lo que tú has puesto</b> (valoraciones, tiers, favoritos, etiquetas, ediciones, listas, historial, emisoras y presets) a un fichero e impórtalo en otra instalación de escucharrr. Se reancla por <b>MBID y clave normalizada</b>, no por IDs internos: lo que no case con esa biblioteca se salta y se informa. No exporta tus ficheros ni el catálogo (eso sale de escanear).</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button id="syncexport">Exportar a fichero…</button>
+        <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:7px 12px">Elegir fichero a importar…<input id="syncfile" type="file" accept="application/json,.json" style="display:none"></label>
+      </div>
+      <div id="syncbox" style="margin-top:10px;display:none"></div>
+      <div id="syncmsg" style="font-size:12.5px;margin-top:8px;display:none"></div></div>
   </div></div>
 
   <div class="grp" data-cat="audio"><h2><span class="gi">${window.icon('zone',18)}</span> Audio — salida</h2><div class="body">
@@ -623,6 +631,39 @@ window.addEventListener('DOMContentLoaded', async () => {
       if (r.ok) loadMerges(); else { b.disabled = false; b.textContent = 'Deshacer'; alert('No se pudo deshacer: ' + (r.error || '')); }
     } catch (e2) { b.disabled = false; b.textContent = 'Deshacer'; alert('No se pudo contactar con el servidor.'); }
   });
+  // Sync (Modelo A): exportar/importar la capa de usuario (reanclada por MBID/clave), con vista previa.
+  document.getElementById('syncexport').addEventListener('click', () => { location.href = '/api/sync/export'; });
+  (function () {
+    const fi = document.getElementById('syncfile'), box = document.getElementById('syncbox'), msg = document.getElementById('syncmsg');
+    let parsed = null;
+    const sm = (t, ok) => { msg.style.display = 'block'; msg.style.color = ok ? 'var(--accent)' : '#c0392b'; msg.textContent = t; };
+    fi.addEventListener('change', async () => {
+      const f = fi.files && fi.files[0]; if (!f) return;
+      msg.style.display = 'none'; box.style.display = 'none'; parsed = null;
+      let text; try { text = await f.text(); parsed = JSON.parse(text); } catch (e) { sm('No se pudo leer el fichero (¿es un JSON válido?).', false); return; }
+      if (!parsed || parsed.format !== 'escucharrr-user-layer') { sm('Ese fichero no es un export de capa de usuario de escucharrr.', false); return; }
+      let pv; try { pv = await fetch('/api/sync/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: parsed }) }).then(r => r.json()); } catch (e) { sm('No se pudo contactar con el servidor.', false); return; }
+      if (!pv.ok) { sm(pv.error || 'Error.', false); return; }
+      const rows = Object.keys(pv.match).map(k => `<div style="display:flex;justify-content:space-between;gap:12px;padding:3px 0"><span>${esc(k)}</span><span style="color:var(--text-2)">${pv.match[k] || 0} casan${pv.miss[k] ? ` · <span style="color:#c0392b">${pv.miss[k]} sin casar</span>` : ''}</span></div>`).join('');
+      box.style.display = 'block';
+      box.innerHTML = `<div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
+        <div style="font-weight:600;margin-bottom:6px">Vista previa — qué casa con esta biblioteca</div>
+        <div style="font-size:12.5px;line-height:1.5">${rows || 'Nada que importar.'}</div>
+        <div style="margin-top:12px;display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+          <label style="display:inline-flex;align-items:center;gap:5px;font-size:13px"><input type="radio" name="syncmode" value="fill" checked> Rellenar (no pisa lo que ya tienes)</label>
+          <label style="display:inline-flex;align-items:center;gap:5px;font-size:13px"><input type="radio" name="syncmode" value="overwrite"> Sobrescribir (la importación gana)</label>
+          <button id="syncgo" class="btn-accent" style="padding:7px 14px">Importar</button>
+        </div></div>`;
+      document.getElementById('syncgo').onclick = async () => {
+        const mode = (box.querySelector('input[name=syncmode]:checked') || {}).value || 'fill';
+        const b = document.getElementById('syncgo'); b.disabled = true; b.textContent = 'Importando…';
+        try { const r = await fetch('/api/sync/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: parsed, mode }) }).then(x => x.json());
+          if (r.ok) { const ap = Object.entries(r.applied || {}).map(([k, v]) => k + ' ' + v).join(', ') || 'nada'; const sk = Object.values(r.skipped || {}).reduce((s, v) => s + v, 0); sm('Importado (' + r.mode + '): ' + ap + (sk ? ('. Saltadas ' + sk + ' (no casaban o ya existían).') : '.'), true); box.style.display = 'none'; fi.value = ''; }
+          else { sm(r.error || 'No se pudo importar.', false); b.disabled = false; b.textContent = 'Importar'; }
+        } catch (e) { sm('No se pudo contactar con el servidor.', false); b.disabled = false; b.textContent = 'Importar'; }
+      };
+    });
+  })();
   document.getElementById('bknow').addEventListener('click', async () => { const b = document.getElementById('bknow'); b.disabled = true; b.textContent = 'Creando…'; try { const r = await fetch('/api/backup/now', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(x => x.json()); if (r.ok) { BACKUPS = r.backups || []; renderBackups(); bkMsg('Copia creada: ' + fmtBk(r.file), true); } else bkMsg('No se pudo crear: ' + (r.error || ''), false); } catch (e) { bkMsg('No se pudo contactar con el servidor.', false); } b.disabled = false; b.textContent = 'Crear copia'; });
   document.getElementById('bklist').addEventListener('click', async e => {
     const rb = e.target.closest('.bkrestore');

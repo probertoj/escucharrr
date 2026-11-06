@@ -236,6 +236,9 @@ let discogsTok = null;
 function loadDiscogs() { try { const p = path.join(__dirname, 'discogs.json'); discogsTok = fs.existsSync(p) ? (JSON.parse(fs.readFileSync(p, 'utf8')).token || null) : null; } catch (e) { discogsTok = null; } }
 loadDiscogs();
 
+// Sync (Modelo A, fase 1): exportar/importar la capa de usuario reanclada por MBID/huella/clave.
+const syncLayer = require('../data-layer/sync');
+
 // ── Puente a Liderarrr (completismo/adquisición): la URL se configura por UI, nunca hardcodeada ──
 const LIDERARRR_PATH = path.join(__dirname, 'liderarrr.json');
 let liderarrrCfg = null;
@@ -2213,6 +2216,17 @@ async function spotifySync() {
 }
 // Sugerencia de FECHA para un disco al que le falta el día: primero Spotify (si está autorizado),
 // y si no aporta día/mes, Discogs como 2ª fuente. Solo lectura y solo sugerencia: no cambia nada.
+// Sync import/preview: lee el fichero (grande) y, en import, aplica; en preview, solo cuenta. Nunca toca ficheros.
+async function handleSyncImport(req, res, preview) {
+  const b = await readBodyBig(req, 96 * 1024 * 1024); if (!b) return sendJSON(res, { ok: false, error: 'Fichero demasiado grande o ilegible.' });
+  const data = b.data || b;
+  try {
+    if (preview) return sendJSON(res, syncLayer.previewImport(db, data));
+    const rep = syncLayer.applyImport(db, data, { mode: b.mode || 'fill' });
+    sseBroadcast('library');
+    return sendJSON(res, rep);
+  } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+}
 async function handleDateSuggest(req, res, u) {
   try {
     const rg = Q.spotifyDateRow.get(Number(u.searchParams.get('id'))); if (!rg) return sendJSON(res, { ok: false, reason: 'not-found' });
@@ -3985,6 +3999,15 @@ http.createServer((req, res) => {
     }
     if (u.pathname === '/api/album') { const rel = parseInt(u.searchParams.get('rel'), 10) || null; const a = album(parseInt(u.searchParams.get('id'), 10), rel); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/datesuggest') return void handleDateSuggest(req, res, u);
+    // Sync (Modelo A): exportar la capa de usuario a un fichero portable (reanclado por MBID/clave).
+    if (u.pathname === '/api/sync/export') {
+      try { const body = JSON.stringify(syncLayer.buildExport(db));
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': 'attachment; filename="escucharrr-capa-usuario.json"' });
+        return res.end(body);
+      } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+    }
+    if ((u.pathname === '/api/sync/preview' || u.pathname === '/api/sync/import') && req.method === 'POST')
+      return void handleSyncImport(req, res, u.pathname.endsWith('/preview'));
     if (u.pathname === '/api/search') return sendJSON(res, search(u.searchParams.get('q'), Math.min(parseInt(u.searchParams.get('n') || '20', 10) || 20, 100)));
     if (u.pathname === '/api/artist') { const a = artist(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/artist/discography') { artistDiscography(parseInt(u.searchParams.get('id'), 10)).then(r => sendJSON(res, r)).catch(e => sendJSON(res, { ok: false, error: String(e.message) })); return; }
