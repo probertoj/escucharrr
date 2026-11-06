@@ -40,3 +40,5 @@ engine/*.exp
 engine/*.lib
 app/liderarrr.json
 app/plex.json
+# Discogs (token personal opcional del usuario)
+app/discogs.json

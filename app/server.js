@@ -230,6 +230,12 @@ loadSpotify();
 function saveSpotifyTok(t) { spotifyTok = t; try { fs.writeFileSync(SPOTIFY_TOKEN_PATH, JSON.stringify(t)); } catch (e) {} }
 function spotifyConfigured() { return !!(spotifyCfg && spotifyCfg.clientId && spotifyCfg.clientSecret && spotifyCfg.redirectUri); }
 
+// Discogs — 2ª fuente de FECHAS (solo sugerencia, solo lectura). Token opcional en app/discogs.json.
+const discogs = require('../data-layer/discogs');
+let discogsTok = null;
+function loadDiscogs() { try { const p = path.join(__dirname, 'discogs.json'); discogsTok = fs.existsSync(p) ? (JSON.parse(fs.readFileSync(p, 'utf8')).token || null) : null; } catch (e) { discogsTok = null; } }
+loadDiscogs();
+
 // ── Puente a Liderarrr (completismo/adquisición): la URL se configura por UI, nunca hardcodeada ──
 const LIDERARRR_PATH = path.join(__dirname, 'liderarrr.json');
 let liderarrrCfg = null;
@@ -2181,6 +2187,19 @@ async function spotifySync() {
   spotifyLastSync = { at: Date.now(), saved: saved.length, matched };
   return { saved: saved.length, matched };
 }
+// Sugerencia de FECHA para un disco al que le falta el día: primero Spotify (si está autorizado),
+// y si no aporta día/mes, Discogs como 2ª fuente. Solo lectura y solo sugerencia: no cambia nada.
+async function handleDateSuggest(req, res, u) {
+  try {
+    const rg = Q.spotifyDateRow.get(Number(u.searchParams.get('id'))); if (!rg) return sendJSON(res, { ok: false, reason: 'not-found' });
+    const usable = s => s && s.date && (s.precision === 'day' || s.precision === 'month');
+    let out = null;
+    const token = await spotifyAccessToken();
+    if (token) { try { const s = await spotify.albumDate(token, { spotifyId: rg.spotify_album_id, artist: rg.artist, title: rg.title }); if (usable(s)) out = { ...s, source: 'Spotify' }; } catch (e) {} }
+    if (!out) { try { const d = await discogs.albumDate(discogsTok, { artist: rg.artist, title: rg.title }); if (usable(d)) out = { ...d, source: 'Discogs' }; } catch (e) {} }
+    return sendJSON(res, { ok: true, suggestion: out });
+  } catch (e) { return sendJSON(res, { ok: false, reason: 'error' }); }
+}
 async function handleSpotify(req, res, u) {
   const sub = u.pathname.slice('/api/spotify/'.length);
   try {
@@ -2852,6 +2871,7 @@ async function handleConfig(req, res, u) {
         spotify: { configured: spotifyConfigured(), authorized: !!spotifyTok, clientId: (spotifyCfg && spotifyCfg.clientId) || '', redirectUri: SPOTIFY_REDIRECT, matched: Q.spotifyCount.get().n },
         liderarrr: { url: liderarrrUrl(), connected: !!liderarrrUrl(), hasAuth: !!(liderarrrCfg && liderarrrCfg.pass), user: (liderarrrCfg && liderarrrCfg.user) || '' },
         plex: { url: plexUrl(), connected: plexConfigured(), hasToken: !!(plexCfg && plexCfg.token) },
+        discogs: { hasToken: !!discogsTok },
         acoustid: { hasKey: !!acoustidKey(), fpcalcPath: acoustidFpcalc(), fpcalc: await acoustidLib.fpcalcAvailable(acoustidFpcalc()) },
         enabled: scrobble.enabledServices(scrobEff() || {}), pending: scrobble.pendingCount(db, scrobEff() || {}) });
     }
@@ -2886,6 +2906,13 @@ async function handleConfig(req, res, u) {
       if (!clientId || !clientSecret) return sendJSON(res, { ok: false, error: 'Hacen falta el Client ID y el Client Secret.' });
       saveSpotifyCfg(clientId, clientSecret);
       return sendJSON(res, { ok: true, configured: spotifyConfigured(), redirectUri: SPOTIFY_REDIRECT });
+    }
+    // Discogs: token personal opcional (sube el límite de peticiones para la sugerencia de fechas).
+    if (sub === 'discogs') {
+      const token = String(body.token || '').trim();
+      if (body.clear || !token) { try { if (fs.existsSync(path.join(__dirname, 'discogs.json'))) fs.unlinkSync(path.join(__dirname, 'discogs.json')); } catch (e) {} loadDiscogs(); return sendJSON(res, { ok: true, hasToken: false }); }
+      try { fs.writeFileSync(path.join(__dirname, 'discogs.json'), JSON.stringify({ token }, null, 2) + '\n', 'utf8'); } catch (e) { return sendJSON(res, { ok: false, error: 'No se pudo guardar.' }); }
+      loadDiscogs(); return sendJSON(res, { ok: true, hasToken: !!discogsTok });
     }
     // Liderarrr: guarda la URL (cualquiera puede apuntar a su instancia) y la valida llamando a su API
     if (sub === 'liderarrr') {
@@ -3932,6 +3959,7 @@ http.createServer((req, res) => {
       return sendJSON(res, { total, items, byReason, shown: items.length });
     }
     if (u.pathname === '/api/album') { const rel = parseInt(u.searchParams.get('rel'), 10) || null; const a = album(parseInt(u.searchParams.get('id'), 10), rel); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
+    if (u.pathname === '/api/datesuggest') return void handleDateSuggest(req, res, u);
     if (u.pathname === '/api/search') return sendJSON(res, search(u.searchParams.get('q'), Math.min(parseInt(u.searchParams.get('n') || '20', 10) || 20, 100)));
     if (u.pathname === '/api/artist') { const a = artist(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/artist/discography') { artistDiscography(parseInt(u.searchParams.get('id'), 10)).then(r => sendJSON(res, r)).catch(e => sendJSON(res, { ok: false, error: String(e.message) })); return; }

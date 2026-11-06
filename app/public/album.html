@@ -165,10 +165,10 @@ function renderAlbum(a){
   applyCollapse();
   maybeRetoBtn();
   maybeSimilar();
-  maybeSpotifyDate();
+  maybeDateSuggest();
 }
-// Fecha de lanzamiento que FALTA: si Spotify está conectado, le preguntamos la fecha (solo SUGERENCIA,
-// no cambia nada) y, si aporta día/mes, la mostramos con un enlace para revisarla y aportarla a MusicBrainz.
+// Fecha de lanzamiento que FALTA: preguntamos a Spotify y, si no la tiene, a Discogs (solo SUGERENCIA,
+// no cambia nada). Si aporta día/mes, la mostramos con un enlace para revisarla y aportarla a MusicBrainz.
 const _MESES=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 function _fmtSpDate(d,prec){
   const m=String(d||'').match(/^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?/); if(!m) return d;
@@ -177,15 +177,15 @@ function _fmtSpDate(d,prec){
   if(prec==='month'&&mo) return `${mo} de ${y}`;
   return y;
 }
-async function maybeSpotifyDate(){
-  const slot=document.getElementById('spdate'); const a=window.ALB; if(!slot||!a||!a.spotify_enabled) return;
-  let r; try{ r=await fetch('/api/spotify/date?id='+a.id).then(x=>x.json()); }catch(e){ return; }
+async function maybeDateSuggest(){
+  const slot=document.getElementById('spdate'); const a=window.ALB; if(!slot||!a) return;
+  let r; try{ r=await fetch('/api/datesuggest?id='+a.id).then(x=>x.json()); }catch(e){ return; }
   if(!r||!r.ok||!r.suggestion||!r.suggestion.date) return;
   const s=r.suggestion; if(s.precision!=='day'&&s.precision!=='month') return;   // el año solo no aporta nada
   const pretty=_fmtSpDate(s.date,s.precision);
-  const spl=s.url?`<a href="${s.url}" target="_blank" rel="noopener" style="color:var(--text-2)">Spotify</a>`:'Spotify';
+  const src=s.url?`<a href="${s.url}" target="_blank" rel="noopener" style="color:var(--text-2)">${esc(s.source||'')}</a>`:esc(s.source||'');
   const mb=a.mbid?` · <a href="https://musicbrainz.org/release-group/${a.mbid}" target="_blank" rel="noopener" style="color:var(--accent)">Revisar y añadir en MusicBrainz</a>`:'';
-  slot.innerHTML=`<span>${spl} indica <b style="color:var(--text)">${pretty}</b>${mb}</span>`;
+  slot.innerHTML=`<span>${src} indica <b style="color:var(--text)">${pretty}</b>${mb}</span>`;
 }
 // Artistas similares (vía Last.fm) — carga perezosa: no bloquea la ficha y degrada con elegancia.
 const _inits=n=>{const s=String(n||'').replace(/[^\p{L}\p{N} ]/gu,' ').trim().split(/\s+/).filter(Boolean).map(w=>w[0]).join('');return (s||'?').slice(0,2).toUpperCase();};
