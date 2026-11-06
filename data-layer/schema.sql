@@ -371,6 +371,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
   prefix = '2 3 4', tokenize = 'unicode61 remove_diacritics 2'
 );
 
+-- FTS de PISTAS: título + álbum + artista por track, para la búsqueda del explorador de pistas
+-- (MATCH ~5 ms sobre 254K vs ~480 ms del LIKE). Se puebla en scan.js.
+CREATE VIRTUAL TABLE IF NOT EXISTS track_fts USING fts5(
+  title, album, artist, track_id UNINDEXED,
+  prefix = '2 3 4', tokenize = 'unicode61 remove_diacritics 2'
+);
+
 -- ────────────────────────────────────────────────────────────────────────────
 -- 9. Vistas de conveniencia para las consultas de la app
 -- ────────────────────────────────────────────────────────────────────────────

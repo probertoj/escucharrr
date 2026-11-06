@@ -429,6 +429,14 @@ db.exec('DELETE FROM search_fts');
 db.exec("INSERT INTO search_fts(name,kind,subject_type,subject_id) SELECT name,'artist','artist',id FROM artist");
 db.exec("INSERT INTO search_fts(name,kind,subject_type,subject_id) SELECT title,'album','release_group',id FROM release_group");
 db.exec("INSERT INTO search_fts(name,kind,subject_type,subject_id) SELECT title,'track','recording',id FROM recording");
+// FTS de PISTAS (título+álbum+artista por track) para la búsqueda del explorador de pistas (MATCH ~5 ms vs LIKE ~480 ms)
+db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS track_fts USING fts5(title, album, artist, track_id UNINDEXED, prefix='2 3 4', tokenize='unicode61 remove_diacritics 2')`);
+db.exec('DELETE FROM track_fts');
+db.exec(`INSERT INTO track_fts(title,album,artist,track_id)
+  SELECT COALESCE(tr.title,r.title), rg.title,
+    (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id,r.artist_credit_id) ORDER BY acn.position LIMIT 1),
+    tr.id
+  FROM track tr JOIN recording r ON r.id=tr.recording_id JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id`);
 
 const nIsrc = db.prepare('SELECT COUNT(*) n FROM local_file WHERE isrc IS NOT NULL').get().n;
 const nMb = db.prepare("SELECT COUNT(*) n FROM local_file WHERE match_by='mb-tag'").get().n;

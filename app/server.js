@@ -109,6 +109,9 @@ function initAppSchema(d) {
   CREATE TABLE IF NOT EXISTS genre_map (raw TEXT PRIMARY KEY, canonical TEXT, hidden INTEGER DEFAULT 0);
   CREATE TABLE IF NOT EXISTS merge_undo (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, keep_id INTEGER, label TEXT, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
   CREATE INDEX IF NOT EXISTS ix_recording_work ON recording(work_id);`);   // acelera obra→álbumes (compositores, obras) de ~27 s a instantáneo
+  // FTS5 de PISTAS (título+álbum+artista por track) para la búsqueda del explorador de pistas: LIKE sobre 254K
+  // (~480 ms) → MATCH (~5 ms). Se puebla en scan.js y, para BD ya existentes, perezosamente al arrancar si está vacía.
+  try { d.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS track_fts USING fts5(title, album, artist, track_id UNINDEXED, prefix='2 3 4', tokenize='unicode61 remove_diacritics 2')`); } catch (e) {}
   // Índices sobre las claves foráneas del grafo: sin ellos, recorrer release_group -> release -> medium -> track -> local_file
   // hace scans anidados por álbum (inviable con decenas de miles de discos). Cada uno en su try por si el grafo aún no existe.
   for (const ix of [
@@ -1420,6 +1423,30 @@ function inspectorBucket(bucket, limit, offset) {
   const items = db.prepare(`SELECT a.id,a.title,a.artist,a.year FROM v_album a JOIN release_group rg ON rg.id=a.id WHERE ${def.where} ORDER BY a.title LIMIT ? OFFSET ?`).all(limit, offset);
   return { bucket, total, items };
 }
+// ── FTS de pistas: consulta sanitizada (términos con prefijo, sin operadores FTS), estado y poblado perezoso ──
+function ftsQuery(q) {   // "love you" → 'love* you*'; quita puntuación/operadores para que MATCH no reviente
+  const terms = String(q || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').trim().split(/\s+/).filter(Boolean);
+  return terms.length ? terms.map(t => t + '*').join(' ') : '';
+}
+let _trackFtsCount = -1;   // -1 = sin comprobar; se reevalúa tras cambios de biblioteca (sseBroadcast)
+function trackFtsReady() {
+  if (_trackFtsCount < 0) { try { _trackFtsCount = db.prepare('SELECT COUNT(*) n FROM track_fts').get().n; } catch (e) { _trackFtsCount = 0; } }
+  return _trackFtsCount > 0;
+}
+function ensureTrackFts() {   // puebla el índice si está vacío (BD existentes, sin re-escanear); lo reconstruye el escáner
+  try {
+    const n = db.prepare('SELECT COUNT(*) n FROM track_fts').get().n;
+    if (n > 0) { _trackFtsCount = n; return; }
+    db.exec('DELETE FROM track_fts');
+    db.exec(`INSERT INTO track_fts(title,album,artist,track_id)
+      SELECT COALESCE(tr.title,r.title), rg.title,
+        (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id,r.artist_credit_id) ORDER BY acn.position LIMIT 1),
+        tr.id
+      FROM track tr JOIN recording r ON r.id=tr.recording_id JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id`);
+    _trackFtsCount = db.prepare('SELECT COUNT(*) n FROM track_fts').get().n;
+    console.log('track_fts poblado:', _trackFtsCount, 'pistas');
+  } catch (e) { _trackFtsCount = 0; }
+}
 // Explorador de pistas (como el trackbrowser de Roon). Con 254k pistas va en el servidor:
 // búsqueda + orden + paginación. Una pista por fila (join a un único local_file) para no duplicar.
 function tracksList(opts) {
@@ -1435,11 +1462,17 @@ function tracksList(opts) {
   if (opts.samplerate) { lfConds.push('lf.sample_rate=?'); lfArgs.push(parseInt(opts.samplerate, 10)); }
   if (opts.channels) { lfConds.push('lf.channels=?'); lfArgs.push(parseInt(opts.channels, 10)); }
   const hasLf = lfConds.length > 0;
+  const fq = q ? ftsQuery(q) : '';
+  const useFts = !!(q && fq && trackFtsReady());   // FTS si hay términos válidos y el índice está poblado; si no, LIKE
   const base = `FROM track tr JOIN recording r ON r.id=tr.recording_id`
+    + (useFts ? ` JOIN track_fts ON track_fts.track_id=tr.id` : ``)
     + (hasLf ? ` JOIN local_file lf ON lf.track_id=tr.id` : ``)
     + ` JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id`;
   const conds = [], args = [];
-  if (q) { const like = '%' + q + '%'; conds.push(`(COALESCE(tr.title,r.title) LIKE ? OR rg.title LIKE ? OR EXISTS(SELECT 1 FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id,r.artist_credit_id) AND acn.name LIKE ?))`); args.push(like, like, like); }
+  if (q) {
+    if (useFts) { conds.push('track_fts MATCH ?'); args.push(fq); }   // ~5 ms sobre 254K (vs ~480 ms del LIKE)
+    else { const like = '%' + q + '%'; conds.push(`(COALESCE(tr.title,r.title) LIKE ? OR rg.title LIKE ? OR EXISTS(SELECT 1 FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id,r.artist_credit_id) AND acn.name LIKE ?))`); args.push(like, like, like); }
+  }
   if (hasLf) { conds.push(...lfConds); args.push(...lfArgs); }
   const where = conds.length ? ' WHERE ' + conds.join(' AND ') : '';
   // 1ª pasada: la página de pistas (sin datos de fichero, para que el ORDER BY/LIMIT no los recorra)
@@ -2540,7 +2573,7 @@ function settingsInfo() {
 
 // ── biblioteca en vivo: watcher de carpetas + eventos SSE a la UI ───────────────
 const sseClients = new Set();
-function sseBroadcast(type) { if (type === 'library') { _trackFacetsCache = null; _folderCache = new Map(); _libCache = null; _inspectorCache = null; } const line = `data: ${JSON.stringify({ type, t: Date.now() })}\n\n`; for (const r of sseClients) { try { r.write(line); } catch (e) {} } }
+function sseBroadcast(type) { if (type === 'library') { _trackFacetsCache = null; _folderCache = new Map(); _libCache = null; _inspectorCache = null; _trackFtsCount = -1; } const line = `data: ${JSON.stringify({ type, t: Date.now() })}\n\n`; for (const r of sseClients) { try { r.write(line); } catch (e) {} } }
 // Facetas del explorador de pistas (formato/profundidad/frecuencia/canales). Se calculan sobre
 // local_file en una pasada y se cachean (solo cambian al reescanear).
 let _trackFacetsCache = null;
@@ -3883,6 +3916,7 @@ http.createServer((req, res) => {
   setTimeout(() => { try { libraryListJSON(); } catch (e) {} }, 400);
   setTimeout(() => { try { trackFacets(); } catch (e) {} }, 900);
   setTimeout(() => { try { inspectorCounts(); console.log('cachés precalentadas (biblioteca, facetas, inspector)'); } catch (e) {} }, 1400);
+  setTimeout(() => { try { ensureTrackFts(); } catch (e) {} }, 1900);   // puebla el FTS de pistas si la BD aún no lo tiene (una vez)
   const svc = scrobble.enabledServices(scrobEff() || {});
   if (svc.length) { console.log('scrobbling activo:', svc.join(', ')); setInterval(() => scrobble.drain(db, scrobEff(), console.log).catch(() => {}), 30000); }
   else console.log('scrobbling: desactivado (crea app/scrobble.json a partir de scrobble.example.json)');
