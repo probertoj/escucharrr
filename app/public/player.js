@@ -460,8 +460,11 @@ window.player = (function () {
     }
     // 'cover' (por defecto): carátula grande + título/artista + "a continuación"
     const up = q.slice(idx + 1, idx + 6);
+    // Visualizador: franja compacta en escritorio; en MÓVIL, banda ancha y más alta (inmersivo, al alcance del pulgar).
+    const ph = !!(window.matchMedia && window.matchMedia('(max-width:619px)').matches);
+    const vizW = ph ? 'min(88vw,440px)' : 'min(44vh,300px)', vizH = ph ? '120px' : '46px';
     return `<div style="width:min(44vh,300px);aspect-ratio:1;border-radius:16px;overflow:hidden;box-shadow:0 12px 44px rgba(0,0,0,.28);margin-top:6px;flex:none"><img src="/api/cover?rg=${c.albumId}" alt="" style="width:100%;height:100%;object-fit:cover;display:block"></div>
-      <div style="width:min(44vh,300px);height:46px;margin-top:8px;flex:none;position:relative">${vizOn ? `<canvas id="npviz" data-act="vizstyle" title="Toca para cambiar de estilo" style="width:100%;height:100%;display:block;cursor:pointer"></canvas>` : ''}
+      <div style="width:${vizW};height:${vizH};margin-top:8px;flex:none;position:relative">${vizOn ? `<canvas id="npviz" data-act="vizstyle" title="Toca para cambiar de estilo" style="width:100%;height:100%;display:block;cursor:pointer"></canvas>` : ''}
         <span data-act="viztoggle" title="Visualizador" style="position:absolute;right:0;top:-2px;cursor:pointer;color:var(--${vizOn ? 'accent' : 'text-2'});display:inline-flex">${ic('visualizer', 15)}</span></div>
       <div style="text-align:center;margin-top:10px">
         <div style="font-family:var(--serif);font-size:26px;font-weight:600;line-height:1.2">${esc(c.title)}</div>
