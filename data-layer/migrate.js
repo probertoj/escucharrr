@@ -80,6 +80,7 @@ function migrate(db) {
   db.exec('CREATE INDEX IF NOT EXISTS ix_release_rg_dir ON "release"(release_group_id, source_dir)');
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_isrc ON recording(isrc)');
   db.exec('CREATE INDEX IF NOT EXISTS ix_recording_acoustid ON recording(acoustid)');
+  db.exec('CREATE INDEX IF NOT EXISTS ix_recording_work ON recording(work_id)');   // obra→grabaciones (compositores/obras)
   db.exec('CREATE INDEX IF NOT EXISTS ix_file_size ON local_file(size_bytes)');   // para reconciliar movimientos/renombrados por identidad
   if (dropMbidUnique(db)) added.push('release_group.mbid: UNIQUE quitado (modelo de versiones, estilo Roon)');
   // v_album.title ahora prioriza el título editado por el usuario (user_edit field='title') sobre rg.title.

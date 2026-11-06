@@ -81,7 +81,18 @@ function renderAlbum(a){
   const INST={'bass':'bajo','electric bass':'bajo eléctrico','double bass':'contrabajo','guitar':'guitarra','acoustic guitar':'guitarra acústica','electric guitar':'guitarra eléctrica','drums':'batería','percussion':'percusión','piano':'piano','keyboards':'teclados','synthesizer':'sintetizador','organ':'órgano','cello':'violonchelo','violin':'violín','viola':'viola','trumpet':'trompeta','trombone':'trombón','saxophone':'saxofón','flute':'flauta','clarinet':'clarinete','harmonica':'armónica','accordion':'acordeón','vibraphone':'vibráfono'};
   const tInst=i=>i?(INST[i.toLowerCase()]||i.toLowerCase()):i;
   const clabel=c=>c.role==='instrumento'&&c.instrument?tInst(c.instrument):(c.role==='voz'&&c.instrument?'voz ('+tInst(c.instrument)+')':c.role);
-  const credits=(a.credits||[]).length?`<div class="sec">Créditos</div><div class="credits">`+a.credits.map(c=>`<div class="c"><div class="role">${esc(clabel(c))}</div>${c.artists.map(esc).join(', ')}</div>`).join('')+`</div>`:'';
+  // Créditos agrupados como Roon: Intérpretes / Composición / Producción / Edición (+ Otros para lo no clasificado).
+  const CGROUP={instrumento:'perf',voz:'perf','interpretación':'perf',conductor:'perf','performing orchestra':'perf',orchestrator:'perf',arreglos:'perf','vocal arranger':'perf','instrument arranger':'perf',
+    'composición':'comp',escritura:'comp',letra:'comp',
+    'producción':'prod','ingeniería':'prod',mezcla:'prod','grabación':'prod','masterización':'prod',remixer:'prod',editor:'prod',programming:'prod',
+    'phonographic copyright':'rel','samples from artist':'rel'};
+  const CORDER=[['perf','Intérpretes'],['comp','Composición'],['prod','Producción'],['rel','Edición'],['other','Otros créditos']];
+  let credits='';
+  if((a.credits||[]).length){ const by={};
+    a.credits.forEach(c=>{const g=CGROUP[c.role]||'other';(by[g]=by[g]||[]).push(c);});
+    credits='<div class="sec">Créditos</div>'+CORDER.filter(([k])=>by[k]&&by[k].length).map(([k,lbl])=>
+      `<div class="cgrp-h">${lbl}</div><div class="credits">`+by[k].map(c=>`<div class="c"><div class="role">${esc(clabel(c))}</div>${c.artists.map(esc).join(', ')}</div>`).join('')+`</div>`).join('');
+  }
   // otras ediciones del mismo álbum en la biblioteca (deluxe/remaster/año/país…), estilo Roon
   // Versiones (estilo Roon): copias del mismo lanzamiento en tu biblioteca, con la «Principal» marcada.
   const pbadge=`<span class="pbadge">Principal</span>`;

@@ -109,6 +109,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     <div class="row"><div class="lbl"><div class="k">Reparar renombrados / movimientos</div><div class="d" id="repairstatus">si renombraste o moviste carpetas en tu disco, re-vincula los ficheros a su ruta nueva por identidad de contenido (sin re-escanear todo) y funde duplicados. Solo lee el disco: no mueve ni renombra nada tuyo.</div></div><button id="repairbtn">Reparar ahora</button></div>
     <div class="row"><div class="lbl"><div class="k">Identificar los «no identificados»</div><div class="d" id="idallstatus">reintenta identificar con MusicBrainz todos los álbumes sin identificar de golpe (por nº de pistas y duraciones). Útil tras corregir nombres o artistas: no hay que ir uno a uno con la lupa. Va en segundo plano; solo aplica las coincidencias fiables.</div></div><button id="idallbtn">Identificar todos</button></div>
     <div class="row" style="display:block"><div class="k" style="margin-bottom:6px">Ficheros saltados en el último escaneo <span id="skipcount" style="color:var(--muted);font-weight:400"></span></div><div id="skiplist" class="d" style="max-height:220px;overflow:auto;font-size:12px;line-height:1.5">cargando…</div></div>
+    <div class="row" style="display:block"><div class="k" style="margin-bottom:6px">Fusiones hechas <span id="mergecount" style="color:var(--muted);font-weight:400"></span></div><div class="d" style="margin-bottom:8px">Uniones de artista/álbum y tracklists fundidas. Puedes <b>deshacer cualquiera cuando quieras</b>, no solo justo después.</div><div id="mergelist" class="d" style="max-height:260px;overflow:auto;font-size:12.5px;line-height:1.5">cargando…</div></div>
   </div></div>
 
   <div class="grp" data-cat="backups"><h2><span class="gi">${window.icon('backup',18)}</span> Copia de seguridad</h2><div class="body">
@@ -138,6 +139,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   <div class="grp" data-cat="dsp"><h2><span class="gi">${window.icon('eq',18)}</span> Ecualizador</h2><div class="body">
     <div class="row"><div class="lbl"><div class="k">Ecualizador de 7 bandas</div><div class="d">se aplica a la salida del navegador y, si está activo, al motor nativo</div></div>
       <label class="sw"><input type="checkbox" id="eqon" ${S.eqOn?'checked':''}><span class="t"></span></label></div>
+    <div class="row"><div class="lbl"><div class="k">Corrección por auriculares</div><div class="d">curva orientativa hacia un timbre neutro para modelos conocidos (Audeze, Sennheiser…). Ajusta las bandas a tu gusto después.</div></div>
+      <select id="hpsel"><option value="">— elige modelo —</option></select></div>
     <div class="row" style="display:block"><div class="pre" id="pre">${presets}</div>
       <div class="eqbands" id="eqbands">${bands}</div></div>
   </div></div>
@@ -207,6 +210,24 @@ window.addEventListener('DOMContentLoaded', async () => {
   const eqon = document.getElementById('eqon'); if (eqon) eqon.addEventListener('change', e => { if (P && P.setEqEnabled) P.setEqEnabled(e.target.checked); });
 
   document.getElementById('pre').addEventListener('click', e => { const b = e.target.closest('[data-pre]'); if (!b || !P || !P.setPreset) return; P.setPreset(b.dataset.pre); refreshEq(); });
+  // Correcciones por auriculares (Roon: presets Audeze y cía.). Curvas orientativas hacia neutro sobre
+  // nuestras 7 bandas (60/150/400/1k/2.4k/6k/15k). Son aproximaciones; el usuario afina después.
+  const HP_PRESETS = [
+    ['Audeze LCD-2', [-2,-1,0,1,2,3,4]], ['Audeze LCD-X', [-1,0,0,1,2,2,3]],
+    ['HiFiMan Sundara', [0,0,0,1,1,-1,-2]], ['Sennheiser HD 600', [2,1,0,0,2,1,0]],
+    ['Sennheiser HD 650', [3,2,0,0,1,1,0]], ['Beyerdynamic DT 990', [1,0,0,1,0,-3,-2]],
+    ['AKG K701', [4,2,0,0,1,-1,-1]], ['Grado SR80', [3,2,0,0,0,-2,-2]],
+    ['Sony WH-1000XM', [-3,-2,0,1,1,1,0]], ['Apple AirPods Max', [-1,0,0,0,1,1,0]],
+    ['Apple EarPods', [4,2,0,0,-1,-2,-1]]
+  ];
+  (function () { const sel = document.getElementById('hpsel'); if (!sel) return;
+    HP_PRESETS.forEach(([name], i) => { const o = document.createElement('option'); o.value = String(i); o.textContent = name; sel.appendChild(o); });
+    sel.addEventListener('change', () => { const i = parseInt(sel.value, 10); if (isNaN(i) || !P || !P.setEqBand) return;
+      const curve = HP_PRESETS[i][1]; curve.forEach((v, bi) => P.setEqBand(bi, v));
+      if (P.setEqEnabled) { P.setEqEnabled(true); const on = document.getElementById('eqon'); if (on) on.checked = true; }
+      refreshEq();
+    });
+  })();
   document.getElementById('eqbands').addEventListener('input', e => { const s = e.target.closest('.eqband'); if (!s || !P || !P.setEqBand) return; const i = +s.dataset.i, v = parseInt(s.value, 10); P.setEqBand(i, v); const g = document.getElementById('eqg'+i); if (g) g.textContent = (v>0?'+':'') + v; });
   function refreshEq() { if (!P || !P.getSettings) return; const s = P.getSettings(); const on = document.getElementById('eqon'); if (on) on.checked = s.eqOn; s.eqGains.forEach((v,i) => { const sl = document.querySelector('.eqband[data-i="'+i+'"]'); if (sl) sl.value = v; const g = document.getElementById('eqg'+i); if (g) g.textContent = (v>0?'+':'') + v; }); }
 
@@ -509,6 +530,32 @@ window.addEventListener('DOMContentLoaded', async () => {
     }));
     if (byReason.length === 1) box.querySelector('.skiphdr').click();   // un solo motivo: ábrelo ya
   }).catch(() => { const box = document.getElementById('skiplist'); if (box) box.textContent = 'No se pudo cargar.'; });
+  // historial persistente de fusiones (Roon: unmerge settings): deshacer artista/álbum/fold cuando quieras.
+  const MERGE_KICO = { artist: 'artist', fold: 'disc', album: 'album' };
+  function loadMerges() {
+    const cnt = document.getElementById('mergecount'), box = document.getElementById('mergelist'); if (!box) return;
+    fetch('/api/merges').then(r => r.json()).then(j => {
+      const items = (j && j.items) || []; cnt.textContent = items.length ? '(' + items.length + ')' : '';
+      if (!items.length) { box.innerHTML = '<span style="color:var(--text-2)">Ninguna — no has unido ni fundido nada todavía.</span>'; return; }
+      box.innerHTML = items.map(m => {
+        const when = (m.created_at || '').replace('T', ' ').slice(0, 16);
+        const name = m.target ? `<a href="${esc(m.target)}" style="color:var(--text);font-weight:600">${esc(m.label || '')}</a>` : `<b>${esc(m.label || '')}</b>`;
+        const sub = m.count ? ` · ${m.count} ${m.count === 1 ? 'entidad' : 'entidades'}` : '';
+        return `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">
+          <div style="flex:1;min-width:0"><span style="color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.03em">${esc(m.kind_label || m.kind)}</span><br>${name}<span style="color:var(--muted)">${sub} · ${esc(when)}</span></div>
+          <button class="unmerge" data-id="${m.id}">Deshacer</button></div>`;
+      }).join('');
+    }).catch(() => { box.textContent = 'No se pudo cargar.'; });
+  }
+  loadMerges();
+  document.getElementById('mergelist').addEventListener('click', async e => {
+    const b = e.target.closest('.unmerge'); if (!b) return;
+    if (!confirm('¿Deshacer esta fusión? Se restaurarán las entidades originales tal cual estaban.')) return;
+    b.disabled = true; b.textContent = 'Deshaciendo…';
+    try { const r = await fetch('/api/merge/undo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: parseInt(b.dataset.id, 10) }) }).then(x => x.json());
+      if (r.ok) loadMerges(); else { b.disabled = false; b.textContent = 'Deshacer'; alert('No se pudo deshacer: ' + (r.error || '')); }
+    } catch (e2) { b.disabled = false; b.textContent = 'Deshacer'; alert('No se pudo contactar con el servidor.'); }
+  });
   document.getElementById('bknow').addEventListener('click', async () => { const b = document.getElementById('bknow'); b.disabled = true; b.textContent = 'Creando…'; try { const r = await fetch('/api/backup/now', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(x => x.json()); if (r.ok) { BACKUPS = r.backups || []; renderBackups(); bkMsg('Copia creada: ' + fmtBk(r.file), true); } else bkMsg('No se pudo crear: ' + (r.error || ''), false); } catch (e) { bkMsg('No se pudo contactar con el servidor.', false); } b.disabled = false; b.textContent = 'Crear copia'; });
   document.getElementById('bklist').addEventListener('click', async e => {
     const rb = e.target.closest('.bkrestore');

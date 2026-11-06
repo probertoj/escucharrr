@@ -21,6 +21,12 @@
 .wk .albs a{color:var(--accent);text-decoration:none}
 .wk .albs a:hover{text-decoration:underline}
 .empty{color:var(--text-2);margin-top:20px;line-height:1.6}
+.perfhdr{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:12px 0 7px}
+.perfchips{display:flex;flex-wrap:wrap;gap:7px}
+.pchip{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);padding:4px 10px;border-radius:999px;text-decoration:none}
+.pchip:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.pchip .pn{color:var(--muted);font-variant-numeric:tabular-nums}
+.pchip:hover .pn{color:#fff}
 </style>
 </head>
 <body>
@@ -48,7 +54,11 @@ async function toggle(id){
   if(!CACHE[id]){ body.innerHTML='<div style="color:var(--muted);padding:6px 0">cargando…</div>';
     try{ CACHE[id]=await fetch('/api/composer?id='+id).then(r=>r.json()); }catch(e){ body.innerHTML='<div style="color:var(--muted)">no se pudo cargar</div>'; return; } }
   const d=CACHE[id];
-  body.innerHTML=(d.works||[]).map(w=>`<div class="wk"><span class="wt">${esc(w.title)}</span>${w.type?`<span class="wtype">${esc(w.type)}</span>`:''}${(w.albums&&w.albums.length)?`<div class="albs">${w.albums.map(a=>`<a href="album.html?id=${a.id}">${esc(a.title)}</a>`).join(' · ')}</div>`:''}</div>`).join('')||'<div style="color:var(--muted);padding:6px 0">sin obras</div>';
+  const worksHtml=(d.works||[]).map(w=>`<div class="wk"><span class="wt">${esc(w.title)}</span>${w.type?`<span class="wtype">${esc(w.type)}</span>`:''}${(w.albums&&w.albums.length)?`<div class="albs">${w.albums.map(a=>`<a href="album.html?id=${a.id}">${esc(a.title)}</a>`).join(' · ')}</div>`:''}</div>`).join('')||'<div style="color:var(--muted);padding:6px 0">sin obras</div>';
+  // Intérpretes de su música (Roon: performing music of): quién toca sus obras, enlazando a su ficha.
+  const perf=d.performers||[];
+  const perfHtml=perf.length?`<div class="perfhdr">Interpretan su música</div><div class="perfchips">${perf.map(p=>`<a class="pchip" href="artist.html?id=${p.id}">${esc(p.name)}<span class="pn">${p.nrec}</span></a>`).join('')}</div>`:'';
+  body.innerHTML=worksHtml+perfHtml;
 }
 fetch('/api/composers').then(r=>r.json()).then(j=>{COMP=j.items||[];render();}).catch(e=>document.getElementById('count').textContent='error: '+e.message);
 document.getElementById('q').addEventListener('input',e=>render(e.target.value));

@@ -61,6 +61,18 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);lin
   .appnav .theme{align-self:flex-start;margin-top:6px}
   .wrap{margin-left:248px;margin-right:auto}
 }
+/* ── barra inferior de pestañas (Roon phone_footer): núcleo al alcance del pulgar, solo en móvil.
+   Es aditiva: el menú superior desplazable sigue teniendo todos los destinos. ── */
+.appnavbottom{display:none}
+@media(max-width:619px){
+  .appnavbottom{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:55;background:var(--surface);border-top:1px solid var(--border);padding:4px 2px;padding-bottom:max(4px,env(safe-area-inset-bottom));justify-content:space-around}
+  .appnavbottom a{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 2px;color:var(--muted);font-size:10.5px;border-radius:9px;min-width:0;transition:color .12s}
+  .appnavbottom a .ico{display:inline-flex}
+  .appnavbottom a.on{color:var(--accent)}
+  .appnavbottom a .lbl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+  #nowbar{bottom:56px !important}             /* el player se apila sobre la barra de pestañas */
+  .wrap{padding-bottom:140px}                 /* hueco para player + barra de pestañas */
+}
 a{color:inherit;text-decoration:none}
 h1{font-family:var(--serif);font-weight:600;font-size:38px;letter-spacing:-.015em;line-height:1.08;margin:0}
 .count{color:var(--text-2);font-size:14px;margin-top:4px}
@@ -187,6 +199,8 @@ input:focus,select:focus,button:focus-visible{outline:none;border-color:var(--ac
 .credits{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
 .credits .c{background:var(--surface-2);border-radius:12px;padding:11px 15px;line-height:1.4}
 .credits .role{font-size:11px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em}
+.cgrp-h{font-size:12px;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:.06em;margin:16px 0 8px}
+.cgrp-h:first-of-type{margin-top:2px}
 .gchip{display:inline-block;font-size:12px;background:var(--surface-2);color:var(--text-2);padding:4px 11px;border-radius:999px;transition:background .1s}
 a.gchip:hover{background:var(--border)}
 

@@ -10,6 +10,8 @@
 .wperf li{display:flex;gap:12px;align-items:baseline;padding:11px 10px;margin:0 -10px;border-radius:9px;border-bottom:1px solid var(--border);transition:background .1s}
 .wperf li:hover{background:var(--surface-2)}
 .wperf .yr{color:var(--muted);width:46px;flex:none;font-variant-numeric:tabular-nums}
+.wperf li{align-items:flex-start}
+.wperfline{font-size:12.5px;color:var(--text-2);margin-top:3px;line-height:1.45}
 .wcred{display:flex;flex-wrap:wrap;gap:8px 18px;margin:10px 0 4px;font-size:14px}
 .wcred .role{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-right:6px}
 </style>
@@ -30,7 +32,17 @@ fetch('/api/work?id='+id).then(r=>r.json()).then(w=>{
   // agrupa créditos por rol
   const byRole={}; (w.credits||[]).forEach(c=>{(byRole[c.role]=byRole[c.role]||[]).push(c);});
   const cred=Object.keys(byRole).map(role=>`<div><span class="role">${esc(ROLELAB[role]||role)}</span>${byRole[role].map(c=>`<a href="artist.html?id=${c.id}" style="color:var(--accent)">${esc(c.name)}</a>`).join(', ')}</div>`).join('');
-  const perf=(w.performances||[]).map(p=>`<li><span class="yr">${p.year||'—'}</span><span style="flex:1"><a href="album.html?id=${p.albumId}" style="color:var(--accent)">${esc(p.album)}</a> <span style="color:var(--text-2)">· ${esc(p.artist||'')}</span></span></li>`).join('');
+  // fila de interpretación (Roon): director / conjunto / solistas de cada grabación, cuando hay créditos.
+  const perfLine=pp=>{ const ps=pp||[];
+    const lead=ps.filter(x=>x.role==='director'||x.role==='orquesta'||x.role==='orquestación'||x.role==='arreglos');
+    const solo=ps.filter(x=>x.role==='intérprete'||x.role==='voz'||x.role==='instrumento');
+    const fmt=x=>`<a href="artist.html?id=${x.id}" style="color:var(--text-2)">${esc(x.name)}</a>${x.instrument?` <span style="color:var(--muted)">(${esc(x.instrument)})</span>`:''}`;
+    const parts=[];
+    if(lead.length) parts.push(lead.map(fmt).join(' · '));
+    if(solo.length) parts.push(solo.slice(0,6).map(fmt).join(', '));
+    return parts.length?`<div class="wperfline">${parts.join(' — ')}</div>`:'';
+  };
+  const perf=(w.performances||[]).map(p=>`<li><span class="yr">${p.year||'—'}</span><span style="flex:1"><a href="album.html?id=${p.albumId}" style="color:var(--accent)">${esc(p.album)}</a> <span style="color:var(--text-2)">· ${esc(p.artist||'')}</span>${perfLine(p.performers)}</span></li>`).join('');
   app.innerHTML=`
     <div style="color:var(--text-2);font-size:13px">obra${w.type?' · '+esc(w.type):''}</div>
     <h1>${esc(w.title)}</h1>

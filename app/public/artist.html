@@ -14,6 +14,15 @@
 .appears li:hover{background:var(--surface-2)}
 .appears .yr{color:var(--muted);width:46px;flex:none;font-variant-numeric:tabular-nums}
 .appears .roles{color:var(--text-2);font-size:13px}
+.toptracks{list-style:none;padding:0;margin:0}
+.toptracks li{display:flex;gap:12px;align-items:center;padding:9px 10px;margin:0 -10px;border-radius:9px;border-bottom:1px solid var(--border);transition:background .1s}
+.toptracks li:hover{background:var(--surface-2)}
+.toptracks .tp-n{color:var(--muted);width:22px;flex:none;text-align:right;font-variant-numeric:tabular-nums}
+.toptracks .tp-play{flex:none;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:50%;cursor:pointer}
+.toptracks .tp-play:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.toptracks .tp-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.toptracks .tp-ti{font-weight:600}
+.toptracks .tp-pc{color:var(--muted);flex:none;font-size:12.5px;font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -77,6 +86,10 @@ function renderArtist(a){
   const appPerf=appAll.filter(x=>!(x.roles||[]).some(r=>PROD_RE.test(r)));
   const tabs=[];
   if((a.albums||[]).length) tabs.push(['disco','Discografía',a.albums.length,`<div class="grid">${a.albums.map(albumCard).join('')}</div>`]);
+  // Más escuchadas (Roon: artist top tracks): grabaciones del artista por nº de reproducciones.
+  const top=a.topTracks||[]; window.TOP=top;
+  const topList=list=>`<ol class="toptracks">`+list.map((x,i)=>`<li><span class="tp-n">${i+1}</span><button class="tp-play" data-ti="${i}" title="Reproducir">${window.icon('play',14)}</button><span class="tp-t"><span class="tp-ti">${esc(x.title)}</span> <a href="album.html?id=${x.rgid}" style="color:var(--text-2)">${esc(x.album)}</a></span><span class="tp-pc">${x.pc} ${x.pc===1?'escucha':'escuchas'}</span></li>`).join('')+`</ol>`;
+  if(top.length) tabs.push(['top','Más escuchadas',top.length,topList(top)]);
   if(appPerf.length) tabs.push(['apar','Apariciones',appPerf.length,appearsList(appPerf)]);
   if(appProd.length) tabs.push(['prod','Producción',appProd.length,appearsList(appProd)]);
   // Colaboraciones a nivel de PISTA (Roon: view_all_collaboration_tracks): pistas suyas en álbumes de otro.
@@ -199,6 +212,7 @@ function openArtistEdit(){
   });
 }
 // cambiar de pestaña (discografía/apariciones/producción/obras)
+document.addEventListener('click',e=>{const pt=e.target.closest('.tp-play');if(pt){const top=(window.TOP||[]).filter(x=>x.tid);const files=top.map(x=>({trackId:x.tid,title:x.title}));const idx=+pt.dataset.ti||0; if(window.player&&files.length)player.playTracks(files,Math.min(idx,files.length-1));return;}});
 document.addEventListener('click',e=>{const t=e.target.closest('#app .atab');if(!t)return;const k=t.dataset.tab;
   document.querySelectorAll('#app .atab').forEach(b=>b.classList.toggle('on',b.dataset.tab===k));
   document.querySelectorAll('#app .atabpanel').forEach(p=>p.hidden=(p.dataset.tab!==k));});

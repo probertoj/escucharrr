@@ -40,6 +40,14 @@
   ];
   var ITEMS = SECTIONS.reduce(function (a, s) { return a.concat(s.items); }, []);   // plano, para marcar activo
   var SETTINGS = { href: 'settings.html', label: 'Ajustes', ico: 'settings' };
+  // Barra inferior de pestañas para móvil (Roon phone_footer): los destinos nucleares al alcance del pulgar.
+  var TABS = [
+    { href: 'index.html', label: 'Biblioteca', ico: 'library', root: true },
+    { href: 'search.html', label: 'Buscar', ico: 'search' },
+    { href: 'discover.html', label: 'Descubrir', ico: 'discover' },
+    { href: 'queue.html', label: 'Cola', ico: 'lists' },
+    { href: 'settings.html', label: 'Ajustes', ico: 'settings' }
+  ];
 
   function curFile() {
     var p = location.pathname.replace(/\/+$/, '');
@@ -77,6 +85,17 @@
     nav.innerHTML = html;
     document.body.insertBefore(nav, document.body.firstChild);
 
+    // barra inferior de pestañas (solo visible en móvil vía CSS): navegación nuclear al pulgar
+    if (!document.getElementById('appnavbottom')) {
+      var bn = document.createElement('nav');
+      bn.id = 'appnavbottom'; bn.className = 'appnavbottom';
+      bn.innerHTML = TABS.map(function (i) {
+        var on = (i.href === act) ? ' on' : '';
+        return '<a class="tabitm' + on + '" href="' + i.href + '"><span class="ico">' + ig(i.ico, 21) + '</span><span class="lbl">' + i.label + '</span></a>';
+      }).join('');
+      document.body.appendChild(bn);
+    }
+
     // Scrollbar auto-ocultable (como Roon): aparece mientras desplazas y se desvanece ~900 ms tras parar.
     var sbt;
     nav.addEventListener('scroll', function () {
@@ -97,7 +116,7 @@
   }
 
   // re-marca la entrada activa (para la navegación SPA, sin recargar el documento)
-  function syncActive() { var act = activeHref(); var nav = document.getElementById('appnav'); if (!nav) return; nav.querySelectorAll('a.itm').forEach(function (a) { a.classList.toggle('on', a.getAttribute('href') === act); }); }
+  function syncActive() { var act = activeHref(); var nav = document.getElementById('appnav'); if (nav) nav.querySelectorAll('a.itm').forEach(function (a) { a.classList.toggle('on', a.getAttribute('href') === act); }); var bn = document.getElementById('appnavbottom'); if (bn) bn.querySelectorAll('a.tabitm').forEach(function (a) { a.classList.toggle('on', a.getAttribute('href') === act); }); }
   // API mínima para la página de ajustes / el router SPA
   window.escunav = { getTheme: theme, setTheme: function (t) { try { localStorage.setItem(TKEY, t); } catch (e) {} applyTheme(t); var b = document.getElementById('themebtn'); if (b) { var x = THEMES[t] || THEMES.auto; b.innerHTML = ig(x.ico, 18); b.title = x.t; } }, THEMES: THEMES, syncActive: syncActive };
 

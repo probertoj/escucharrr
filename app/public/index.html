@@ -67,8 +67,8 @@ function stars(s){return s?`<span class="stars">★</span> ${(+s).toFixed(1)}`:'
 const esc0=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 let ALBUMS=[];
 // Facetas estilo "Focus" de Roon. Booleanas (favorito/más tarde/audio/reproducido) como valores sí/no.
-const BOOLK={favorite:'is_favorite',later:'listen_later',audio:'has_audio',played:'played',identified:'identified',versions:'has_versions',hidden:'hidden'};
-const facetDefs=[['tier','Tier'],['genre','Género'],['format','Formato'],['label','Sello'],['country','País'],['bitdepth','Profundidad'],['samplerate','Frecuencia'],['channels','Canales'],['decade','Década'],['added','Añadido'],['lastplayed','Último play'],['plays','Reproducciones'],['type','Tipo'],['tag','Etiqueta'],['favorite','Favoritos'],['later','Escuchar más tarde'],['audio','Audio local'],['played','Reproducido'],['identified','Identificado'],['hasgenre','Con género'],['versions','Con versiones'],['multidisc','Multidisco'],['hidden','Oculto']];
+const BOOLK={favorite:'is_favorite',later:'listen_later',audio:'has_audio',played:'played',identified:'identified',versions:'has_versions',compilation:'is_compilation',live:'is_live',lyrics:'has_lyrics',dup:'maybe_dup',hidden:'hidden'};
+const facetDefs=[['tier','Tier'],['genre','Género'],['performer','Intérprete'],['format','Formato'],['label','Sello'],['country','País'],['bitdepth','Profundidad'],['samplerate','Frecuencia'],['channels','Canales'],['decade','Década'],['added','Añadido'],['lastplayed','Último play'],['plays','Reproducciones'],['type','Tipo'],['tag','Etiqueta'],['favorite','Favoritos'],['later','Escuchar más tarde'],['audio','Audio local'],['played','Reproducido'],['identified','Identificado'],['hasgenre','Con género'],['versions','Con versiones'],['compilation','Recopilatorio'],['live','En directo'],['lyrics','Con letras'],['dup','Duplicados'],['multidisc','Multidisco'],['hidden','Oculto']];
 const sel={}; facetDefs.forEach(([k])=>sel[k]={});   // sel[clave][valor] = 'inc' | 'exc'
 let minR=null, txt='', yearMin=null, yearMax=null;
 // cubo de "añadido" (como el Focus de Roon por fecha de alta): un álbum cae en el tramo más reciente que cumple
@@ -85,6 +85,7 @@ function playBucket(n){ return !n?null:n===1?'Una vez':n<=5?'Pocas (2–5)':n<=1
 function avals(a,key){
   if(key==='tier')return a.tier_key?[a.tier_key]:[];
   if(key==='genre')return a.genres||[];
+  if(key==='performer')return a.performers||[];
   if(key==='tag')return a.tags||[];
   if(key==='decade'){const y=parseInt(a.year,10);return (y>=1000&&y<=9999)?[String(Math.floor(y/10)*10)+'s']:[];}
   if(key==='type')return a.primary_type?[a.primary_type.toLowerCase()]:[];

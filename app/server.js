@@ -106,7 +106,8 @@ function initAppSchema(d) {
   CREATE TABLE IF NOT EXISTS skipped_file (path TEXT, reason TEXT, at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS smart_playlist (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, rules TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS genre_map (raw TEXT PRIMARY KEY, canonical TEXT, hidden INTEGER DEFAULT 0);
-  CREATE TABLE IF NOT EXISTS merge_undo (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, keep_id INTEGER, label TEXT, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));`);
+  CREATE TABLE IF NOT EXISTS merge_undo (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, keep_id INTEGER, label TEXT, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
+  CREATE INDEX IF NOT EXISTS ix_recording_work ON recording(work_id);`);   // acelera obra→álbumes (compositores, obras) de ~27 s a instantáneo
   // Índices sobre las claves foráneas del grafo: sin ellos, recorrer release_group -> release -> medium -> track -> local_file
   // hace scans anidados por álbum (inviable con decenas de miles de discos). Cada uno en su try por si el grafo aún no existe.
   for (const ix of [
@@ -574,6 +575,15 @@ function buildQ(db) {
   countryAll: db.prepare(`SELECT release_group_id id, country c FROM "release" WHERE country IS NOT NULL GROUP BY release_group_id`),
   labelAll: db.prepare(`SELECT rel.release_group_id id, l.name c FROM "release" rel JOIN label l ON l.id=rel.label_id GROUP BY rel.release_group_id`),
   tagsAll:   db.prepare(`SELECT ti.subject_id id, group_concat(t.name,'|') gs FROM tag_item ti JOIN tag t ON t.id=ti.tag_id WHERE ti.subject_type='release_group' GROUP BY ti.subject_id`),
+  // facetas Focus extra (estilo Roon): álbumes con letras en la biblioteca, e intérpretes acreditados
+  // (clásica/sesión) para focalizar por ejecutante. Una pasada set-based como el resto.
+  lyricsAlbums: db.prepare(`SELECT DISTINCT rel.release_group_id id
+     FROM lyrics ly JOIN recording rec ON rec.id=ly.recording_id JOIN track tr ON tr.recording_id=rec.id
+     JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
+     WHERE ly.found=1 AND COALESCE(ly.instrumental,0)=0`),
+  performersAll: db.prepare(`SELECT release_group_id id, group_concat(DISTINCT artist_name) ns
+     FROM v_album_credits WHERE role IN ('instrumento','voz','interpretación','conductor','performing orchestra','orchestrator')
+     GROUP BY release_group_id`),
   album: db.prepare(`SELECT a.id,a.title,a.orig_title,a.artist,a.orig_artist,a.year,a.primary_type,a.tier_key,a.tier_rank,
       (SELECT label FROM tier WHERE key=a.tier_key) tier_label, a.album_stars, a.is_favorite,
       EXISTS(SELECT 1 FROM flag f WHERE f.subject_type='release_group' AND f.subject_id=a.id AND f.flag='listen_later') listen_later,
@@ -667,9 +677,13 @@ function buildQ(db) {
   // ── obras y compositores (modelo obra/interpretación, estilo Roon) ──
   workGet: db.prepare('SELECT id, title, type FROM work WHERE id=?'),
   workCredits: db.prepare(`SELECT a.id, a.name, c.role FROM credit c JOIN artist a ON a.id=c.artist_id WHERE c.entity_type='work' AND c.entity_id=? ORDER BY c.position`),
-  workPerf: db.prepare(`SELECT DISTINCT rg.id albumId, rg.title album, substr(rg.first_release,1,4) year, tr.id trackId, tr.title tracktitle,
+  workPerf: db.prepare(`SELECT DISTINCT rec.id recId, rg.id albumId, rg.title album, substr(rg.first_release,1,4) year, tr.id trackId, tr.title tracktitle,
       (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) artist
      FROM recording rec JOIN track tr ON tr.recording_id=rec.id JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id WHERE rec.work_id=? ORDER BY rg.first_release, rg.title`),
+  // intérpretes de UNA grabación (Roon: fila de interpretación — director / conjunto / solistas) para la ficha de obra
+  recPerformers: db.prepare(`SELECT a.id, a.name, c.role, c.instrument FROM credit c JOIN artist a ON a.id=c.artist_id
+     WHERE c.entity_type='recording' AND c.entity_id=? AND c.role IN ('conductor','performing orchestra','interpretación','instrumento','voz','orchestrator','arreglos')
+     ORDER BY CASE c.role WHEN 'conductor' THEN 0 WHEN 'performing orchestra' THEN 1 WHEN 'interpretación' THEN 2 WHEN 'voz' THEN 3 ELSE 4 END, a.name COLLATE NOCASE`),
   artistWorks: db.prepare(`SELECT DISTINCT w.id, w.title FROM work w JOIN credit c ON c.entity_type='work' AND c.entity_id=w.id WHERE c.artist_id=? AND c.role='composición' ORDER BY w.title`),
   search: db.prepare(`SELECT name, kind, subject_type, subject_id FROM search_fts WHERE search_fts MATCH ? ORDER BY bm25(search_fts) LIMIT ?`),
   recAlbum: db.prepare(`SELECT rel.release_group_id id FROM track tr JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE tr.recording_id=? LIMIT 1`),
@@ -698,6 +712,17 @@ function buildQ(db) {
      FROM v_album a JOIN release_group rg ON rg.id=a.id
      JOIN artist_credit_name acn ON acn.artist_credit_id=rg.artist_credit_id
      WHERE acn.artist_id=? ORDER BY a.first_release DESC, a.title`),
+  // top tracks del artista (Roon: component_artist_toptracks): las grabaciones más escuchadas, por nº de plays.
+  // Agrupa por grabación (no por track) para no repetir una canción que está en varias ediciones.
+  artistTopTracks: db.prepare(`SELECT x.rid, x.title, x.pc, x.tid, x.rgid, rg.title album
+     FROM ( SELECT r.id rid, r.title title, COUNT(DISTINCT p.id) pc, MIN(t.id) tid, MIN(rg.id) rgid
+            FROM recording r JOIN track t ON t.recording_id=r.id
+            JOIN medium m ON m.id=t.medium_id JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id
+            JOIN play p ON (p.track_id=t.id OR p.recording_id=r.id)
+            WHERE EXISTS(SELECT 1 FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(t.artist_credit_id, r.artist_credit_id) AND acn.artist_id=?)
+            GROUP BY r.id ) x
+     JOIN release_group rg ON rg.id=x.rgid
+     ORDER BY x.pc DESC, x.title LIMIT 12`),
   artistAppears: db.prepare(`SELECT rg.id, rg.title, substr(rg.first_release,1,4) year,
        (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) artist,
        group_concat(DISTINCT c.role) roles
@@ -843,6 +868,16 @@ function buildQ(db) {
              GROUP BY rel.release_group_id) lp
      JOIN v_album a ON a.id = lp.rgid
      WHERE lp.last_played < datetime('now', ?) ORDER BY lp.last_played ASC LIMIT 12`),
+  // "Selección del día" (Roon daily_picks, heurística local): candidatos de afinidad — valorados o favoritos —
+  // que se barajan de forma estable por fecha en JS (RANDOM() de SQLite no es sembrable).
+  discDailyCand: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite,a.tier_rank
+     FROM v_album a WHERE a.tier_key IS NOT NULL OR a.is_favorite=1`),
+  discDailyAny: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite,a.tier_rank FROM v_album a`),
+  // "En su mejor momento" (Roon in_their_prime, heurística local): artistas con suficiente discografía; se elige
+  // uno estable por fecha y se muestran sus mejores álbumes (por tier/valoración).
+  discPrimeArtists: db.prepare(`SELECT acn.artist_id id, MIN(acn.name) name, COUNT(DISTINCT rg.id) nalb
+     FROM artist_credit_name acn JOIN release_group rg ON rg.artist_credit_id=acn.artist_credit_id
+     WHERE acn.position=1 GROUP BY acn.artist_id HAVING nalb>=3`),
   // "Sigue escuchando": álbumes con reproducción más reciente (para retomar)
   homeRecentlyPlayed: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.tier_key, lp.last_played
      FROM (SELECT rel.release_group_id rgid, MAX(p.played_at) last_played
@@ -996,6 +1031,8 @@ function search(q, n) {
 
 // ── versiones/ediciones de un álbum (release_groups hermanos: mismo artista + título base) ──
 const VER_DISC_RE = /\b(disc|cd|vol(?:ume)?)\s*\.?\s*\d|\[\s*disc|\(\s*disc/i;   // box sets: cada disco es distinto, no una "versión"
+const COMP_ARTIST_RE = /^(various artists|various|v\.?a\.?|varios artistas|varios|aa\.?\s*vv\.?)$/i;   // artista de recopilatorio (VA) → faceta Focus "compilation"
+const LIVE_TITLE_RE = /\(\s*live[\s)]|\blive\s+(at|in|from|on)\b|\ben\s+(vivo|directo)\b|\bunplugged\b|\bconcert\b|\bin concert\b|\[\s*live/i;   // directo (heurística por título)
 function baseTitle(t) {
   let s = String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
   s = s.replace(/[\[(][^\])]*(flac|bit|khz|mp3|aac|vinyl|wav|lossless)[^\])]*[\])]/gi, ' ');   // [FLAC 16bit 44.1kHz]
@@ -1274,6 +1311,11 @@ function libraryList() {
   const country = new Map(Q.countryAll.all().map(r => [r.id, r.c]));   // país de edición (MusicBrainz) → faceta Focus
   const label = new Map(Q.labelAll.all().map(r => [r.id, r.c]));       // sello discográfico → faceta Focus
   const tags = new Map(Q.tagsAll.all().map(r => [r.id, (r.gs || '').split('|').filter(Boolean)]));
+  const withLyrics = new Set(Q.lyricsAlbums.all().map(r => r.id));   // faceta Roon "has lyrics"
+  const performers = new Map(Q.performersAll.all().map(r => [r.id, (r.ns || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 8)]));   // faceta Roon "performer" (clásica)
+  // posibles duplicados (mismo artista + título normalizado en >1 álbum): faceta Roon "duplicates"
+  const dupKeyCount = new Map();
+  for (const a of rows) { const k = String(a.artist || '').toLowerCase() + '||' + String(a.title || '').toLowerCase(); dupKeyCount.set(k, (dupKeyCount.get(k) || 0) + 1); }
   for (const a of rows) {
     a.genres = gmList(genres.get(a.id) || []);
     a.format = format.get(a.id) || null;
@@ -1294,6 +1336,11 @@ function libraryList() {
     a.identified = identified.has(a.id) ? 1 : 0;  // tiene MBID (Inspector: identificado)
     a.media_count = mediacount.get(a.id) || 1;    // nº de discos del release primario (Inspector: multidisco)
     a.has_versions = (copycount.get(a.id) || 1) > 1 ? 1 : 0;   // varias copias (carpetas) = versiones; +abajo las hermanas por título
+    a.is_compilation = COMP_ARTIST_RE.test(String(a.artist || '')) || /compilation|recopilat/i.test(String(a.primary_type || '')) ? 1 : 0;   // VA / recopilatorio (faceta Roon)
+    a.is_live = LIVE_TITLE_RE.test(String(a.title || '')) || /\blive\b/i.test(String(a.primary_type || '')) ? 1 : 0;   // directo (heurística por título, sin tipos secundarios de MB)
+    a.has_lyrics = withLyrics.has(a.id) ? 1 : 0;
+    a.performers = performers.get(a.id) || [];
+    a.maybe_dup = (dupKeyCount.get(String(a.artist || '').toLowerCase() + '||' + String(a.title || '').toLowerCase()) || 1) > 1 ? 1 : 0;
   }
   // "con otras versiones": agrupa por artista + título base (misma lógica que versionsOf) y marca
   // los que tienen hermanos. Set-based en una pasada sobre las filas ya cargadas.
@@ -1433,6 +1480,10 @@ function work(id) {
   const w = Q.workGet.get(id); if (!w) return null;
   w.credits = Q.workCredits.all(id);       // compositores/letristas/arreglistas
   w.performances = Q.workPerf.all(id);     // versiones de la obra en tu biblioteca
+  const ROLE_ES = { conductor: 'director', 'performing orchestra': 'orquesta', 'interpretación': 'intérprete', voz: 'voz', instrumento: 'instrumento', orchestrator: 'orquestación', arreglos: 'arreglos' };
+  for (const p of w.performances) {   // fila de interpretación (Roon): director / conjunto / solistas de cada grabación
+    p.performers = Q.recPerformers.all(p.recId).map(x => ({ id: x.id, name: x.name, role: ROLE_ES[x.role] || x.role, instrument: x.instrument || null }));
+  }
   return w;
 }
 function artist(id) {
@@ -1459,6 +1510,7 @@ function artist(id) {
     .filter(x => !own.has(x.id))
     .map(x => ({ id: x.id, title: x.title, year: x.year, artist: x.artist, roles: (x.roles || '').split(',').filter(Boolean) }));
   a.album_count = (Q.artistAlbumCount.get(id) || {}).n || 0;
+  a.topTracks = Q.artistTopTracks.all(id);   // más escuchadas (Roon artist top tracks)
   // Pistas de colaboración (Roon: view_all_collaboration_tracks): pistas acreditadas a este artista que viven
   // en un álbum cuyo artista principal NO es él (invitaciones a nivel de canción). Distinto de «Apariciones»,
   // que es a nivel de álbum. Cap 400 para artistas muy prolíficos.
@@ -1738,6 +1790,33 @@ function genreTiles(limit) {
   }
   return gmAgg(Q.allGenres.all()).slice(0, limit || 30).map(g => ({ name: g.name, n: g.n, rg: (rep.get(g.name) || {}).rg || null }));
 }
+// Semilla diaria estable (YYYYMMDD → entero) + hash determinista por id, para rotaciones que no cambian
+// dentro del mismo día (Roon daily picks / in their prime son editoriales; esto es la aproximación local).
+function daySeed(day) {
+  const now = new Date();
+  const s = (day && /^\d{4}-\d{2}-\d{2}$/.test(day)) ? day.replace(/-/g, '')
+    : '' + now.getFullYear() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
+  return parseInt(s, 10) || 20260101;
+}
+function hash32(x) { x = (x ^ 61) ^ (x >>> 16); x = x + (x << 3); x = x ^ (x >>> 4); x = Math.imul(x, 0x27d4eb2d); x = x ^ (x >>> 15); return x >>> 0; }
+const TIER_W = { excel: 5, si: 4, ok: 3, meh: 2, no: 1 };
+function dailyPicks(seed, n) {
+  let cand = Q.discDailyCand.all();
+  if (cand.length < n) cand = Q.discDailyAny.all();
+  // peso de afinidad (tier/favorito) × ruido determinista del día → orden estable y variado
+  const scored = cand.map(a => { const w = (TIER_W[a.tier_key] || 0) + (a.is_favorite ? 2 : 0) + (a.album_stars || 0); return { a, k: hash32(a.id ^ seed) * (1 + w) }; });
+  scored.sort((p, q) => q.k - p.k);
+  return scored.slice(0, n).map(s => s.a);
+}
+function inTheirPrime(seed) {
+  const artists = Q.discPrimeArtists.all();
+  if (!artists.length) return null;
+  const pick = artists[hash32(seed) % artists.length];
+  const albums = Q.artistAlbums.all(pick.id)
+    .sort((a, b) => (TIER_W[b.tier_key] || 0) - (TIER_W[a.tier_key] || 0) || (b.album_stars || 0) - (a.album_stars || 0) || (b.year || 0) - (a.year || 0))
+    .slice(0, 10);
+  return { artist_id: pick.id, artist: pick.name, album_count: pick.nalb, albums };
+}
 function discover(opts) {
   let tg = gmAgg(Q.allGenres.all());
   let sel = tg.filter(g => g.n >= 2);
@@ -1750,7 +1829,10 @@ function discover(opts) {
     : String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
   const onThisDay = Q.discOnThisDay.all(curYear, md, curYear);
   const nrDays = (opts && parseInt(opts.notRecentDays, 10)) || 45;   // "hace tiempo que no suena": umbral en días (?nrdays= para probar)
+  const seed = daySeed(opts && opts.seedDay);   // ?seedday=YYYY-MM-DD para probar la rotación diaria
   return {
+    dailyPicks: dailyPicks(seed, 12),           // Selección del día (afinidad × día, estable)
+    inTheirPrime: inTheirPrime(seed),           // En su mejor momento (un artista del día + sus mejores discos)
     unrated: Q.discUnrated.all(),
     unratedCount: Q.discUnratedCount.get().n,
     revisit: Q.discRevisit.all(),
@@ -3298,6 +3380,18 @@ function undoArtistMerge(payload) {
   } catch (e) { db.exec('ROLLBACK'); throw e; }
   return restored;
 }
+// Historial persistente de fusiones (Roon: unmerge_artist_settings / unmerge_composition_settings): toda
+// operación de merge/fold/album queda en merge_undo y se puede deshacer CUANDO QUIERAS desde Ajustes, no solo
+// en el toast de los primeros segundos. Resuelve etiqueta legible, destino enlazable y nº de entidades afectadas.
+const MERGE_KIND_LABEL = { artist: 'Artistas unidos', fold: 'Tracklist fundida', album: 'Álbumes unidos' };
+function mergeHistory() {
+  const rows = db.prepare('SELECT id, kind, keep_id, label, created_at FROM merge_undo ORDER BY id DESC').all();
+  return rows.map(r => {
+    let count = 0; try { const p = JSON.parse(db.prepare('SELECT payload FROM merge_undo WHERE id=?').get(r.id).payload); count = Array.isArray(p.drops) ? p.drops.length : 0; } catch (e) {}
+    const target = r.kind === 'artist' ? 'artist.html?id=' + r.keep_id : r.keep_id ? 'album.html?id=' + r.keep_id : null;
+    return { id: r.id, kind: r.kind, kind_label: MERGE_KIND_LABEL[r.kind] || r.kind, label: r.label, count, target, created_at: r.created_at };
+  });
+}
 function handleUndoMerge(id) {
   const row = db.prepare('SELECT * FROM merge_undo WHERE id=?').get(id);
   if (!row) throw new Error('no se encuentra esa operación para deshacer');
@@ -3611,6 +3705,7 @@ http.createServer((req, res) => {
     try { const b = await readBody(req); const r = handleUndoMerge(parseInt(b.id, 10)); return sendJSON(res, { ok: true, ...r }); }
     catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
   })();
+  if (u.pathname === '/api/merges' && req.method === 'GET') return void sendJSON(res, { ok: true, items: mergeHistory() });
   if (req.method === 'POST' && u.pathname === '/api/album/make-primary') return void (async () => {
     try {
       const b = await readBody(req); const rg = parseInt(b.rg, 10), rel = parseInt(b.rel, 10);
@@ -3667,14 +3762,19 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/composers') {
       // navegador de compositores (Roon: composer_browser): artistas con crédito de composición sobre obras,
       // con nº de obras y de álbumes donde suenan. Solo los que tienen al menos una obra interpretada o no.
+      // Set-based (antes era una subconsulta correlada de nalbums por compositor → ~27 s sobre 27k álbumes):
+      // el join obra→álbum se hace UNA vez agrupado por compositor, no una por fila.
       const items = db.prepare(`
-        SELECT a.id, a.name, COUNT(DISTINCT c.entity_id) nworks,
-          (SELECT COUNT(DISTINCT rg.id) FROM credit c2 JOIN recording r ON r.work_id=c2.entity_id
-             JOIN track tr ON tr.recording_id=r.id JOIN medium m ON m.id=tr.medium_id
-             JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id
-             WHERE c2.entity_type='work' AND c2.role LIKE 'compos%' AND c2.artist_id=a.id) nalbums
-        FROM artist a JOIN credit c ON c.artist_id=a.id AND c.entity_type='work' AND c.role LIKE 'compos%'
-        GROUP BY a.id, a.name HAVING nworks>0 ORDER BY a.name COLLATE NOCASE`).all();
+        WITH comp AS (SELECT c.artist_id aid, c.entity_id wid FROM credit c WHERE c.entity_type='work' AND c.role LIKE 'compos%'),
+             nw AS (SELECT aid, COUNT(DISTINCT wid) nworks FROM comp GROUP BY aid),
+             na AS (SELECT comp.aid, COUNT(DISTINCT rg.id) nalbums
+                    FROM comp JOIN recording r ON r.work_id=comp.wid
+                    JOIN track tr ON tr.recording_id=r.id JOIN medium m ON m.id=tr.medium_id
+                    JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id
+                    GROUP BY comp.aid)
+        SELECT a.id, a.name, nw.nworks, COALESCE(na.nalbums,0) nalbums
+        FROM nw JOIN artist a ON a.id=nw.aid LEFT JOIN na ON na.aid=nw.aid
+        WHERE nw.nworks>0 ORDER BY a.name COLLATE NOCASE`).all();
       return sendJSON(res, { count: items.length, items });
     }
     if (u.pathname === '/api/composer') {
@@ -3689,7 +3789,21 @@ http.createServer((req, res) => {
         JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id
         WHERE r.work_id=? ORDER BY rg.title COLLATE NOCASE`);
       for (const w of works) w.albums = albQ.all(w.id);
-      return sendJSON(res, { id: a.id, name: a.name, works });
+      // Intérpretes de su música (Roon: performing_music_of / artists_with_works): quién toca sus obras en tu
+      // biblioteca — créditos de interpretación sobre esas grabaciones + el propio artista de la grabación
+      // (en clásica el solista/conjunto suele ser el artista de la pista). Se excluye al propio compositor.
+      const performers = db.prepare(`
+        SELECT a2.id, a2.name, COUNT(DISTINCT r.id) nrec FROM recording r
+        JOIN credit cw ON cw.entity_id=r.work_id AND cw.entity_type='work' AND cw.role LIKE 'compos%' AND cw.artist_id=?
+        JOIN (
+          SELECT c.entity_id rid, c.artist_id aid FROM credit c
+            WHERE c.entity_type='recording' AND c.role IN ('instrumento','voz','interpretación','conductor','performing orchestra','orchestrator','arreglos')
+          UNION
+          SELECT r2.id rid, acn.artist_id aid FROM recording r2 JOIN artist_credit_name acn ON acn.artist_credit_id=r2.artist_credit_id
+        ) perf ON perf.rid=r.id
+        JOIN artist a2 ON a2.id=perf.aid
+        WHERE a2.id<>? GROUP BY a2.id ORDER BY nrec DESC, a2.name COLLATE NOCASE LIMIT 60`).all(id, id);
+      return sendJSON(res, { id: a.id, name: a.name, works, performers });
     }
     if (u.pathname === '/api/skipped') {
       let total = 0, items = [], byReason = [];
@@ -3716,7 +3830,7 @@ http.createServer((req, res) => {
     if (u.pathname === '/api/bookmarks') return sendJSON(res, { items: Q.bmList.all().map(b => ({ id: b.id, name: b.name, state: (() => { try { return JSON.parse(b.state || '{}'); } catch (e) { return {}; } })() })) });
     if (u.pathname === '/api/tags') return sendJSON(res, Q.allTags.all());
     if (u.pathname === '/api/tag') { const name = u.searchParams.get('name'); const albums = Q.tagAlbums.all(name); return albums.length ? sendJSON(res, { name, albums }) : (res.writeHead(404), res.end('{}')); }
-    if (u.pathname === '/api/discover') return sendJSON(res, discover({ day: u.searchParams.get('day'), notRecentDays: u.searchParams.get('nrdays') }));
+    if (u.pathname === '/api/discover') return sendJSON(res, discover({ day: u.searchParams.get('day'), notRecentDays: u.searchParams.get('nrdays'), seedDay: u.searchParams.get('seedday') }));
     if (u.pathname === '/api/radio') { const seed = parseInt(u.searchParams.get('seed'), 10); const ex = (u.searchParams.get('exclude') || '').split(',').map(x => parseInt(x, 10)).filter(Boolean); return sendJSON(res, { tracks: seed ? radio(seed, ex, u.searchParams.get('n')) : [] }); }
     if (u.pathname === '/api/mix') { const al = parseInt(u.searchParams.get('album'), 10), ar = parseInt(u.searchParams.get('artist'), 10), tr = parseInt(u.searchParams.get('track'), 10), nn = u.searchParams.get('n'); const kind = al ? 'album' : ar ? 'artist' : tr ? 'track' : null; const kid = al || ar || tr; return sendJSON(res, { tracks: kind ? mix(kind, kid, nn) : [] }); }
     if (u.pathname === '/api/home') return sendJSON(res, home({ day: u.searchParams.get('day') }));
