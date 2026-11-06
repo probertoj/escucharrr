@@ -803,12 +803,14 @@ function buildQ(db) {
   // "En este día" (estilo Plexamp music.anniversary.releases): álbumes cuyo día-mes de
   // lanzamiento coincide con hoy, de años anteriores. years_ago = añoActual − año. Necesita
   // fecha COMPLETA (YYYY-MM-DD); las fechas solo-año de MusicBrainz no cuentan (no tienen día).
-  discOnThisDay: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite,
-       (? - CAST(substr(a.first_release,1,4) AS INT)) AS years_ago
-     FROM v_album a
-     WHERE length(a.first_release) >= 10 AND substr(a.first_release,6,5) = ?
-       AND CAST(substr(a.first_release,1,4) AS INT) < ?
-     ORDER BY (a.tier_rank IS NULL), a.tier_rank DESC, years_ago DESC, a.title LIMIT 24`),
+  // milestone = aniversario "redondo" (múltiplo de 5: 5, 10, 20, 25, 40, 50…). Se destacan y van primero.
+  discOnThisDay: db.prepare(`SELECT *, (years_ago >= 5 AND years_ago % 5 = 0) AS milestone FROM (
+       SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite,a.tier_rank,
+         (? - CAST(substr(a.first_release,1,4) AS INT)) AS years_ago
+       FROM v_album a
+       WHERE length(a.first_release) >= 10 AND substr(a.first_release,6,5) = ?
+         AND CAST(substr(a.first_release,1,4) AS INT) < ?
+     ) ORDER BY milestone DESC, (tier_rank IS NULL), tier_rank DESC, years_ago DESC, title LIMIT 24`),
   // metadatos para scrobble (por track_id)
   scrobbleMeta: db.prepare(`SELECT tr.recording_id, COALESCE(tr.title, r.title) title, r.mbid recording_mbid,
        COALESCE(tr.length_ms, r.length_ms) duration_ms, rel.mbid release_mbid, rg.title album,

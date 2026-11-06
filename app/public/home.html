@@ -87,8 +87,9 @@ function load(){ const _day=new URLSearchParams(location.search).get('day'); fet
     if(!list.length){ sec.style.display='none'; return; }
     const md=d.onThisDayDate||''; const dl=document.getElementById('otdDate');
     if(dl&&/^\d{2}-\d{2}$/.test(md)){ try{ dl.textContent='· '+new Date('2001-'+md+'T00:00:00').toLocaleDateString('es',{day:'numeric',month:'long'}); }catch(e){} }
-    const otdCard=a=>{ const ya=+a.years_ago; const ann=ya===1?'hace 1 año':'hace '+ya+' años';
-      return `<a class="card" href="album.html?id=${a.id}"><div class="cov" style="position:relative;border-radius:10px;overflow:hidden;aspect-ratio:1">${cover(a.id)}<span class="badge" style="position:absolute;left:6px;top:6px;right:auto;background:var(--accent-bg);color:var(--accent)">${ann}</span>${a.tier_key?`<span class="badge" style="background:${TC[a.tier_key][0]};color:${TC[a.tier_key][1]}">${TN[a.tier_key]}</span>`:''}</div><div class="t">${esc(a.title)}</div><div class="s">${esc(a.artist)} · ${a.year||'—'}</div></a>`; };
+    const otdCard=a=>{ const ya=+a.years_ago; const mile=!!a.milestone; const ann=mile?ya+'º aniversario':(ya===1?'hace 1 año':'hace '+ya+' años');
+      const annStyle=mile?'background:var(--accent);color:#fff;font-weight:700':'background:var(--accent-bg);color:var(--accent)';
+      return `<a class="card" href="album.html?id=${a.id}"><div class="cov" style="position:relative;border-radius:10px;overflow:hidden;aspect-ratio:1">${cover(a.id)}<span class="badge" style="position:absolute;left:6px;top:6px;right:auto;${annStyle}">${ann}</span>${a.tier_key?`<span class="badge" style="background:${TC[a.tier_key][0]};color:${TC[a.tier_key][1]}">${TN[a.tier_key]}</span>`:''}</div><div class="t">${esc(a.title)}</div><div class="s">${esc(a.artist)} · ${a.year||'—'}</div></a>`; };
     document.getElementById('otd').innerHTML=list.map(otdCard).join(''); sec.style.display=''; })();
   const maxT=Math.max(1,...d.tiers.map(t=>t.n));
   tiers.innerHTML=d.tiers.map(t=>`<div class="tierbar"><span class="lab">${t.label}</span><div class="track"><div style="width:${Math.round(t.n/maxT*100)}%;height:100%;background:${(TC[t.key]||['#888'])[0]}"></div></div><span class="n">${t.n}</span></div>`).join('');

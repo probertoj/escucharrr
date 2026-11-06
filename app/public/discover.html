@@ -15,6 +15,7 @@ nav.top a{color:var(--text-2)} nav.top a.on{color:var(--text);font-weight:600}
 .row .card{flex:none;width:150px}
 .subnote{color:var(--text-2);font-size:13px;margin:-2px 0 10px}
 .otdlbl{font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:var(--accent);font-weight:700;margin-bottom:5px}
+.otdlbl.mile{display:inline-block;background:var(--accent);color:#fff;padding:1px 7px;border-radius:999px;letter-spacing:.04em}
 </style>
 </head>
 <body>
@@ -37,9 +38,9 @@ function card(a){return `<a class="card" href="album.html?id=${a.id}">
 function grid(list){return `<div class="grid">${list.map(card).join('')}</div>`;}
 function row(list){return `<div class="row">${list.map(card).join('')}</div>`;}
 // "En este día" (efeméride): etiqueta HACE N AÑOS sobre la tarjeta
-function otdCard(a){const ya=a.years_ago;const lbl=ya===1?'HACE 1 AÑO':'HACE '+ya+' AÑOS';
+function otdCard(a){const ya=a.years_ago;const mile=!!a.milestone;const lbl=mile?ya+'º ANIVERSARIO':(ya===1?'HACE 1 AÑO':'HACE '+ya+' AÑOS');
   return `<a class="card" href="album.html?id=${a.id}">
-  <div class="otdlbl">${lbl}</div>
+  <div class="otdlbl${mile?' mile':''}">${lbl}</div>
   <div class="cov">${cover(a.id)}
     ${a.tier_key?`<span class="badge" style="background:${TC[a.tier_key][0]};color:${TC[a.tier_key][1]}">${TN[a.tier_key]}</span>`:''}
     ${a.is_favorite?'<span class="fav">♥</span>':''}</div>
