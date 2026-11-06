@@ -565,6 +565,24 @@ window.player = (function () {
     const len = lenMs(), p = posMs(), noAudio = c.playable === false;
     loadBarTech();
     bar.style.display = 'flex';
+    // Móvil: barra compacta (carátula + título + prev/play/next + línea de progreso). La completa de escritorio
+    // (onda, volumen, letra, EQ, zona, cola) no cabe en un teléfono y se cortaba fuera de pantalla; todos esos
+    // controles viven en «Ahora suena», que se abre tocando el título. Un listener re-renderiza al cruzar 619px.
+    if (window.matchMedia && window.matchMedia('(max-width:619px)').matches) {
+      const frac = len ? Math.min(100, p / len * 100) : 0;
+      bar.innerHTML =
+        `<div style="position:absolute;left:-16px;right:-16px;top:-8px;height:3px;background:var(--surface-2);overflow:hidden"><div id="npprog" style="height:100%;background:var(--accent);width:${frac}%"></div></div>
+         <a href="album.html?id=${c.albumId}" style="flex:none">${cover(c.albumId, 44)}</a>
+         <div data-act="npopen" title="Ahora suena" style="flex:1;min-width:0;cursor:pointer">
+           <div style="font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(c.title)}</div>
+           <div style="font-size:12px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(c.artist)}${noAudio ? ' · sin audio local' : ''}</div></div>
+         <span data-act="prev" title="Anterior" style="cursor:pointer;display:inline-flex;flex:none;color:var(--text-2)">${ic('prev', 22)}</span>
+         <span data-act="toggle" title="Play / Pausa" style="cursor:pointer;display:inline-flex;flex:none">${ic(playing ? 'pause' : 'play', 30)}</span>
+         <span data-act="next" title="Siguiente" style="cursor:pointer;display:inline-flex;flex:none;color:var(--text-2)">${ic('next', 22)}</span>`;
+      if (npfs && npfs.style.display === 'flex') renderNpFs();
+      emit();
+      return;
+    }
     bar.innerHTML =
       `<a href="album.html?id=${c.albumId}" style="flex:none">${cover(c.albumId, 46)}</a>
        <div data-act="npopen" title="Ahora suena" style="min-width:110px;cursor:pointer"><div style="font-size:14px;font-weight:600">${esc(c.title)}</div><div style="font-size:12px;color:var(--text-2)">${esc(c.artist)}${noAudio ? ' · sin audio local' : ''}</div></div>
@@ -599,6 +617,7 @@ window.player = (function () {
     const pr2 = document.getElementById('npfsprog'), wf2 = document.getElementById('npfswf'), el2 = document.getElementById('npfsel'); if (pr2 && len) pr2.style.width = frac + '%'; if (wf2 && len) wf2.style.clipPath = 'inset(0 ' + (100 - frac) + '% 0 0)'; if (el2) el2.textContent = mmss(p);
     maybeScrobble(); maybeRadio(); syncLy(); syncNpLy(); updateMsPosition(); }
   const emit = () => { try { updateMediaSession(); } catch (e) {} document.dispatchEvent(new Event('player:change')); };
+  if (window.matchMedia) { try { window.matchMedia('(max-width:619px)').addEventListener('change', () => { if (bar) render(); }); } catch (e) {} }   // recompone la barra (compacta ↔ completa) al cruzar el breakpoint móvil (p. ej. al rotar)
 
   // ── Media Session API: metadata (título/artista/álbum/carátula) + mandos del SO en la pantalla de
   //    bloqueo, auriculares y centro multimedia. Clave para que la PWA móvil se sienta nativa y permita

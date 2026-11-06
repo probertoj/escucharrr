@@ -160,7 +160,7 @@ function renderChips(){
 // dimensionado a la altura total para que el scroll y la barra sean reales.
 let VIS=[];   // lista filtrada + ordenada actual
 let VIEW=(()=>{try{return localStorage.getItem('escucharrr.libview')==='list'?'list':'grid';}catch(e){return 'grid';}})();
-const VG={cols:0,colW:0,cardH:0,rowH:0,gx:18,gy:26,min:158,buf:3,raf:0,refined:false};
+const VG={cols:0,colW:0,cardH:0,rowH:0,gx:18,gy:26,min:158,buf:3,raf:0,refined:false,pool:new Map(),lastView:null};
 const selMark=id=>SELMODE?`<span class="selmark${SELSET.has(id)?' on':''}">${SELSET.has(id)?'✓':''}</span>`:'';
 function cardHTML(a){return `<a class="card${SELMODE&&SELSET.has(a.id)?' selected':''}" data-id="${a.id}" href="album.html?id=${a.id}">
     <div class="cov">${cover(a.id)}${selMark(a.id)}
@@ -191,7 +191,21 @@ function vPaint(){
   const start=firstRow*VG.cols, end=Math.min(n,lastRow*VG.cols);
   win.style.gridTemplateColumns=VIEW==='list'?'1fr':('repeat('+VG.cols+',minmax(0,1fr))');
   win.style.top=(firstRow*VG.rowH)+'px';   // posicionar por 'top' (no transform): evita una capa de compositor gigante que el navegador deja de pintar en scrolls muy largos
-  win.innerHTML=VIS.slice(start,end).map(VIEW==='list'?rowHTML:cardHTML).join('');
+  // Reconciliación por id: reutiliza los nodos (y sus <img> ya cargadas) al desplazar, en vez de recrear todo
+  // el innerHTML en cada frame — recrear las imágenes es lo que las hacía parpadear. El pool se resetea al
+  // cambiar de vista (rejilla/lista) o de conjunto (renderGrid vacía gridwin al filtrar/ordenar/seleccionar).
+  if(VG.lastView!==VIEW){VG.pool.clear();win.innerHTML='';VG.lastView=VIEW;}
+  const make=VIEW==='list'?rowHTML:cardHTML, slice=VIS.slice(start,end), keep=new Set();
+  for(const a of slice)keep.add(a.id);
+  for(const [id,el] of VG.pool){if(!keep.has(id)){el.remove();VG.pool.delete(id);}}
+  let prev=null;
+  for(const a of slice){
+    let el=VG.pool.get(a.id);
+    if(!el){const t=document.createElement('template');t.innerHTML=make(a);el=t.content.firstElementChild;VG.pool.set(a.id,el);}
+    const ref=prev?prev.nextSibling:win.firstChild;
+    if(ref!==el)win.insertBefore(el,ref);
+    prev=el;
+  }
   if(!VG.refined&&win.firstElementChild){   // afinar altura de fila con una tarjeta ya renderizada
     const h=win.firstElementChild.getBoundingClientRect().height;
     if(h>0){VG.cardH=h;VG.rowH=h+VG.gy;VG.refined=true;vPaint();}}}
@@ -207,6 +221,7 @@ function renderGrid(){
   document.getElementById('count').textContent=l.length===ALBUMS.length?`${ALBUMS.length} álbumes`:`${l.length} de ${ALBUMS.length} álbumes`;
   const grid=document.getElementById('grid');
   if(!document.getElementById('gridwin'))grid.innerHTML='<div class="gridwin" id="gridwin"></div>';
+  VG.pool.clear();const _gw=document.getElementById('gridwin');if(_gw)_gw.innerHTML='';   // conjunto nuevo (filtro/orden/selección) → reconstruye la ventana desde cero
   window.scrollTo(0,0);   // al cambiar filtro/orden/Focus volvemos arriba
   vMeasure();vPaint();}
 // Repintado completo (rejilla + panel de facetas + chips). Se usa al cambiar la SELECCIÓN de facetas.
@@ -243,7 +258,7 @@ function undoToast(msg, undoId){
 // ── multi-selección + acciones en bloque (Serge) ──
 let SELMODE=false; const SELSET=new Set();
 const selG=id=>document.getElementById(id);
-function selRepaint(){ document.body.classList.toggle('selmode',SELMODE); const b=selG('selbtn'); b.textContent=SELMODE?'Hecho':'Seleccionar'; b.classList.toggle('btn-accent',SELMODE); const n=SELSET.size; selG('selbar').classList.toggle('on',SELMODE&&n>0); selG('selcount').textContent=n+' seleccionado'+(n===1?'':'s'); if(typeof vPaint==='function')vPaint(); }
+function selRepaint(){ document.body.classList.toggle('selmode',SELMODE); const b=selG('selbtn'); b.textContent=SELMODE?'Hecho':'Seleccionar'; b.classList.toggle('btn-accent',SELMODE); const n=SELSET.size; selG('selbar').classList.toggle('on',SELMODE&&n>0); selG('selcount').textContent=n+' seleccionado'+(n===1?'':'s'); if(typeof vPaint==='function'){VG.pool.clear();const gw=document.getElementById('gridwin');if(gw)gw.innerHTML='';vPaint();} }   // resetea el pool: las marcas de selección van horneadas en cada tarjeta
 selG('selbtn').onclick=()=>{ SELMODE=!SELMODE; if(!SELMODE)SELSET.clear(); selRepaint(); };
 document.addEventListener('click',e=>{ if(!SELMODE)return; const c=e.target.closest('.card'); if(c&&c.dataset.id){ e.preventDefault(); e.stopPropagation(); const id=+c.dataset.id; if(SELSET.has(id))SELSET.delete(id); else SELSET.add(id); selRepaint(); } },true);
 selG('selclear').onclick=()=>{ SELSET.clear(); selRepaint(); };

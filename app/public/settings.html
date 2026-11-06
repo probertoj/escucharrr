@@ -55,8 +55,8 @@ input[type=range]{accent-color:var(--accent)}
 .setpanel .grp.on{display:block;animation:setfade .18s ease}
 @keyframes setfade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 @media(max-width:820px){
-  .setlayout{flex-direction:column;gap:12px}
-  .setnav{position:static;width:auto;flex-direction:row;overflow-x:auto;gap:6px;padding-bottom:4px}
+  .setlayout{flex-direction:column;gap:12px;align-items:stretch}   /* stretch: hijos al ancho del móvil (con flex-start crecían al ancho de su contenido y desbordaban la página) */
+  .setnav{position:static;width:auto;max-width:100%;flex-direction:row;overflow-x:auto;gap:6px;padding-bottom:4px}
   .setnav button{width:auto;white-space:nowrap;padding:8px 13px;border:1px solid var(--border)}
   .setnav button .ni{display:none}
 }
