@@ -5,6 +5,7 @@
 
 const http = require('node:http');
 const https = require('node:https');
+const zlib = require('node:zlib');   // gzip de respuestas grandes (biblioteca de 27K) — sin dependencias
 const { DatabaseSync } = require('node:sqlite');
 const fs = require('fs');
 const path = require('path');
@@ -1354,6 +1355,17 @@ function libraryList() {
   for (const g of vgroups.values()) if (g.length > 1) for (const a of g) a.has_versions = 1;
   return rows;
 }
+// Caché del listado de biblioteca: construirlo cuesta ~4,7 s (sobre todo audioSpec sobre 275K ficheros) y el
+// JSON pesa ~14 MB. La biblioteca solo cambia al editar/escanear → lo serializamos y gzipeamos UNA vez y lo
+// reusamos hasta que sseBroadcast('library') invalide _libCache. Así cada navegación a «Álbumes» es instantánea.
+let _libCache = null;   // { json: string, gz: Buffer|null }
+function libraryListJSON() {
+  if (_libCache) return _libCache;
+  const json = JSON.stringify(libraryList());
+  let gz = null; try { gz = zlib.gzipSync(json); } catch (e) {}
+  _libCache = { json, gz };
+  return _libCache;
+}
 // ── Inspector (facetas de SALUD de la biblioteca, como el inspector_* de Roon) ──
 // Audita la colección con datos que ya tenemos: identificado (MBID), sin género, sin audio
 // local, sin portada cacheada, multidisco y posibles duplicados (mismo artista+título). Barato
@@ -2519,7 +2531,7 @@ function settingsInfo() {
 
 // ── biblioteca en vivo: watcher de carpetas + eventos SSE a la UI ───────────────
 const sseClients = new Set();
-function sseBroadcast(type) { if (type === 'library') { _trackFacetsCache = null; _folderCache = new Map(); } const line = `data: ${JSON.stringify({ type, t: Date.now() })}\n\n`; for (const r of sseClients) { try { r.write(line); } catch (e) {} } }
+function sseBroadcast(type) { if (type === 'library') { _trackFacetsCache = null; _folderCache = new Map(); _libCache = null; } const line = `data: ${JSON.stringify({ type, t: Date.now() })}\n\n`; for (const r of sseClients) { try { r.write(line); } catch (e) {} } }
 // Facetas del explorador de pistas (formato/profundidad/frecuencia/canales). Se calculan sobre
 // local_file en una pasada y se cachean (solo cambian al reescanear).
 let _trackFacetsCache = null;
@@ -3754,7 +3766,15 @@ http.createServer((req, res) => {
       return sendJSON(res, r || {});
     }
     if (u.pathname === '/api/settings') return sendJSON(res, settingsInfo());
-    if (u.pathname === '/api/library') return sendJSON(res, libraryList());
+    if (u.pathname === '/api/library') {
+      const c = libraryListJSON();
+      if (c.gz && /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''))) {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'gzip', 'Vary': 'Accept-Encoding' });
+        return res.end(c.gz);
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(c.json);
+    }
     if (u.pathname === '/api/tracks') return sendJSON(res, tracksList({ q: u.searchParams.get('q'), sort: u.searchParams.get('sort'), dir: u.searchParams.get('dir'), offset: u.searchParams.get('offset'), limit: u.searchParams.get('limit'), format: u.searchParams.get('format'), bitdepth: u.searchParams.get('bitdepth'), samplerate: u.searchParams.get('samplerate'), channels: u.searchParams.get('channels') }));
     if (u.pathname === '/api/tracks/facets') return sendJSON(res, trackFacets());
     if (u.pathname === '/api/folders') return sendJSON(res, folderList({ root: u.searchParams.get('root'), path: u.searchParams.get('path') }));
@@ -3848,6 +3868,7 @@ http.createServer((req, res) => {
   maybeOpenBrowser();
   startWatching();
   autoBackupIfStale();   // copia de seguridad "programada": una al arrancar si la última es antigua
+  setTimeout(() => { try { libraryListJSON(); console.log('biblioteca: caché lista'); } catch (e) {} }, 400);   // precalienta la lista (JSON+gzip) para que la 1ª navegación a «Álbumes» sea instantánea
   const svc = scrobble.enabledServices(scrobEff() || {});
   if (svc.length) { console.log('scrobbling activo:', svc.join(', ')); setInterval(() => scrobble.drain(db, scrobEff(), console.log).catch(() => {}), 30000); }
   else console.log('scrobbling: desactivado (crea app/scrobble.json a partir de scrobble.example.json)');

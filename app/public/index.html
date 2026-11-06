@@ -103,7 +103,10 @@ function avals(a,key){
   if(BOOLK[key])return [a[BOOLK[key]]?'sí':'no'];
   return [];}
 function vlabel(key,v){ if(key==='tier')return TN[v]; if(BOOLK[key]||key==='hasgenre'||key==='multidisc')return v==='sí'?'Sí':'No'; return v; }
-function valsOf(key){const m={};ALBUMS.forEach(a=>avals(a,key).forEach(v=>m[v]=(m[v]||0)+1));return m;}
+// Las cuentas por faceta son GLOBALES (sobre toda la biblioteca, no el filtro actual): solo cambian al
+// recargar ALBUMS. Memoizamos por carga para no recorrer 27K×27 facetas en cada tecla/click (_vals se vacía en load()).
+let _vals={};
+function valsOf(key){if(_vals[key])return _vals[key];const m={};ALBUMS.forEach(a=>avals(a,key).forEach(v=>m[v]=(m[v]||0)+1));return _vals[key]=m;}
 function matchFacet(a,key){
   const s=sel[key],inc=[],exc=[]; for(const v in s){(s[v]==='exc'?exc:inc).push(v);}
   if(!inc.length&&!exc.length)return true;
@@ -195,7 +198,9 @@ function vPaint(){
 function vSchedule(){if(VG.raf)return;VG.raf=requestAnimationFrame(()=>{VG.raf=0;vPaint();});}
 window.addEventListener('scroll',vSchedule,{passive:true});
 window.addEventListener('resize',()=>{VG.refined=false;vMeasure();vPaint();});
-function render(){
+// Repintado SOLO de la rejilla (filtra+ordena+pinta ventana virtual). Barato: no reconstruye las facetas,
+// que son globales. Se usa en cada tecla del buscador y al cambiar el orden.
+function renderGrid(){
   let l=ALBUMS.filter(passes);const s=document.getElementById('sort').value;
   l.sort((a,b)=>s==='year'?(b.year||0)-(a.year||0):s==='artist'?a.artist.localeCompare(b.artist):s==='tier'?(TR[b.tier_key]||0)-(TR[a.tier_key]||0):s==='rating'?(b.album_stars||0)-(a.album_stars||0):s==='added'?String(b.added||'').localeCompare(String(a.added||'')):s==='plays'?((b.play_count||0)-(a.play_count||0)):s==='random'?(a._rnd-b._rnd):a.title.localeCompare(b.title));
   VIS=l;
@@ -203,8 +208,9 @@ function render(){
   const grid=document.getElementById('grid');
   if(!document.getElementById('gridwin'))grid.innerHTML='<div class="gridwin" id="gridwin"></div>';
   window.scrollTo(0,0);   // al cambiar filtro/orden/Focus volvemos arriba
-  vMeasure();vPaint();
-  renderFacets();renderChips();}
+  vMeasure();vPaint();}
+// Repintado completo (rejilla + panel de facetas + chips). Se usa al cambiar la SELECCIÓN de facetas.
+function render(){ renderGrid(); renderFacets(); renderChips(); }
 function cycle(key,v){const s=sel[key];const cur=s[v];if(!cur)s[v]='inc';else if(cur==='inc')s[v]='exc';else delete s[v];}
 
 document.addEventListener('click',e=>{
@@ -215,11 +221,12 @@ document.addEventListener('click',e=>{
 });
 const focusbtn=document.getElementById('focusbtn');
 focusbtn.onclick=()=>{const fp=document.getElementById('focus');fp.hidden=!fp.hidden;focusbtn.textContent=(fp.hidden?'▸':'▾')+' Focus';};
-document.getElementById('sort').onchange=render;
+document.getElementById('sort').onchange=renderGrid;   // el orden no altera las facetas
 function updateViewBtn(){const b=document.getElementById('viewtoggle');if(b)b.innerHTML=window.icon(VIEW==='list'?'library':'lists',16);}
 document.getElementById('viewtoggle').onclick=()=>{VIEW=VIEW==='list'?'grid':'list';try{localStorage.setItem('escucharrr.libview',VIEW);}catch(e){}updateViewBtn();VG.refined=false;vMeasure();vPaint();window.scrollTo(0,0);};
 updateViewBtn();
-document.getElementById('filter').oninput=(e)=>{txt=e.target.value.toLowerCase().trim();render();};
+let _filtT=0;   // el texto no cambia las facetas → solo rejilla, con debounce para teclear fluido
+document.getElementById('filter').oninput=(e)=>{txt=e.target.value.toLowerCase().trim();clearTimeout(_filtT);_filtT=setTimeout(renderGrid,110);};
 
 // toast con enlace «Deshacer» (para revertir un merge)
 function undoToast(msg, undoId){
@@ -265,7 +272,7 @@ selG('selfold').onclick=async()=>{
     else if(window.toast)toast(r.error||'error'); }catch(e){ if(window.toast)toast('error: '+e.message); }
 };
 
-function load(){fetch('/api/library').then(r=>r.json()).then(d=>{d.forEach(a=>a._rnd=Math.random());ALBUMS=d;render();}).catch(e=>document.getElementById('count').textContent='error: '+e.message);}
+function load(){fetch('/api/library').then(r=>r.json()).then(d=>{d.forEach(a=>a._rnd=Math.random());ALBUMS=d;_vals={};render();}).catch(e=>document.getElementById('count').textContent='error: '+e.message);}
 load();
 document.addEventListener('escucharrr:changed',load);   // biblioteca en vivo
 
