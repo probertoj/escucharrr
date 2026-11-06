@@ -242,7 +242,16 @@ function openBioEditor(){
   box.appendChild(tx);
   const ta=document.getElementById('biota'); ta.value=existing; ta.focus();
   document.getElementById('biocancel').onclick=()=>tx.remove();
-  document.getElementById('biosave').onclick=()=>{ const v=ta.value; editField('bio',v).then(r=>{ if(r.ok){toast(v.trim()?'Bio guardada':'Bio quitada');load();}else toast(r.error||'error'); }); };
+  document.getElementById('biosave').onclick=()=>{ const v=ta.value;
+    if(!v.trim()){ editField('bio','').then(r=>{ if(r.ok){toast('Bio quitada');load();}else toast(r.error||'error'); }); return; }   // vaciar = quitar (solo BD)
+    // La bio es TU dato: si hay vault de Obsidian, se escribe en la nota del artista (como las reseñas de álbum);
+    // si no hay vault, cae a la BD. Antes iba siempre solo a la BD, por eso no aparecía en Obsidian.
+    fetch('/api/obsidian/write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subject_type:'artist',subject_id:id,field:'bio',value:v})}).then(r=>r.json()).then(r=>{
+      if(r.ok){toast((r.created?'Nota creada: ':'Guardado en ')+r.path);load();return;}
+      const noVault=/no est[áa] configurado/i.test(r.error||'');
+      editField('bio',v).then(r2=>{ if(r2.ok){toast(noVault?'Bio guardada':'Bio guardada en la app (Obsidian falló: '+(r.error||'')+')');load();}else toast(r.error||'error'); });
+    }).catch(e=>{ editField('bio',v).then(r2=>{ if(r2.ok){toast('Bio guardada');load();}else toast('error: '+e.message); }); });
+  };
 }
 </script>
 <script src="md.js" defer></script>
