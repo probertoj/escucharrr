@@ -596,7 +596,7 @@ function buildQ(db) {
      ) GROUP BY rgid HAVING COUNT(*)>1`),
   worksAll: db.prepare(`SELECT DISTINCT rel.release_group_id id FROM recording r JOIN track tr ON tr.recording_id=r.id
      JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id WHERE r.work_id IS NOT NULL`),
-  album: db.prepare(`SELECT a.id,a.title,a.orig_title,a.artist,a.orig_artist,a.year,a.primary_type,a.tier_key,a.tier_rank,
+  album: db.prepare(`SELECT a.id,a.title,a.orig_title,a.artist,a.orig_artist,a.year,a.first_release,a.primary_type,a.tier_key,a.tier_rank,
       (SELECT label FROM tier WHERE key=a.tier_key) tier_label, a.album_stars, a.is_favorite,
       EXISTS(SELECT 1 FROM flag f WHERE f.subject_type='release_group' AND f.subject_id=a.id AND f.flag='listen_later') listen_later,
       ${_aovArtistId} artist_id
