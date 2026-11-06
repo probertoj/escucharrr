@@ -772,6 +772,14 @@ function buildQ(db) {
   artistDupes: db.prepare(`SELECT a.id, a.name, a.disambiguation, a.mbid FROM artist a WHERE a.id!=?
       AND ${_anA('a.name')} = ? ORDER BY a.name`),
   artistSearch: db.prepare(`SELECT a.id, a.name, a.disambiguation FROM artist a WHERE a.id!=? AND a.name LIKE ? ORDER BY (lower(a.name)=lower(?)) DESC, a.name LIMIT 20`),
+  // Grupos de artistas DUPLICADOS en toda la biblioteca (mismo nombre normalizado en >1 entidad) para
+  // revisarlos y unirlos de una. Mismo criterio que artistDupes (quita «the », conserva artículo español).
+  artistDupeGroups: db.prepare(`SELECT GROUP_CONCAT(id) ids, COUNT(*) n FROM (
+       SELECT a.id id, ${_anA('a.name')} norm FROM artist a WHERE a.name IS NOT NULL AND trim(a.name)<>''
+     ) GROUP BY norm HAVING n > 1 ORDER BY n DESC LIMIT 400`),
+  artistDupInfo: db.prepare(`SELECT a.id, a.name, a.disambiguation, a.mbid,
+       (SELECT COUNT(DISTINCT rg.id) FROM artist_credit_name acn JOIN release_group rg ON rg.artist_credit_id=acn.artist_credit_id WHERE acn.artist_id=a.id) album_count
+     FROM artist a WHERE a.id=?`),
   // ── género ──
   genreAlbums: db.prepare(`SELECT a.id,a.title,a.artist,a.year,a.primary_type,a.tier_key,a.album_stars,a.is_favorite
      FROM v_album a JOIN release_group_genre rgg ON rgg.release_group_id=a.id
@@ -1689,6 +1697,20 @@ async function handleArtistMerge(req, res) {
     sseBroadcast('library');
     return sendJSON(res, { ok: true, ...r, undoId });
   } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+}
+// Lista global de grupos de artistas duplicados (mismo nombre en varias entidades), para revisarlos y
+// unirlos sin recorrer ficha a ficha. Cada grupo trae sus miembros (nombre, desambiguación, nº de álbumes),
+// con el de MÁS álbumes primero (destino sugerido de la fusión).
+function artistDupeGroups() {
+  const out = [];
+  for (const g of Q.artistDupeGroups.all()) {
+    const ids = String(g.ids || '').split(',').map(x => parseInt(x, 10)).filter(Boolean);
+    const members = ids.map(id => Q.artistDupInfo.get(id)).filter(Boolean)
+      .sort((a, b) => (b.album_count - a.album_count) || a.name.localeCompare(b.name));
+    if (members.length > 1) out.push({ members, albums: members.reduce((s, m) => s + (m.album_count || 0), 0) });
+  }
+  out.sort((a, b) => b.albums - a.albums);
+  return { ok: true, groups: out, count: out.length };
 }
 // Renombrar un artista: cambia artist.name y, por defecto, los nombres de crédito que coincidían
 // (para que el cambio se vea en los álbumes, cuyo "artista" sale de artist_credit_name.name).
@@ -3839,6 +3861,7 @@ http.createServer((req, res) => {
   if (u.pathname === '/api/identify/all' && req.method === 'POST') return void sendJSON(res, { ok: true, ...startIdentifyAll() });
   if (u.pathname === '/api/identify/all/status' && req.method === 'GET') return void sendJSON(res, { ok: true, ...identifyAllStatus() });
   if (u.pathname === '/api/identify/all/stop' && req.method === 'POST') { if (_idAll) _idAll.running = false; return void sendJSON(res, { ok: true, ...identifyAllStatus() }); }
+  if (u.pathname === '/api/artists/dupes') return void sendJSON(res, artistDupeGroups());
   if (u.pathname === '/api/artist/merge' && req.method === 'POST') return void handleArtistMerge(req, res);
   if (u.pathname === '/api/artist/edit' && req.method === 'POST') return void handleArtistEdit(req, res);
   if (u.pathname === '/api/artist/editorial' && req.method === 'GET') return void handleArtistEditorial(req, res, u);
