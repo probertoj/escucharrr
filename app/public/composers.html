@@ -43,7 +43,7 @@ function render(f){f=(f||'').toLowerCase().trim();
   const l=f?COMP.filter(c=>(c.name||'').toLowerCase().includes(f)):COMP;
   document.getElementById('count').textContent=l.length+' compositor'+(l.length===1?'':'es')+(f?(' de '+COMP.length):'');
   const list=document.getElementById('list');
-  if(!COMP.length){list.innerHTML='<div class="empty">Aún no hay compositores en tu biblioteca. Aparecen aquí cuando los metadatos de tus ficheros (o un enriquecido de MusicBrainz) acreditan la composición de las obras.</div>';return;}
+  if(!COMP.length){list.innerHTML='<div class="empty">Aún no hay compositores en tu biblioteca. Aparecen aquí cuando los metadatos de tus ficheros acreditan la composición de las obras.</div>';return;}
   list.innerHTML=l.map(c=>`<div class="crow" data-id="${c.id}"><span class="ar">▸</span><span class="nm">${esc(c.name)}</span><span class="ct">${c.nworks} obra${c.nworks===1?'':'s'}${c.nalbums?(' · '+c.nalbums+' álbum'+(c.nalbums===1?'':'es')):''}</span></div><div class="cbody" id="cb-${c.id}"></div>`).join('');
 }
 async function toggle(id){

@@ -28,7 +28,7 @@ function render(f){f=(f||'').toLowerCase().trim();
   const l=f?WORKS.filter(w=>((w.title||'')+' '+(w.composer||'')).toLowerCase().includes(f)):WORKS;
   document.getElementById('count').textContent=l.length+' obra'+(l.length===1?'':'s')+(f?(' de '+WORKS.length):'');
   const list=document.getElementById('list');
-  if(!WORKS.length){list.innerHTML='<div class="empty">Aún no hay obras clásicas en tu biblioteca. Las obras y sus interpretaciones aparecen aquí cuando los metadatos de tus ficheros (o un enriquecido de MusicBrainz) las identifican.</div>';return;}
+  if(!WORKS.length){list.innerHTML='<div class="empty">Aún no hay obras clásicas en tu biblioteca. Las obras y sus interpretaciones aparecen aquí cuando los metadatos de tus ficheros las identifican.</div>';return;}
   list.innerHTML=l.map(w=>`<a class="wrow" href="work.html?id=${w.id}"><span class="t">${esc(w.title)}</span><span class="c">${esc(w.composer||'')}</span><span class="p">${w.perf||0} interpr.</span></a>`).join('');
 }
 fetch('/api/works').then(r=>r.json()).then(j=>{WORKS=j.items||[];render();}).catch(e=>document.getElementById('count').textContent='error: '+e.message);

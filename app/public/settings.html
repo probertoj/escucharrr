@@ -65,7 +65,7 @@ input[type=range]{accent-color:var(--accent)}
 <body>
 <div class="wrap set">
   <h1>Configuración</h1>
-  <div class="lead">Lo que se puede cambiar aquí se aplica al instante. Lo marcado como <i>próximamente</i> aún no está cableado.</div>
+  <div class="lead">Lo que se puede cambiar aquí se aplica al instante. Lo marcado como <i>próximamente</i> todavía no está disponible.</div>
   <div id="app">cargando…</div>
 </div>
 
@@ -132,9 +132,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   <div class="grp" data-cat="audio"><h2><span class="gi">${window.icon('zone',18)}</span> Audio — salida</h2><div class="body">
     <div class="row"><div class="lbl"><div class="k">Zona de salida actual</div><div class="d">${esc(zoneName)}</div></div>
       <button id="chooseout">Elegir salida / zona…</button></div>
-    <div class="row"><div class="lbl"><div class="k">Motor nativo (WASAPI)</div><div class="d">${nat.available?(nat.built?'compilado y disponible · resample sinc Kaiser, dither TPDF, EQ propio':'disponible pero sin compilar (ejecuta <span class="mono">engine/build.ps1</span>)'):'no disponible en esta build'}</div></div></div>
+    <div class="row"><div class="lbl"><div class="k">Motor nativo (WASAPI)</div><div class="d">${nat.available?(nat.built?'disponible en este equipo':'no disponible en este equipo'):'no disponible en esta versión'}</div></div></div>
     <div class="row"><div class="lbl"><div class="k">ffmpeg</div><div class="d" id="ffmpegstat">comprobando…</div></div></div>
-    <div class="row"><div class="lbl"><div class="k">Salida de red (UPnP/DLNA, p. ej. Eversolo)</div><div class="d">descubre renderers de la LAN y les envía la música (el aparato la descarga de /api/stream); elígelo en «Elegir salida / zona»</div></div>
+    <div class="row"><div class="lbl"><div class="k">Salida de red (UPnP/DLNA, p. ej. Eversolo)</div><div class="d">descubre dispositivos de tu red y les envía la música; elígelo en «Elegir salida / zona»</div></div>
       <button id="chooseout2">Elegir salida…</button></div>
   </div></div>
 
