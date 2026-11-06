@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>escucharrr — configuración</title>
 <link rel="stylesheet" href="styles.css">
 <style>
@@ -79,6 +79,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   const P = window.player;
   let info = {}; try { info = await fetch('/api/settings').then(r => r.json()); } catch (e) {}
   const S = (P && P.getSettings) ? P.getSettings() : { xfade: 0, rgMode: 'track', radio: false, eqOn: false, eqGains: [0,0,0,0,0,0,0], eqFreqs: ['60','150','400','1k','2.4k','6k','15k'], presets: [], zone: {}, nativeMode: false };
+  const bg = (P && P.getBgMode) ? P.getBgMode() : false;
   const app = document.getElementById('app');
 
   const lib = info.library || {}, watch = info.watch || {}, scr = info.scrobble || {}, nat = info.native || {}, ap = info.app || {};
@@ -149,6 +150,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   </div></div>
 
   <div class="grp" data-cat="reproduccion"><h2><span class="gi">${window.icon('play',18)}</span> Reproducción</h2><div class="body">
+    <div class="row"><div class="lbl"><div class="k">Reproducción en segundo plano</div><div class="d">sigue sonando con la pantalla apagada o la app minimizada (imprescindible en iPhone). A cambio desactiva visualizador, ecualizador, crossfade y zonas, que dependen de Web Audio. Al cambiarlo se recarga la página.</div></div>
+      <label class="sw"><input type="checkbox" id="bgplay" ${bg?'checked':''}><span class="t"></span></label></div>
     <div class="row"><div class="lbl"><div class="k">Crossfade</div><div class="d">solapa el final de una pista con el inicio de la siguiente</div></div>
       <input id="xf" type="range" min="0" max="12" step="0.5" value="${S.xfade}" style="width:160px"><span class="val" id="xfval"></span></div>
     <div class="row"><div class="lbl"><div class="k">Normalización de volumen (ReplayGain)</div><div class="d">por pista (−18 LUFS) · por álbum (conserva la dinámica del disco) · desactivada</div></div>${rgSeg()}</div>
@@ -227,6 +230,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('rgseg').addEventListener('click', e => { const b = e.target.closest('[data-rg]'); if (!b) return; if (P && P.setRgMode) P.setRgMode(b.dataset.rg); [...e.currentTarget.children].forEach(c => c.classList.toggle('on', c === b)); });
   document.getElementById('thseg').addEventListener('click', e => { const b = e.target.closest('[data-th]'); if (!b) return; if (window.escunav) escunav.setTheme(b.dataset.th); [...e.currentTarget.children].forEach(c => c.classList.toggle('on', c === b)); });
 
+  const bgplay = document.getElementById('bgplay'); if (bgplay) bgplay.addEventListener('change', e => { if (P && P.setBgMode) P.setBgMode(e.target.checked); });   // recarga al cambiar (ver nota en player.js)
   const radio = document.getElementById('radio'); if (radio) radio.addEventListener('change', e => { if (P && P.setRadio) P.setRadio(e.target.checked); });
   const eqon = document.getElementById('eqon'); if (eqon) eqon.addEventListener('change', e => { if (P && P.setEqEnabled) P.setEqEnabled(e.target.checked); });
 

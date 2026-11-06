@@ -104,8 +104,20 @@ window.player = (function () {
   let irEl = null, irStation = null, irTitle = '', irPlaying = false, irPollT = null;
   try { const s = JSON.parse(localStorage.getItem(IRKEY)); if (s && s.id) irStation = s; } catch (e) {}
 
+  // Modo «reproducción en segundo plano» (móvil/iOS): si está activo NO construimos el grafo Web Audio, así el
+  // <audio> suena por la salida nativa y sigue con la pantalla apagada o la app en 2º plano (los mandos de la
+  // pantalla de bloqueo ya van por Media Session). A cambio se pierden visualizador, EQ, crossfade y zonas, que
+  // dependen de Web Audio. Se decide al arrancar: una vez que createMediaElementSource captura un <audio>, ya no
+  // vuelve a sonar por la salida normal, así que cambiar el modo recarga la página. Por defecto: activo en móvil.
+  const BGKEY = 'escucharrr.bgplayback';
+  function bgDefault() { try { return !!(window.matchMedia && window.matchMedia('(max-width:619px)').matches); } catch (e) { return false; } }
+  let bgMode; try { const v = localStorage.getItem(BGKEY); bgMode = v == null ? bgDefault() : v === '1'; } catch (e) { bgMode = false; }
+  function getBgMode() { return bgMode; }
+  function setBgMode(on) { on = !!on; const changed = on !== bgMode; try { localStorage.setItem(BGKEY, on ? '1' : '0'); } catch (e) {} if (changed) location.reload(); }
+
   function ensureGraph() {
     if (ctx) return;
+    if (bgMode) return;                                                              // 2º plano: sin Web Audio (ver nota arriba)
     const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;   // sin Web Audio: usamos el.volume
     try {
       ctx = new AC();
@@ -257,7 +269,7 @@ window.player = (function () {
   // ── pantalla "ahora suena" a pantalla completa, por PÁGINAS (estilo Roon component_fullscreen_nowplaying:
   //    atom_nowplaying_{image,lyrics,credits,review,bio}). Carátula · Letra (LRC sincronizada) · Créditos · Reseña · Artista. ──
   let npfs = null, npPage = 'cover', npMeta = null, npMetaId = -1, npBio = null, npBioId = -1, npLyActive = -1, npInfo = null, npInfoTrack = -1;
-  function ensureNpFs() { if (npfs) return; npfs = document.createElement('div'); npfs.id = 'npfs'; npfs.setAttribute('style', 'position:fixed;inset:0;z-index:75;background:var(--bg);display:none;flex-direction:column;overflow:hidden'); document.body.appendChild(npfs); }
+  function ensureNpFs() { if (npfs) return; npfs = document.createElement('div'); npfs.id = 'npfs'; npfs.setAttribute('style', 'position:fixed;inset:0;z-index:75;background:var(--bg);display:none;flex-direction:column;overflow:hidden;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)'); document.body.appendChild(npfs); }
   function toggleNpFs() { ensureNpFs(); if (npfs.style.display === 'flex') { npfs.style.display = 'none'; if (vizRAF) { cancelAnimationFrame(vizRAF); vizRAF = 0; } return; } npPage = 'cover'; npLyActive = -1; loadNpMeta(); const c = cur(); if (c) loadPalette(c.albumId); renderNpFs(); npfs.style.display = 'flex'; }
   // Metadatos del álbum/artista para las páginas (créditos/reseña/bio); cacheados por álbum.
   function loadNpMeta() {
@@ -332,7 +344,7 @@ window.player = (function () {
     if (!npfs) return;
     if (!vizOn || !npPalette) { npfs.style.background = 'var(--bg)'; npfs.style.removeProperty('--accent'); return; }
     const [r, g, b] = npPalette.bg, a = npPalette.accent;
-    npfs.style.background = `linear-gradient(180deg, rgba(${r},${g},${b},.26) 0%, var(--bg) 62%)`;   // tinte suave del dominante
+    npfs.style.background = `linear-gradient(180deg, rgba(${r},${g},${b},.26) 0%, var(--bg) 62%), var(--bg)`;   // tinte suave del dominante sobre base opaca (var(--bg) de respaldo: sin esto el tramo translúcido deja ver la página de debajo)
     npfs.style.setProperty('--accent', `rgb(${a[0]},${a[1]},${a[2]})`);                              // acento vibrante, SOLO en el fullscreen
   }
   // ── visualizador audio-reactivo: espectro bajo la portada (AnalyserNode -> canvas) ──
@@ -1445,5 +1457,5 @@ window.player = (function () {
 
   return { playAlbum, playTracks, next, prev, toggle, jumpTo, removeAt, clearUpcoming, getState, setVol, getGain, getZone, getAudio, getNative, setNativeMode, setRadio, undo,
     getSettings, setXfade, setRgMode, setEqEnabled, setEqBand, setPreset, openOutput: toggleZPanel, openEq: toggleEqPanel, openDsp: toggleDspPanel,
-    playRadio, stopRadio, getRadio, radioFrom, thumbDown, playMix, moveInQueue, addNext, enqueue, setShuffle, setVolLimit, cycleRepeat, setCfEnabled };
+    playRadio, stopRadio, getRadio, radioFrom, thumbDown, playMix, moveInQueue, addNext, enqueue, setShuffle, setVolLimit, cycleRepeat, setCfEnabled, getBgMode, setBgMode };
 })();
