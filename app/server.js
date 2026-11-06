@@ -6,6 +6,7 @@
 const http = require('node:http');
 const https = require('node:https');
 const zlib = require('node:zlib');   // gzip de respuestas grandes (biblioteca de 27K) — sin dependencias
+const os = require('node:os');       // direcciones LAN para «otras pantallas» (Modelo A: núcleo + remotos)
 const { DatabaseSync } = require('node:sqlite');
 const fs = require('fs');
 const path = require('path');
@@ -3830,6 +3831,24 @@ http.createServer((req, res) => {
       let r = t ? db.prepare(`SELECT ${cols} FROM local_file WHERE track_id=? LIMIT 1`).get(t) : null;
       if (!r && t) r = db.prepare(`SELECT ${cols} FROM local_file WHERE recording_id=(SELECT recording_id FROM track WHERE id=?) LIMIT 1`).get(t);
       return sendJSON(res, r || {});
+    }
+    if (u.pathname === '/api/netinfo') {
+      // Modelo A (núcleo + remotos): las URLs por las que otra pantalla de la LAN puede abrir ESTA instancia.
+      // Listamos las IPv4 no internas de la máquina. Tailscale/CGNAT (100.64/10) se marca para acceso fuera de casa.
+      const out = { port: PORT, hostname: os.hostname(), addrs: [] };
+      try {
+        const ifs = os.networkInterfaces();
+        for (const name of Object.keys(ifs)) {
+          for (const ni of (ifs[name] || [])) {
+            if (ni.family !== 'IPv4' || ni.internal) continue;
+            const ip = ni.address;
+            const isTs = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip);   // 100.64.0.0/10 (Tailscale / CGNAT)
+            out.addrs.push({ ip, iface: name, url: 'http://' + ip + ':' + PORT + '/', kind: isTs ? 'tailscale' : 'lan' });
+          }
+        }
+        out.addrs.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'lan' ? -1 : 1));   // LAN primero
+      } catch (e) {}
+      return sendJSON(res, out);
     }
     if (u.pathname === '/api/settings') return sendJSON(res, settingsInfo());
     if (u.pathname === '/api/library') {
