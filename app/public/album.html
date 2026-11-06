@@ -76,8 +76,11 @@ function renderAlbum(a){
   // contribuirlo a MusicBrainz (donde viven las fechas) — así «En este día» mejora para todos. Las fechas se
   // editan en una EDICIÓN concreta del release-group; el enlace lleva a su página de MusicBrainz.
   const _hasDay = !!(a.first_release && String(a.first_release).length >= 10);
-  const _dayNote = (!_hasDay && a.mbid)
-    ? `<div style="font-size:12.5px;color:var(--text-2);margin-top:6px;display:inline-flex;align-items:center;gap:6px">${window.icon('calendar',14)}<span>Sin día de lanzamiento conocido. ¿Lo sabes? <a href="https://musicbrainz.org/release-group/${a.mbid}" target="_blank" rel="noopener" style="color:var(--accent)">Añádelo en MusicBrainz</a> y lo tendrás aquí al reidentificar.</span></div>`
+  const _dayNote = !_hasDay
+    ? `<div id="daynote" style="font-size:12.5px;color:var(--text-2);margin-top:6px">
+         <div style="display:inline-flex;align-items:flex-start;gap:6px">${window.icon('calendar',14)}<span>Sin día de lanzamiento concreto.${a.mbid?` ¿Lo sabes? <a href="https://musicbrainz.org/release-group/${a.mbid}" target="_blank" rel="noopener" style="color:var(--accent)">Añádelo en MusicBrainz</a> y lo tendrás aquí al reidentificar.`:''}</span></div>
+         <div id="spdate" style="margin-top:4px"></div>
+       </div>`
     : '';
   const extLinks=(_lfmUrl||_mbUrl||_dcUrl||_rymUrl||_rcUrl)?`<div style="margin-top:9px;font-size:13px;display:flex;gap:14px;flex-wrap:wrap;align-items:center"><span class="k" style="opacity:.7">Enlaces</span>${_lnk(_mbUrl,'MusicBrainz')}${_lnk(_dcUrl,'Discogs')}${_lnk(_rcUrl,'Record Club')}${_lnk(_lfmUrl,'Last.fm')}${_lnk(_rymUrl,'RateYourMusic')}</div>`:'';
   const multiDisc=(a.tracks||[]).some(t=>t.disc>1);
@@ -162,6 +165,27 @@ function renderAlbum(a){
   applyCollapse();
   maybeRetoBtn();
   maybeSimilar();
+  maybeSpotifyDate();
+}
+// Fecha de lanzamiento que FALTA: si Spotify está conectado, le preguntamos la fecha (solo SUGERENCIA,
+// no cambia nada) y, si aporta día/mes, la mostramos con un enlace para revisarla y aportarla a MusicBrainz.
+const _MESES=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+function _fmtSpDate(d,prec){
+  const m=String(d||'').match(/^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?/); if(!m) return d;
+  const y=m[1], mo=m[2]?_MESES[+m[2]-1]:null, da=m[3]?+m[3]:null;
+  if(prec==='day'&&da&&mo) return `${da} de ${mo} de ${y}`;
+  if(prec==='month'&&mo) return `${mo} de ${y}`;
+  return y;
+}
+async function maybeSpotifyDate(){
+  const slot=document.getElementById('spdate'); const a=window.ALB; if(!slot||!a||!a.spotify_enabled) return;
+  let r; try{ r=await fetch('/api/spotify/date?id='+a.id).then(x=>x.json()); }catch(e){ return; }
+  if(!r||!r.ok||!r.suggestion||!r.suggestion.date) return;
+  const s=r.suggestion; if(s.precision!=='day'&&s.precision!=='month') return;   // el año solo no aporta nada
+  const pretty=_fmtSpDate(s.date,s.precision);
+  const spl=s.url?`<a href="${s.url}" target="_blank" rel="noopener" style="color:var(--text-2)">Spotify</a>`:'Spotify';
+  const mb=a.mbid?` · <a href="https://musicbrainz.org/release-group/${a.mbid}" target="_blank" rel="noopener" style="color:var(--accent)">Revisar y añadir en MusicBrainz</a>`:'';
+  slot.innerHTML=`<span>${spl} indica <b style="color:var(--text)">${pretty}</b>${mb}</span>`;
 }
 // Artistas similares (vía Last.fm) — carga perezosa: no bloquea la ficha y degrada con elegancia.
 const _inits=n=>{const s=String(n||'').replace(/[^\p{L}\p{N} ]/gu,' ').trim().split(/\s+/).filter(Boolean).map(w=>w[0]).join('');return (s||'?').slice(0,2).toUpperCase();};

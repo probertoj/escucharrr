@@ -620,6 +620,7 @@ function buildQ(db) {
   spotifySet: db.prepare(`UPDATE release_group SET spotify_album_id=?, spotify_url=? WHERE id=?`),
   spotifyClear: db.prepare(`UPDATE release_group SET spotify_album_id=NULL, spotify_url=NULL`),
   spotifyOf: db.prepare(`SELECT spotify_album_id, spotify_url FROM release_group WHERE id=?`),
+  spotifyDateRow: db.prepare(`SELECT rg.title, rg.spotify_album_id, rg.first_release, (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=rg.artist_credit_id ORDER BY acn.position LIMIT 1) artist FROM release_group rg WHERE rg.id=?`),
   spotifyCount: db.prepare(`SELECT COUNT(*) n FROM release_group WHERE spotify_album_id IS NOT NULL`),
   filesForIndex: db.prepare(`SELECT lf.path, COALESCE(lf.track_id, (SELECT id FROM track WHERE recording_id=lf.recording_id LIMIT 1)) tid FROM local_file lf`),
   trackTags: db.prepare(`SELECT tr.id tid, COALESCE(tr.title, r.title) title, (SELECT acn.name FROM artist_credit_name acn WHERE acn.artist_credit_id=COALESCE(tr.artist_credit_id, r.artist_credit_id) ORDER BY acn.position LIMIT 1) artist FROM track tr JOIN recording r ON r.id=tr.recording_id`),
@@ -2197,6 +2198,13 @@ async function handleSpotify(req, res, u) {
       res.writeHead(302, { Location: '/settings.html?spotify=ok' }); return res.end();
     }
     if (sub === 'sync' && req.method === 'POST') { const r = await spotifySync(); return sendJSON(res, { ok: true, ...r }); }
+    // Fecha de lanzamiento SUGERIDA por Spotify, para discos a los que les falta el día (no cambia nada).
+    if (sub === 'date') {
+      const token = await spotifyAccessToken(); if (!token) return sendJSON(res, { ok: false, reason: 'no-auth' });
+      const rg = Q.spotifyDateRow.get(Number(u.searchParams.get('id'))); if (!rg) return sendJSON(res, { ok: false, reason: 'not-found' });
+      const d = await spotify.albumDate(token, { spotifyId: rg.spotify_album_id, artist: rg.artist, title: rg.title });
+      return sendJSON(res, { ok: true, suggestion: d });
+    }
     res.writeHead(404); res.end('{}');
   } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); }
 }

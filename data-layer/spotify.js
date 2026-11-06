@@ -97,4 +97,30 @@ function matchLocal(localRows, saved) {
   });
 }
 
-module.exports = { authorizeUrl, exchangeCode, refresh, expired, fetchSavedAlbums, matchLocal, indexSaved, keyOf, norm, SCOPE };
+// ── fecha de lanzamiento de un álbum (para COMPLETAR fechas que faltan) ──
+// Spotify suele traer el día exacto (release_date + release_date_precision). Lo usamos SOLO como
+// SUGERENCIA: no tocamos nada; el usuario la revisa y, si quiere, la aporta a MusicBrainz a mano.
+// Devuelve {date:'YYYY-MM-DD'|'YYYY-MM'|'YYYY', precision:'day'|'month'|'year', url, name} o null.
+async function albumDate(accessToken, { spotifyId, artist, title } = {}) {
+  const pick = al => al && al.release_date
+    ? { date: al.release_date, precision: al.release_date_precision || 'day', url: (al.external_urls && al.external_urls.spotify) || null, name: al.name }
+    : null;
+  // Si ya conocemos el id de Spotify (disco guardado), pedimos ESE álbum: fecha exacta, sin adivinar.
+  if (spotifyId) {
+    const r = await req(API, '/v1/albums/' + encodeURIComponent(spotifyId), { headers: { 'Authorization': 'Bearer ' + accessToken } });
+    const p = r.status === 200 ? pick(r.json) : null; if (p) return p;
+  }
+  // Si no, lo buscamos por artista+título y nos quedamos con la MEJOR coincidencia (misma clave que el emparejado).
+  const q = 'album:' + String(title || '') + ' artist:' + String(artist || '');
+  const r = await req(API, '/v1/search?type=album&limit=10&q=' + encodeURIComponent(q), { headers: { 'Authorization': 'Bearer ' + accessToken } });
+  if (r.status !== 200 || !r.json || !r.json.albums) return null;
+  const want = keyOf(artist, title);
+  for (const al of (r.json.albums.items || [])) {
+    for (const a of (al.artists && al.artists.length ? al.artists : [{ name: '' }])) {
+      if (keyOf(a.name, al.name) === want) return pick(al);
+    }
+  }
+  return null;
+}
+
+module.exports = { authorizeUrl, exchangeCode, refresh, expired, fetchSavedAlbums, matchLocal, indexSaved, keyOf, norm, albumDate, SCOPE };
