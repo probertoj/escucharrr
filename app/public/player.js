@@ -610,10 +610,12 @@ window.player = (function () {
       return;
     }
     bar.innerHTML =
-      `<a href="album.html?id=${c.albumId}" style="flex:none">${cover(c.albumId, 46)}</a>
-       <div data-act="npopen" title="Ahora suena" style="min-width:110px;cursor:pointer"><div style="font-size:14px;font-weight:600">${esc(c.title)}</div><div style="font-size:12px;color:var(--text-2)">${esc(c.artist)}${noAudio ? ' · sin audio local' : ''}</div></div>
+      `<div style="flex:1 1 0;min-width:0;display:flex;align-items:center;gap:12px">
+       <a href="album.html?id=${c.albumId}" style="flex:none">${cover(c.albumId, 46)}</a>
+       <div data-act="npopen" title="Ahora suena" style="flex:1;min-width:0;cursor:pointer"><div style="font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(c.title)}</div><div style="font-size:12px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(c.artist)}${noAudio ? ' · sin audio local' : ''}</div></div>
        ${techLabel(barTech) ? `<span data-act="npsignal" title="Resolución de audio — abre la ruta de señal" style="flex:none;cursor:pointer;font-size:10px;font-weight:700;letter-spacing:.3px;padding:2px 7px;border-radius:999px;border:1px solid ${techIsHires(barTech) ? 'var(--accent)' : 'var(--line)'};color:${techIsHires(barTech) ? 'var(--accent)' : 'var(--text-2)'};white-space:nowrap">${esc(techLabel(barTech))}</span>` : ''}
-       <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px">
+       </div>
+       <div style="flex:0 0 auto;width:min(440px,42vw);display:flex;flex-direction:column;align-items:center;gap:3px">
          <div style="display:flex;align-items:center;gap:18px;color:var(--text)">
            <span data-act="shuffle" title="Aleatorio: baraja lo que viene (S)" style="cursor:pointer;display:inline-flex;color:${shuffle ? 'var(--accent)' : 'var(--text-2)'}">${ic('shuffle', 17)}</span>
            <span data-act="prev" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Anterior (⇧←)">${ic('prev', 20)}</span>
@@ -630,12 +632,13 @@ window.player = (function () {
            <span style="font-size:11px;color:var(--muted);width:34px">${mmss(len)}</span>
          </div>
        </div>
+       <div style="flex:1 1 0;min-width:0;display:flex;align-items:center;justify-content:flex-end;gap:14px">
        <span data-act="mute" style="cursor:pointer;display:inline-flex;color:var(--text-2)" title="Silenciar (M)">${ic(volIcon(), 17)}</span>
        <input data-act="vol" class="vfader" type="range" min="0" max="1" step="0.01" value="${volToPos(vol)}" title="Volumen · ${volDbLabel(vol)} (↑↓)" style="width:116px;--vp:${(volToPos(vol) * 100).toFixed(1)}%">
        <span data-act="lyrics" title="${lyHasFor((cur() || {}).trackId) ? 'Letra disponible (L)' : 'Letra (L)'}" style="cursor:pointer;display:inline-flex;color:${lyHasFor((cur() || {}).trackId) ? 'var(--accent)' : 'var(--text-2)'}">${ic('lyrics', 17)}</span>
        <span data-act="eq" title="Ecualizador y crossfade" style="cursor:pointer;display:inline-flex;color:${eqOn || xfade > 0 ? 'var(--accent)' : 'var(--text-2)'}">${ic('eq', 17)}</span>
        <span data-act="zone" title="Salida / zona" style="cursor:pointer;font-size:12px;color:${nativeMode || upnpMode ? 'var(--accent)' : 'var(--text-2)'};display:inline-flex;align-items:center;gap:5px;max-width:160px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${ic('zone', 16)}<span style="overflow:hidden;text-overflow:ellipsis">${zoneLabel()}</span></span>
-       <a href="queue.html" title="Cola" style="color:var(--text-2);text-decoration:none;display:inline-flex;align-items:center;gap:5px;font-size:13px">${ic('queue', 16)}${idx + 1}/${q.length}</a>`;
+       <a href="queue.html" title="Cola" style="color:var(--text-2);text-decoration:none;display:inline-flex;align-items:center;gap:5px;font-size:13px">${ic('queue', 16)}${idx + 1}/${q.length}</a></div>`;
     if (npfs && npfs.style.display === 'flex') renderNpFs();
     emit();
   }
