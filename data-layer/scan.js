@@ -170,6 +170,9 @@ const S = {
   insRec: db.prepare('INSERT INTO recording(title,artist_credit_id,length_ms) VALUES(?,?,?)'),
   trackBy: db.prepare('SELECT id FROM track WHERE medium_id=? AND position=?'),
   insTrack: db.prepare('INSERT INTO track(medium_id,position,recording_id,title,artist_credit_id,length_ms) VALUES(?,?,?,?,?,?)'),
+  relByRgComp: db.prepare('SELECT id FROM "release" WHERE release_group_id=? ORDER BY id LIMIT 1'),   // recopilatorio: UN release por grupo (no por carpeta)
+  trackByMedRec: db.prepare('SELECT id FROM track WHERE medium_id=? AND recording_id=? LIMIT 1'),      // misma grabación ya en el disco (copia repetida)
+  maxPosInMed: db.prepare('SELECT COALESCE(MAX(position),0) p FROM track WHERE medium_id=?'),
   genreBy: db.prepare('SELECT id FROM genre WHERE name=?'),
   insGenre: db.prepare('INSERT INTO genre(name) VALUES(?)'),
   linkGenre: db.prepare('INSERT OR IGNORE INTO release_group_genre(release_group_id,genre_id) VALUES(?,?)'),
@@ -221,6 +224,14 @@ const ensureRg = (title, cid, year) => { const r = S.rgBy.get(title, cid); retur
 // dejarlo huérfano al reescanear la única copia); si tampoco, se crea uno nuevo (segunda copia = otra versión).
 const ensureRel = (rg, title, cid, date, fmt, srcDir) => {
   const r = S.relByRgDir.get(rg, srcDir); if (r) return r.id;
+  const u = S.relUnclaimed.get(rg); if (u) { S.claimRel.run(srcDir, u.id); return u.id; }
+  return Number(S.insRel.run(rg, title, cid, date, fmt, srcDir).lastInsertRowid);
+};
+// Recopilatorios (Various Artists): NO versiones-por-carpeta. Las pistas de un mismo comp suelen estar repartidas
+// en carpetas (una por artista de cada pista, o por disco); tratar cada carpeta como una copia creaba decenas de
+// «versiones» falsas. Se ensambla UN release por grupo (medium por disco; la pista se coloca por posición abajo).
+const ensureRelComp = (rg, title, cid, date, fmt, srcDir) => {
+  const r = S.relByRgComp.get(rg); if (r) return r.id;
   const u = S.relUnclaimed.get(rg); if (u) { S.claimRel.run(srcDir, u.id); return u.id; }
   return Number(S.insRel.run(rg, title, cid, date, fmt, srcDir).lastInsertRowid);
 };
@@ -389,13 +400,20 @@ try {
       const rgDate = /^\d{4}-\d{2}-\d{2}/.test(_d) ? _d.slice(0, 10) : (_d.slice(0, 4) || null);
       const rg = ensureRg(album, cid, rgDate);
       if (t.GENRE) S.linkGenre.run(rg, ensureGenre(t.GENRE.toLowerCase()));  // minúscula: convención común con MB/Discogs
-      const rel = ensureRel(rg, album, cid, t.DATE || null, fmtLabel, nrm(albumDir));   // una copia (versión) por carpeta de álbum
+      // recopilatorio → un release por grupo (pistas repartidas en carpetas); si no, versiones-por-carpeta
+      const rel = isComp ? ensureRelComp(rg, album, cid, t.DATE || null, fmtLabel, nrm(albumDir))
+                         : ensureRel(rg, album, cid, t.DATE || null, fmtLabel, nrm(albumDir));
       const med = ensureMed(rel, discNo, fmtLabel);
       const tcid = t.ARTIST ? ensureCredit(ensureArtist(t.ARTIST), t.ARTIST) : cid;
       recId = ensureRec(title, tcid, inf.durationMs);
       if (t.COMPOSER) ingestComposer(recId, title, t.COMPOSER);   // compositor desde el tag -> obra + crédito
-      const ex = S.trackBy.get(med, trackNo);
-      trackId = ex ? ex.id : Number(S.insTrack.run(med, trackNo, recId, title, tcid, inf.durationMs).lastInsertRowid);
+      let trackPos = trackNo, dupTrack = null;
+      if (isComp) {
+        dupTrack = S.trackByMedRec.get(med, recId);               // misma grabación ya en el disco (copia repetida) → reutiliza
+        if (!dupTrack && S.trackBy.get(med, trackPos)) trackPos = S.maxPosInMed.get(med).p + 1;   // posición ocupada por otra pista → al final
+      }
+      if (dupTrack) trackId = dupTrack.id;
+      else { const ex = S.trackBy.get(med, trackPos); trackId = ex ? ex.id : Number(S.insTrack.run(med, trackPos, recId, title, tcid, inf.durationMs).lastInsertRowid); }
       // propagar los MBID/ISRC del tag al grafo (solo si aún no los tiene)
       if (rgMbid) trySet(S.setRgMbid, rgMbid, rg);
       if (relMbid) trySet(S.setRelMbid, relMbid, rel);
