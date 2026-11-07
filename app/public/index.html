@@ -53,6 +53,7 @@ body.selmode .card{cursor:pointer}
   <button id="selfold" title="Fundir las PISTAS en un solo disco: para el mismo álbum partido en varios (p. ej. colaboraciones). Reúne todas las pistas en un tracklist">Fundir en 1 disco</button>
   <button id="selfav" title="Marcar como favoritos">♥ Favorito</button>
   <select id="seltier" title="Poner tier a los seleccionados"><option value="">Tier…</option><option value="excel">Excel</option><option value="si">Sí</option><option value="ok">Ok</option><option value="meh">Meh</option><option value="no">No</option></select>
+  <button id="selartist" title="Poner el mismo artista de álbum a todos los seleccionados (p. ej. arreglar varios «download» de golpe)">Artista…</button>
   <button id="selclear">Deseleccionar</button>
   <button id="selexit">Salir</button>
 </div>
@@ -285,6 +286,25 @@ selG('selfold').onclick=async()=>{
   try{ const r=await fetch('/api/album/fold',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})}).then(x=>x.json());
     if(r.ok){ SELSET.clear(); SELMODE=false; selRepaint(); load(); undoToast('Fundidas las pistas de '+((r.folded||0)+1)+' álbumes en un disco', r.undoId); }
     else if(window.toast)toast(r.error||'error'); }catch(e){ if(window.toast)toast('error: '+e.message); }
+};
+// Editar el ARTISTA de álbum de varios a la vez (Serge: «modificar los datos de varios álbumes»). Reutiliza
+// selEdit → /api/edit album_artist (override estilo Roon; no toca los ficheros).
+selG('selartist').onclick=()=>{
+  const ids=[...SELSET]; if(!ids.length){ if(window.toast)toast('Nada seleccionado'); return; }
+  if(document.getElementById('bulkartdlg'))return;
+  const ov=document.createElement('div'); ov.id='bulkartdlg'; ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:130';
+  ov.innerHTML=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;width:min(420px,92vw);box-shadow:0 12px 40px rgba(0,0,0,.4)">
+    <div style="font-weight:600;font-size:15px;margin-bottom:6px">Artista de álbum para ${ids.length} álbum(es)</div>
+    <div style="font-size:12px;color:var(--text-2);margin-bottom:10px">Se pone el mismo artista a todos los seleccionados (override estilo Roon; no toca tus ficheros). Vacío = cancelar.</div>
+    <input id="bulkartinp" placeholder="Nombre del artista del álbum" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--text)">
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px"><button id="bulkartcancel" style="padding:7px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer;color:var(--text)">Cancelar</button><button id="bulkartok" class="btn-accent" style="padding:7px 14px">Aplicar</button></div></div>`;
+  document.body.appendChild(ov); const close=()=>ov.remove();
+  ov.addEventListener('click',ev=>{ if(ev.target===ov)close(); });
+  document.getElementById('bulkartcancel').onclick=close;
+  const inp=document.getElementById('bulkartinp'); inp.focus();
+  const go=async()=>{ const v=(inp.value||'').trim(); if(!v){ close(); return; } const ok=document.getElementById('bulkartok'); ok.disabled=true; ok.textContent='Aplicando…';
+    await selEdit('album_artist',v); close(); SELSET.clear(); SELMODE=false; selRepaint(); if(window.toast)toast('Artista aplicado a '+ids.length+' álbum(es)'); load(); };
+  document.getElementById('bulkartok').onclick=go; inp.addEventListener('keydown',e=>{ if(e.key==='Enter')go(); });
 };
 
 function load(){fetch('/api/library').then(r=>r.json()).then(d=>{d.forEach(a=>a._rnd=Math.random());ALBUMS=d;_vals={};render();}).catch(e=>document.getElementById('count').textContent='error: '+e.message);}

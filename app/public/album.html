@@ -117,7 +117,11 @@ function renderAlbum(a){
   const verHref=v=>v.copy?`album.html?id=${v.id}&rel=${v.rel}`:`album.html?id=${v.id}`;
   const versions=(a.version_count>1)?`<div class="sec">Versiones <span style="color:var(--muted);font-size:14px;font-weight:400;font-family:var(--sans)">${a.version_count} en tu biblioteca</span></div><div class="versions">`
     +`<div class="verrow cur"><span class="vt">Esta copia${a.is_primary?' '+pbadge:''}${makePrim}</span><span class="vm">${[a.format,curTracks?curTracks+' pistas':''].filter(Boolean).map(esc).join(' · ')}</span></div>`
-    +a.versions.map(v=>`<a class="verrow" href="${verHref(v)}"><span class="vt">${esc(v.title)}${v.primary?' '+pbadge:''}</span><span class="vm">${[v.format,v.tracks?v.tracks+' pistas':'',v.year].filter(Boolean).map(esc).join(' · ')}</span></a>`).join('')
+    +a.versions.map(v=>{ const inner=`<span class="vt">${esc(v.title)}${v.primary?' '+pbadge:''}</span><span class="vm">${[v.format,v.tracks?v.tracks+' pistas':'',v.year].filter(Boolean).map(esc).join(' · ')}</span>`;
+        // copia física del MISMO álbum → solo enlace; versión hermana (otro release_group) → enlace + «Combinar» para fundirla aquí
+        return v.copy ? `<a class="verrow" href="${verHref(v)}">${inner}</a>`
+          : `<div class="verrow"><a href="${verHref(v)}" style="flex:1;min-width:0;display:flex;align-items:baseline;justify-content:space-between;gap:14px;color:inherit;text-decoration:none">${inner}</a><button class="verfuse" data-id="${v.id}" data-title="${esc(v.title)}" title="Combinar esta versión en este álbum (serán uno solo)" style="flex:none;font-size:11px;padding:2px 10px;border-radius:999px;border:1px solid var(--line);background:none;color:var(--text-2);cursor:pointer">Combinar</button></div>`;
+      }).join('')
     +`</div>`:'';
   // Más del artista (profundizar en su discografía) y artistas afines de tu biblioteca (profundizar en sonidos), estilo Roon.
   const artNm=esc(a.artist||'');
@@ -382,6 +386,12 @@ async function openMergePicker(){
     });
   });
 }
+// Fundir una VERSIÓN hermana (otro release_group listado como versión) dentro de este álbum → un solo álbum.
+document.addEventListener('click',e=>{ const fb=e.target.closest('.verfuse'); if(!fb) return; e.preventDefault();
+  const drop=+fb.dataset.id, dt=fb.dataset.title, a=window.ALB; if(!a||!drop) return;
+  if(!confirm('¿Combinar la versión «'+dt+'» dentro de «'+a.title+'»?\nSerán un solo álbum (sus copias y pistas pasan aquí). Reversible desde Ajustes → «Fusiones hechas».')) return;
+  fb.disabled=true; fb.textContent='Combinando…';
+  fetch('/api/album/merge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keep:a.id,drop})}).then(r=>r.json()).then(r=>{ if(r.ok){ load(); undoToast('Versiones combinadas', r.undoId); } else { fb.disabled=false; fb.textContent='Combinar'; toast(r.error||'error'); } }).catch(()=>{ fb.disabled=false; fb.textContent='Combinar'; toast('error'); }); });
 // Identificar por HUELLA de audio (AcoustID): reconoce el disco aunque las etiquetas estén mal.
 document.addEventListener('click',e=>{ if(e.target.closest('#acoustidalbum')){ runAcoustid(); } });
 // «Abrir en el Explorador»: el servidor (local) abre la carpeta en el Explorador de Windows. No toca nada.
