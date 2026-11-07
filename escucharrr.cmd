@@ -17,6 +17,11 @@ if not exist "%NODE%" set "NODE=node"
 rem Abrir el navegador por defecto al arrancar (opt-in; el servidor lo respeta).
 set "ESC_OPEN_BROWSER=1"
 
+rem Claves de app (secretos que NO van al repo): si existe el fichero local, lo cargamos para
+rem poner ESC_LASTFM_API_KEY/SECRET (Last.fm «un clic», estilo Spotify) y cualquier otra clave de app.
+rem Copia escucharrr.secrets.cmd.example a escucharrr.secrets.cmd y pega tus claves. Ver ese ejemplo.
+if exist "%HERE%escucharrr.secrets.cmd" call "%HERE%escucharrr.secrets.cmd"
+
 rem ffmpeg empaquetado (opcional): si existe bin\ffmpeg.exe, el servidor lo usa sin tocar el PATH.
 if exist "%HERE%bin\ffmpeg.exe" set "ESC_FFMPEG=%HERE%bin\ffmpeg.exe"
 

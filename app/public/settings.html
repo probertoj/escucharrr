@@ -286,7 +286,7 @@ window.addEventListener('DOMContentLoaded', async () => {
           <input id="lfsecret" type="password" placeholder="${lf.hasSecret ? 'secret guardado — en blanco lo conserva' : 'shared secret'}" style="flex:1;min-width:140px">
           <button id="lfsave">Guardar claves</button>
         </div></details>` : `
-      <div class="d" style="margin:3px 0 8px">Crea una API account en <span class="mono">last.fm/api/account/create</span> (el <b>Callback URL</b> puedes dejarlo en blanco: escucharrr lo envía solo), pega la <b>API key</b> y el <b>secret</b> de la <b>misma app</b>, guarda y pulsa Conectar.</div>
+      <div class="d" style="margin:3px 0 8px">Crea una API account en <span class="mono">last.fm/api/account/create</span> (el <b>Callback URL</b> puedes dejarlo en blanco: escucharrr lo envía solo), pega la <b>API key</b> y el <b>secret</b> de la <b>misma app</b> y pulsa <b>«Guardar claves»</b>. <b>Entonces</b> aparecerá el botón <b>«Conectar con Last.fm»</b> para autorizar tu cuenta.</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <input id="lfkey" placeholder="API key" value="${esc(lf.apiKey || '')}" style="flex:1;min-width:140px">
         <input id="lfsecret" type="password" placeholder="${lf.hasSecret ? 'secret guardado — en blanco lo conserva' : 'shared secret'}" style="flex:1;min-width:140px">

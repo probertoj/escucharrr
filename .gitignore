@@ -8,6 +8,8 @@ app/obsidian.json
 # credenciales de scrobbling (tokens/claves propias)
 app/scrobble.json
 app/.lastfm-token
+# claves de APP cargadas por el lanzador (ESC_LASTFM_API_KEY/SECRET, etc.) — NUNCA al repo
+escucharrr.secrets.cmd
 # Spotify (app propia + token OAuth del usuario)
 app/spotify.json
 app/.spotify-token
