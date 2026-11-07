@@ -68,6 +68,7 @@ window.player = (function () {
   let vizOn = true; try { const v = localStorage.getItem(VIZKEY); if (v === '0') vizOn = false; } catch (e) {}
   const persistViz = () => { try { localStorage.setItem(VIZKEY, vizOn ? '1' : '0'); } catch (e) {} };
   let analyser = null, vizData = null, vizTime = null, vizRAF = 0;                  // tap de espectro/onda tras la maestra
+  let vizCtx = null, vizSrc = null, vizTappedEl = null;                             // tap por captureStream para el visualizador en modo 2º plano (móvil)
   const VIZSTYLES = ['bars', 'spectrum', 'scope'];                                  // presets de visualizador
   let vizStyle = 'bars'; try { const s = localStorage.getItem('escucharrr.vizstyle'); if (VIZSTYLES.indexOf(s) >= 0) vizStyle = s; } catch (e) {}
   let preampDb = 0; try { const p = parseFloat(localStorage.getItem('escucharrr.preamp')); if (p >= -12 && p <= 6) preampDb = p; } catch (e) {}
@@ -348,10 +349,35 @@ window.player = (function () {
     npfs.style.setProperty('--accent', `rgb(${a[0]},${a[1]},${a[2]})`);                              // acento vibrante, SOLO en el fullscreen
   }
   // ── visualizador audio-reactivo: espectro bajo la portada (AnalyserNode -> canvas) ──
-  function startViz() { if (vizRAF) return; vizRAF = requestAnimationFrame(vizLoop); }
+  // En modo 2º plano (móvil por defecto) NO hay grafo Web Audio (el <audio> suena por la salida nativa para
+  // seguir con la pantalla apagada), así que no existe `analyser`. Para tener visualizador ahí sin romper el
+  // 2º plano, tomamos el audio del elemento con captureStream() hacia un AnalyserNode aparte que NO se conecta
+  // a la salida (no duplica sonido). captureStream de audio va en Chromium/Android; en iOS Safari no está, y
+  // entonces el visualizador simplemente no aparece (fallback silencioso). Los ficheros son del mismo origen,
+  // así que el stream no queda «tainted».
+  function ensureVizTap() {
+    if (!bgMode || !vizOn) return;                                     // sin 2º plano, ensureGraph ya creó el analyser
+    const el = active() && active().el; if (!el) return;
+    if (analyser && vizCtx && vizTappedEl === el) { if (vizCtx.state === 'suspended') vizCtx.resume().catch(() => {}); return; }
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+      const cap = el.captureStream || el.mozCaptureStream; if (!cap) return;        // iOS Safari: sin captureStream → sin viz
+      const stream = cap.call(el); if (!stream || !stream.getAudioTracks || !stream.getAudioTracks().length) return;
+      if (!vizCtx) vizCtx = new AC();
+      if (vizSrc) { try { vizSrc.disconnect(); } catch (e) {} vizSrc = null; }
+      vizSrc = vizCtx.createMediaStreamSource(stream);
+      if (!analyser || analyser.context !== vizCtx) { analyser = vizCtx.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.82; vizData = new Uint8Array(analyser.frequencyBinCount); vizTime = new Uint8Array(analyser.fftSize); }
+      vizSrc.connect(analyser);                                                     // solo al analizador, NO a destination
+      vizTappedEl = el;
+      if (vizCtx.state === 'suspended') vizCtx.resume().catch(() => {});
+    } catch (e) { /* captureStream no disponible en este dispositivo → sin visualizador */ }
+  }
+  function startViz() { ensureVizTap(); if (!vizRAF) vizRAF = requestAnimationFrame(vizLoop); }
   function vizLoop() {
     vizRAF = 0;
-    if (!vizOn || !analyser || !npfs || npfs.style.display !== 'flex' || npPage !== 'cover') return;
+    if (!vizOn || !npfs || npfs.style.display !== 'flex' || npPage !== 'cover') return;
+    ensureVizTap();                                                                 // 2º plano: (re)engancha el audio si cambió la pista/elemento
+    if (!analyser) return;                                                          // sin tap posible (p. ej. iOS): canvas en blanco; se reintenta al re-renderizar
     const cv = document.getElementById('npviz'); if (!cv) return;
     const dpr = Math.min(2, window.devicePixelRatio || 1), W = cv.clientWidth, H = cv.clientHeight;
     if (!W || !H) { vizRAF = requestAnimationFrame(vizLoop); return; }
