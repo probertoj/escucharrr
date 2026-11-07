@@ -127,7 +127,17 @@ window.addEventListener('DOMContentLoaded', async () => {
         <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:7px 12px">Elegir fichero a importar…<input id="syncfile" type="file" accept="application/json,.json" style="display:none"></label>
       </div>
       <div id="syncbox" style="margin-top:10px;display:none"></div>
-      <div id="syncmsg" style="font-size:12.5px;margin-top:8px;display:none"></div></div>
+      <div id="syncmsg" style="font-size:12.5px;margin-top:8px;display:none"></div>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+        <div class="k" style="margin-bottom:6px">…o traerla directamente de otro dispositivo en tu red</div>
+        <div class="d" style="margin-bottom:10px">Si tienes escucharrr corriendo en otro equipo de tu red, pon aquí su dirección y <b>trae su capa de usuario</b> sin pasar por fichero. Previsualiza primero para ver qué casará con esta biblioteca.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input id="syncpullurl" type="text" placeholder="http://192.168.1.50:7733" style="flex:1;min-width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--text)">
+          <button id="syncpullprev">Previsualizar</button>
+        </div>
+        <div id="syncpullbox" style="margin-top:10px;display:none"></div>
+        <div id="syncpullmsg" style="font-size:12.5px;margin-top:8px;display:none"></div>
+      </div></div>
   </div></div>
 
   <div class="grp" data-cat="audio"><h2><span class="gi">${window.icon('zone',18)}</span> Audio — salida</h2><div class="body">
@@ -678,6 +688,40 @@ window.addEventListener('DOMContentLoaded', async () => {
           if (r.ok) { const ap = Object.entries(r.applied || {}).map(([k, v]) => k + ' ' + v).join(', ') || 'nada'; const sk = Object.values(r.skipped || {}).reduce((s, v) => s + v, 0); sm('Importado (' + r.mode + '): ' + ap + (sk ? ('. Saltadas ' + sk + ' (no casaban o ya existían).') : '.'), true); box.style.display = 'none'; fi.value = ''; }
           else { sm(r.error || 'No se pudo importar.', false); b.disabled = false; b.textContent = 'Importar'; }
         } catch (e) { sm('No se pudo contactar con el servidor.', false); b.disabled = false; b.textContent = 'Importar'; }
+      };
+    });
+  })();
+  // Sync fase 2: traer la capa de usuario de otra instancia por la red (previsualizar → elegir modo → traer).
+  (function () {
+    const urlI = document.getElementById('syncpullurl'), prevBtn = document.getElementById('syncpullprev');
+    const box = document.getElementById('syncpullbox'), msg = document.getElementById('syncpullmsg');
+    if (!prevBtn) return;
+    const pm = (t, ok) => { msg.style.display = 'block'; msg.style.color = ok ? 'var(--accent)' : '#c0392b'; msg.textContent = t; };
+    prevBtn.addEventListener('click', async () => {
+      const url = (urlI.value || '').trim(); box.style.display = 'none'; msg.style.display = 'none';
+      if (!url) { pm('Pon la dirección del otro dispositivo (p. ej. http://192.168.1.50:7733).', false); return; }
+      prevBtn.disabled = true; prevBtn.textContent = 'Conectando…';
+      let pv; try { pv = await fetch('/api/sync/pull-preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) }).then(r => r.json()); }
+      catch (e) { pm('No se pudo contactar con el servidor.', false); prevBtn.disabled = false; prevBtn.textContent = 'Previsualizar'; return; }
+      prevBtn.disabled = false; prevBtn.textContent = 'Previsualizar';
+      if (!pv.ok) { pm(pv.error || 'No se pudo traer.', false); return; }
+      const rowsHtml = Object.keys(pv.match || {}).map(k => { const m = pv.match[k] || 0, x = (pv.miss || {})[k] || 0; return '<div>' + k + ': <b>' + m + '</b> casan' + (x ? (' · ' + x + ' no') : '') + '</div>'; }).join('');
+      box.style.display = 'block';
+      box.innerHTML = `<div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:12px">
+        <div style="font-size:12.5px;margin-bottom:8px">De <b>${esc(pv.source || url)}</b> (generado ${pv.generated_at ? new Date(pv.generated_at).toLocaleString() : '—'}):</div>
+        <div style="font-size:12.5px;line-height:1.6;margin-bottom:10px">${rowsHtml || 'Nada que traer.'}</div>
+        <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+          <label style="display:inline-flex;align-items:center;gap:5px;font-size:13px"><input type="radio" name="pullmode" value="fill" checked> Rellenar (no pisa lo tuyo)</label>
+          <label style="display:inline-flex;align-items:center;gap:5px;font-size:13px"><input type="radio" name="pullmode" value="overwrite"> Sobrescribir (lo traído gana)</label>
+          <button id="syncpullgo" class="btn-accent" style="padding:7px 14px">Traer ahora</button>
+        </div></div>`;
+      document.getElementById('syncpullgo').onclick = async () => {
+        const mode = (box.querySelector('input[name=pullmode]:checked') || {}).value || 'fill';
+        const b = document.getElementById('syncpullgo'); b.disabled = true; b.textContent = 'Trayendo…';
+        try { const r = await fetch('/api/sync/pull', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, mode }) }).then(x => x.json());
+          if (r.ok) { const ap = Object.entries(r.applied || {}).map(([k, v]) => k + ' ' + v).join(', ') || 'nada'; const sk = Object.values(r.skipped || {}).reduce((s, v) => s + v, 0); pm('Traído (' + r.mode + '): ' + ap + (sk ? ('. Saltadas ' + sk + ' (no casaban o ya existían).') : '.'), true); box.style.display = 'none'; }
+          else { pm(r.error || 'No se pudo traer.', false); b.disabled = false; b.textContent = 'Traer ahora'; }
+        } catch (e) { pm('No se pudo contactar con el servidor.', false); b.disabled = false; b.textContent = 'Traer ahora'; }
       };
     });
   })();

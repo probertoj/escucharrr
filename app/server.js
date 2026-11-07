@@ -2246,6 +2246,29 @@ async function handleSyncImport(req, res, preview) {
     return sendJSON(res, rep);
   } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
 }
+// Sync fase 2 — traer la capa de usuario DIRECTAMENTE de otra instancia de escucharrr en la red (sin pasar por
+// fichero). Pide su /api/sync/export por HTTP y lo aplica/previsualiza con la misma maquinaria de fase 1
+// (reanclado por MBID/clave; idempotente). La URL la da el usuario (p. ej. http://192.168.1.50:7733).
+async function handleSyncPull(req, res, preview) {
+  const b = await readBody(req);
+  let base = String(b.url || '').trim();
+  if (!base) return sendJSON(res, { ok: false, error: 'Falta la dirección del otro dispositivo (p. ej. http://192.168.1.50:7733).' });
+  if (!/^https?:\/\//i.test(base)) base = 'http://' + base;
+  base = base.replace(/\/+$/, '').replace(/\/api\/sync\/export$/i, '');   // acepta pegar la URL del export o la raíz
+  const url = base + '/api/sync/export';
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(30000), headers: { 'Accept': 'application/json' } });
+    if (!r.ok) return sendJSON(res, { ok: false, error: 'El otro dispositivo respondió ' + r.status + '. ¿Es una instancia de escucharrr y está accesible?' });
+    let data; try { data = await r.json(); } catch (e) { return sendJSON(res, { ok: false, error: 'La respuesta no es un export válido (¿la dirección apunta a escucharrr?).' }); }
+    if (preview) return sendJSON(res, { ok: true, source: base, ...syncLayer.previewImport(db, data) });
+    const rep = syncLayer.applyImport(db, data, { mode: b.mode || 'fill' });
+    sseBroadcast('library');
+    return sendJSON(res, { ok: true, source: base, ...rep });
+  } catch (e) {
+    const msg = /timeout|aborted/i.test(String(e.message)) ? 'Tiempo de espera agotado' : String(e.message);
+    return sendJSON(res, { ok: false, error: 'No se pudo conectar con ' + base + ': ' + msg });
+  }
+}
 async function handleDateSuggest(req, res, u) {
   try {
     const rg = Q.spotifyDateRow.get(Number(u.searchParams.get('id'))); if (!rg) return sendJSON(res, { ok: false, reason: 'not-found' });
@@ -4052,6 +4075,8 @@ http.createServer((req, res) => {
     }
     if ((u.pathname === '/api/sync/preview' || u.pathname === '/api/sync/import') && req.method === 'POST')
       return void handleSyncImport(req, res, u.pathname.endsWith('/preview'));
+    if ((u.pathname === '/api/sync/pull' || u.pathname === '/api/sync/pull-preview') && req.method === 'POST')
+      return void handleSyncPull(req, res, u.pathname.endsWith('-preview'));
     if (u.pathname === '/api/search') return sendJSON(res, search(u.searchParams.get('q'), Math.min(parseInt(u.searchParams.get('n') || '20', 10) || 20, 100)));
     if (u.pathname === '/api/artist') { const a = artist(parseInt(u.searchParams.get('id'), 10)); return a ? sendJSON(res, a) : (res.writeHead(404), res.end('{}')); }
     if (u.pathname === '/api/artist/discography') { artistDiscography(parseInt(u.searchParams.get('id'), 10)).then(r => sendJSON(res, r)).catch(e => sendJSON(res, { ok: false, error: String(e.message) })); return; }
