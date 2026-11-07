@@ -94,7 +94,10 @@ window.player = (function () {
   const persistRg = () => { try { localStorage.setItem(RGKEY, rgMode); } catch (e) {} };
 
   // ── dos decks de audio + grafo Web Audio (se crea tras el primer gesto del usuario) ──
-  const mkEl = () => { const a = new Audio(); a.preload = 'metadata'; a.volume = vol; return a; };
+  // Los <audio> van CONECTADOS al DOM (ocultos): en Android, un elemento multimedia desconectado deja de
+  // sonar cuando el navegador congela la pestaña al bloquear el móvil (~3 s); conectado + Media Session, Chrome
+  // mantiene la reproducción en 2º plano. playsinline evita que iOS lo lleve a pantalla completa.
+  const mkEl = () => { const a = new Audio(); a.preload = 'metadata'; a.volume = vol; a.setAttribute('playsinline', ''); try { a.style.display = 'none'; (document.body || document.documentElement).appendChild(a); } catch (e) {} return a; };
   const decks = [{ el: mkEl(), src: null, gain: null, trackIdx: -1 }, { el: mkEl(), src: null, gain: null, trackIdx: -1 }];
   let cur0 = 0; const active = () => decks[cur0], other = () => decks[1 - cur0];
   let ctx = null, eqBands = [], masterGain = null;
@@ -1006,7 +1009,7 @@ window.player = (function () {
 
   // ── RADIO POR INTERNET: stream en vivo (sin cola/seek/duración), título "ahora suena" por ICY ──
   function persistRadio() { try { if (irStation) localStorage.setItem(IRKEY, JSON.stringify({ id: irStation.id, name: irStation.name })); else localStorage.removeItem(IRKEY); } catch (e) {} }
-  function ensureIrEl() { if (!irEl) { irEl = new Audio(); irEl.preload = 'none'; irEl.onplaying = () => { irPlaying = true; renderRadioBar(); }; irEl.onpause = () => { irPlaying = false; renderRadioBar(); }; irEl.onerror = () => { irPlaying = false; renderRadioBar(); }; } return irEl; }
+  function ensureIrEl() { if (!irEl) { irEl = new Audio(); irEl.preload = 'none'; irEl.setAttribute('playsinline', ''); try { irEl.style.display = 'none'; (document.body || document.documentElement).appendChild(irEl); } catch (e) {} irEl.onplaying = () => { irPlaying = true; renderRadioBar(); }; irEl.onpause = () => { irPlaying = false; renderRadioBar(); }; irEl.onerror = () => { irPlaying = false; renderRadioBar(); }; } return irEl; }
   function playRadio(st) {
     if (!st || !st.id) return;
     try { decks.forEach(d => d.el.pause()); } catch (e) {} playing = false; cancelFade();   // para la cola/decks
