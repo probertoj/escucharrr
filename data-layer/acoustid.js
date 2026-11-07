@@ -52,10 +52,12 @@ async function lookupRecording(db, filePath, fp, apiKey) {
   let data;
   try {
     const res = await fetch(ACOUSTID_API, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA }, body: params, signal: AbortSignal.timeout(20000) });
-    if (!res.ok) return null;
-    data = await res.json();
+    data = await res.json();   // AcoustID devuelve JSON con {status:'error',error} también en 4xx (p. ej. clave inválida → 400)
   } catch (e) { return null; }
-  if (data.status !== 'ok') return null;
+  if (data.status !== 'ok') {
+    const msg = data.error && data.error.message;   // p. ej. «invalid API key»
+    return { error: /invalid.*api key|missing.*api key|invalid user/i.test(String(msg)) ? 'badkey' : 'apierr', message: String(msg || 'error de AcoustID') };
+  }
   let best = null;
   for (const r of data.results || []) {
     const rec = (r.recordings || [])[0];
@@ -89,7 +91,9 @@ async function identifyAlbumByFingerprint(db, tracks, apiKey, opts = {}) {
     const t = sample[i];
     onP(i / sample.length, 'Huella de ' + (t.title || 'pista ' + (i + 1)));
     const fp = await fingerprint(db, t.path, fpcalcPath); if (!fp) continue;
-    const hit = await lookupRecording(db, t.path, fp, apiKey); if (!hit || !hit.mb_recording_id) continue;
+    const hit = await lookupRecording(db, t.path, fp, apiKey);
+    if (hit && hit.error) return { ok: false, reason: hit.error, message: hit.message, scanned };   // clave inválida/API caída: no sigas gastando llamadas
+    if (!hit || !hit.mb_recording_id) continue;
     scanned++; bestScore = Math.max(bestScore, hit.score || 0);
     const rgs = await recordingReleaseGroups(mb, hit.mb_recording_id);
     for (const rg of rgs) { const v = votes.get(rg.rg_mbid) || { count: 0, rg }; v.count++; votes.set(rg.rg_mbid, v); }

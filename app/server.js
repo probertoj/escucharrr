@@ -1311,7 +1311,13 @@ async function handleAlbumAcoustid(req, res, u) {
     const tracks = _pr ? Q.albumFilePathsRel.all(_pr) : Q.albumFilePaths.all(rg);   // muestrea la copia primaria
     if (!tracks.length) return sendJSON(res, { ok: false, error: 'El álbum no tiene ficheros locales que analizar.' });
     const r = await acoustidLib.identifyAlbumByFingerprint(db, tracks, acoustidKey(), { mb: identifyAlbum.makeMb(), fpcalcPath: acoustidFpcalc() });
-    if (!r.ok) return sendJSON(res, { ok: false, reason: r.reason, scanned: r.scanned || 0, error: r.reason === 'nomatch' ? 'AcoustID no reconoció el álbum (' + (r.scanned || 0) + ' pistas con huella válida).' : 'No se pudo identificar por huella.' });
+    if (!r.ok) {
+      const msg = r.reason === 'nomatch' ? 'AcoustID no reconoció el álbum (' + (r.scanned || 0) + ' pistas con huella válida).'
+        : r.reason === 'badkey' ? 'La API key de AcoustID no es válida. Consigue una gratis en acoustid.org (clave de aplicación) y ponla en Ajustes → Servicios.'
+        : r.reason === 'apierr' ? ('AcoustID devolvió un error: ' + (r.message || 'inténtalo más tarde') + '.')
+        : 'No se pudo identificar por huella.';
+      return sendJSON(res, { ok: false, reason: r.reason, scanned: r.scanned || 0, error: msg });
+    }
     db.prepare("UPDATE release_group SET mbid=?, updated_at=datetime('now') WHERE id=?").run(r.rg_mbid, rg);
     db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at) VALUES('release_group',?,'mbid','acoustid',?,datetime('now'))
        ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source='acoustid', source_ref=excluded.source_ref, fetched_at=datetime('now')`).run(rg, r.rg_mbid);
