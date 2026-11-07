@@ -49,6 +49,20 @@ function post(url, { headers = {}, body = '', form = false } = {}) {
   });
 }
 
+// GET genérico; devuelve { status, body }. Algunos endpoints (p. ej. ListenBrainz /1/validate-token)
+// SOLO aceptan GET: un POST devuelve 405 y haría creer que el token no es válido.
+function get(url, { headers = {} } = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const lib = u.protocol === 'http:' ? http : https;
+    const req = lib.request(u, { method: 'GET', headers: { 'User-Agent': UA, ...headers } },
+      res => { let b = ''; res.on('data', d => b += d); res.on('end', () => resolve({ status: res.statusCode, body: b })); });
+    req.on('error', reject);
+    req.setTimeout(15000, () => req.destroy(new Error('timeout')));
+    req.end();
+  });
+}
+
 function hasLbz(cfg) { return !!(cfg && cfg.listenbrainz && cfg.listenbrainz.token); }
 function hasLfm(cfg) { return !!(cfg && cfg.lastfm && cfg.lastfm.apiKey && cfg.lastfm.apiSecret && cfg.lastfm.sessionKey); }
 function enabledServices(cfg) { const s = []; if (hasLbz(cfg)) s.push('listenbrainz'); if (hasLfm(cfg)) s.push('lastfm'); return s; }
@@ -152,4 +166,4 @@ function pendingCount(db, cfg) {
   return db.prepare('SELECT count(*) n FROM scrobble_queue WHERE (lbz_done=0 AND ?) OR (lastfm_done=0 AND ?)').get(lbz ? 1 : 0, lfm ? 1 : 0).n;
 }
 
-module.exports = { md5, lastfmSig, enabledServices, hasLbz, hasLfm, nowPlaying, enqueue, drain, pendingCount, lbzSubmit, lfmScrobble, lfmCall, post };
+module.exports = { md5, lastfmSig, enabledServices, hasLbz, hasLfm, nowPlaying, enqueue, drain, pendingCount, lbzSubmit, lfmScrobble, lfmCall, post, get };

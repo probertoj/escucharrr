@@ -2930,7 +2930,7 @@ async function handleConfig(req, res, u) {
       if (body.listenbrainz && typeof body.listenbrainz.token === 'string') {
         const token = body.listenbrainz.token.trim();
         if (!token) { saveScrobbleCfg({ listenbrainz: { token: '' } }); return sendJSON(res, { ok: true, enabled: scrobble.enabledServices(scrobCfg || {}) }); }
-        const r = await scrobble.post('https://api.listenbrainz.org/1/validate-token', { body: JSON.stringify({}), headers: { Authorization: 'Token ' + token } });
+        const r = await scrobble.get('https://api.listenbrainz.org/1/validate-token', { headers: { Authorization: 'Token ' + token } });
         let j = {}; try { j = JSON.parse(r.body); } catch (e) {}
         if (r.status === 200 && j.valid) { saveScrobbleCfg({ listenbrainz: { token } }); return sendJSON(res, { ok: true, user: j.user_name, enabled: scrobble.enabledServices(scrobCfg || {}) }); }
         return sendJSON(res, { ok: false, error: 'Token de ListenBrainz no válido.' });
