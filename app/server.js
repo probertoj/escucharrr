@@ -1715,6 +1715,25 @@ function artistDupeGroups() {
   out.sort((a, b) => b.albums - a.albums);
   return { ok: true, groups: out, count: out.length };
 }
+// Unir TODOS los grupos de duplicados de una pasada (mismo criterio que el botón «Unir» de uno en uno:
+// nombre normalizado idéntico). Cada grupo funde sus miembros en el de más álbumes; todo el lote queda en
+// UNA sola entrada de «Fusiones hechas», deshacible de golpe. Es el mismo modelo de confianza que la fusión
+// individual que el usuario ya usa; reversible.
+function mergeAllArtistDupes() {
+  const { groups } = artistDupeGroups();
+  const allDrops = [];
+  let mergedGroups = 0, mergedEntities = 0;
+  for (const g of groups) {
+    const into = g.members[0].id;
+    const from = g.members.slice(1).map(m => m.id).filter(id => id && id !== into);
+    if (!from.length) continue;
+    const snaps = from.map(snapshotArtistDrop).filter(Boolean);   // ANTES de borrar
+    try { mergeArtists(into, from); allDrops.push(...snaps); mergedGroups++; mergedEntities += from.length; }
+    catch (e) { /* un grupo problemático no aborta el lote */ }
+  }
+  const undoId = allDrops.length ? recordMergeUndo('artist', null, `Unir ${mergedGroups} fichas duplicadas (lote)`, allDrops) : null;
+  return { ok: true, groups: mergedGroups, entities: mergedEntities, undoId };
+}
 // Renombrar un artista: cambia artist.name y, por defecto, los nombres de crédito que coincidían
 // (para que el cambio se vea en los álbumes, cuyo "artista" sale de artist_credit_name.name).
 async function handleArtistEdit(req, res) {
@@ -3900,6 +3919,7 @@ http.createServer((req, res) => {
   if (u.pathname === '/api/identify/all/status' && req.method === 'GET') return void sendJSON(res, { ok: true, ...identifyAllStatus() });
   if (u.pathname === '/api/identify/all/stop' && req.method === 'POST') { if (_idAll) _idAll.running = false; return void sendJSON(res, { ok: true, ...identifyAllStatus() }); }
   if (u.pathname === '/api/artists/dupes') return void sendJSON(res, artistDupeGroups());
+  if (u.pathname === '/api/artists/merge-all' && req.method === 'POST') return void (() => { try { const r = mergeAllArtistDupes(); sseBroadcast('library'); sendJSON(res, r); } catch (e) { sendJSON(res, { ok: false, error: String(e.message) }); } })();
   if (u.pathname === '/api/artist/merge' && req.method === 'POST') return void handleArtistMerge(req, res);
   if (u.pathname === '/api/artist/edit' && req.method === 'POST') return void handleArtistEdit(req, res);
   if (u.pathname === '/api/artist/editorial' && req.method === 'GET') return void handleArtistEditorial(req, res, u);

@@ -111,7 +111,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     <div class="row"><div class="lbl"><div class="k">Reparar renombrados / movimientos</div><div class="d" id="repairstatus">si renombraste o moviste carpetas en tu disco, re-vincula los ficheros a su ruta nueva por identidad de contenido (sin re-escanear todo) y funde duplicados. Solo lee el disco: no mueve ni renombra nada tuyo.</div></div><button id="repairbtn">Reparar ahora</button></div>
     <div class="row"><div class="lbl"><div class="k">Identificar los «no identificados»</div><div class="d" id="idallstatus">reintenta identificar con MusicBrainz todos los álbumes sin identificar de golpe (por nº de pistas y duraciones). Útil tras corregir nombres o artistas: no hay que ir uno a uno con la lupa. Va en segundo plano; solo aplica las coincidencias fiables.</div></div><button id="idallbtn">Identificar todos</button></div>
     <div class="row" style="display:block"><div class="k" style="margin-bottom:6px">Ficheros saltados en el último escaneo <span id="skipcount" style="color:var(--muted);font-weight:400"></span></div><div id="skiplist" class="d" style="max-height:220px;overflow:auto;font-size:12px;line-height:1.5">cargando…</div></div>
-    <div class="row" style="display:block"><div class="k" style="margin-bottom:6px">Artistas duplicados <span id="adupcount" style="color:var(--muted);font-weight:400"></span></div><div class="d" style="margin-bottom:8px">Mismo artista con varias fichas (p. ej. «The X» y «X», o con y sin tilde). Únelos: sus álbumes y créditos pasan al que más álbumes tiene y las demás fichas se borran. Puedes <b>deshacerlo</b> desde «Fusiones hechas».</div><div id="aduplist" class="d" style="max-height:300px;overflow:auto;font-size:12.5px;line-height:1.5">cargando…</div></div>
+    <div class="row" style="display:block"><div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><div class="k" style="flex:1">Artistas duplicados <span id="adupcount" style="color:var(--muted);font-weight:400"></span></div><button id="adupmergeall" style="flex:none;display:none">Unir todos</button></div><div class="d" style="margin-bottom:8px">Mismo artista con varias fichas (p. ej. «The X» y «X», o con y sin tilde). Únelos: sus álbumes y créditos pasan al que más álbumes tiene y las demás fichas se borran. <b>Unir todos</b> hace el lote de golpe (deshacible de una vez). Puedes <b>deshacerlo</b> desde «Fusiones hechas».</div><div id="aduplist" class="d" style="max-height:300px;overflow:auto;font-size:12.5px;line-height:1.5">cargando…</div></div>
     <div class="row" style="display:block"><div class="k" style="margin-bottom:6px">Fusiones hechas <span id="mergecount" style="color:var(--muted);font-weight:400"></span></div><div class="d" style="margin-bottom:8px">Uniones de artista/álbum y tracklists fundidas. Puedes <b>deshacer cualquiera cuando quieras</b>, no solo justo después.</div><div id="mergelist" class="d" style="max-height:260px;overflow:auto;font-size:12.5px;line-height:1.5">cargando…</div></div>
   </div></div>
 
@@ -586,8 +586,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Artistas duplicados en toda la biblioteca: revisar y unir de una (la fusión es deshacible en «Fusiones hechas»).
   function loadArtistDupes() {
     const cnt = document.getElementById('adupcount'), box = document.getElementById('aduplist'); if (!box) return;
+    const allBtn = document.getElementById('adupmergeall');
     fetch('/api/artists/dupes').then(r => r.json()).then(j => {
       const gs = (j && j.groups) || []; cnt.textContent = gs.length ? '(' + gs.length + ')' : '';
+      if (allBtn) allBtn.style.display = gs.length ? '' : 'none';
       if (!gs.length) { box.innerHTML = '<span style="color:var(--text-2)">Ninguno — no hay artistas con fichas duplicadas.</span>'; return; }
       box.innerHTML = gs.map(g => {
         const into = g.members[0];
@@ -599,6 +601,16 @@ window.addEventListener('DOMContentLoaded', async () => {
     }).catch(() => { box.textContent = 'No se pudo cargar.'; });
   }
   loadArtistDupes();
+  document.getElementById('adupmergeall').addEventListener('click', async e => {
+    const b = e.target; const n = (document.getElementById('adupcount').textContent || '').replace(/[()]/g, '') || 'las';
+    if (!confirm('¿Unir ' + n + ' fichas duplicadas de una vez? Sus álbumes y créditos pasan a la ficha con más álbumes de cada grupo. Podrás deshacer todo el lote desde «Fusiones hechas».')) return;
+    b.disabled = true; b.textContent = 'Uniendo…';
+    try { const r = await fetch('/api/artists/merge-all', { method: 'POST' }).then(x => x.json());
+      if (r.ok) { loadArtistDupes(); loadMerges(); alert('Unidas ' + r.groups + ' fichas (' + r.entities + ' entidades). Deshacible desde «Fusiones hechas».'); }
+      else { alert('No se pudo unir: ' + (r.error || '')); }
+    } catch (e2) { alert('No se pudo contactar con el servidor.'); }
+    b.disabled = false; b.textContent = 'Unir todos';
+  });
   document.getElementById('aduplist').addEventListener('click', async e => {
     const b = e.target.closest('.adupmerge'); if (!b) return;
     const grp = b.closest('.adupgrp'); const into = parseInt(grp.dataset.into, 10);
