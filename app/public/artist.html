@@ -184,6 +184,9 @@ function openArtistEdit(){
       <label style="display:block;font-size:11px;color:var(--text-2);margin-bottom:4px">Nombre</label>
       <div style="display:flex;gap:8px"><input id="aename" value="${esc(a.name)}" style="flex:1"><button id="aesave" class="btn-accent" style="padding:7px 14px">Guardar</button></div>
       <div style="font-size:11px;color:var(--text-2);margin-top:4px">${a.album_count} álbum(es) en tu biblioteca. Renombrar también actualiza el nombre en sus álbumes.</div>
+      <div style="border-top:1px solid var(--border);margin:14px -16px 0;padding:14px 16px 0"><div style="font-weight:600;margin-bottom:6px">Enlazar con MusicBrainz</div>
+        <div style="font-size:12px;color:var(--text-2);margin-bottom:8px">Pega el artista de MusicBrainz (URL o MBID) para fijar su identidad y traer su foto.${a.mbid?' <span style="color:var(--accent)">Ya enlazado.</span>':''}</div>
+        <div style="display:flex;gap:8px"><input id="aelinkmb" placeholder="musicbrainz.org/artist/… o MBID" style="flex:1"><button id="aelinkbtn" style="padding:7px 14px;cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px">Enlazar</button></div></div>
       ${dupes.length?`<div style="border-top:1px solid var(--border);margin:14px -16px 0;padding:14px 16px 0"><div style="font-weight:600;margin-bottom:4px">Duplicados con este nombre <span style="color:var(--muted);font-weight:400;font-size:12px">· ${dupes.length}</span></div>
         <div style="font-size:12px;color:var(--text-2);margin-bottom:8px">Únelos en este artista: sus álbumes y créditos pasan aquí y los duplicados se borran.</div>
         ${dupRows}
@@ -199,6 +202,9 @@ function openArtistEdit(){
   document.getElementById('aesave').onclick=async()=>{ const name=(document.getElementById('aename').value||'').trim(); if(!name) return msg('El nombre no puede estar vacío',false);
     try{ const r=await fetch('/api/artist/edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,name})}).then(x=>x.json());
       if(r.ok){ close(); toast('Artista renombrado'); load(); } else msg(r.error||'No se pudo guardar',false); }catch(e){ msg('Error de red',false); } };
+  { const lb=document.getElementById('aelinkbtn'); if(lb) lb.onclick=async()=>{ const ref=(document.getElementById('aelinkmb').value||'').trim(); if(!ref) return msg('Pega un enlace o MBID de MusicBrainz',false); lb.disabled=true; lb.textContent='Enlazando…';
+    try{ const r=await fetch('/api/artist/link-mb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,ref})}).then(x=>x.json());
+      if(r.ok){ close(); toast('Artista enlazado a MusicBrainz · trayendo foto…'); load(); } else { lb.disabled=false; lb.textContent='Enlazar'; msg(r.error||'No se pudo enlazar',false); } }catch(e){ lb.disabled=false; lb.textContent='Enlazar'; msg('Error de red',false); } }; }
   const doMerge=async(fromIds)=>{ if(!fromIds.length) return msg('Nada seleccionado',false);
     try{ const r=await fetch('/api/artist/merge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({into:id,from:fromIds})}).then(x=>x.json());
       if(r.ok){ close(); load(); undoToast('Unido: '+r.merged+' artista(s)', r.undoId); } else msg(r.error||'No se pudo unir',false); }catch(e){ msg('Error de red',false); } };

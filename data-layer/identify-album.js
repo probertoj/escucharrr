@@ -160,7 +160,24 @@ async function applyMbid(db, rgId, releaseMbid, opts = {}) {
   return { releaseMbid, rgMbid };
 }
 
-module.exports = { buildProfile, durScore, tokenOverlap, scoreCandidate, suggest, applyMbid, mbReleaseDurations, DUR_TOL_MS, makeMb };
+// Enlace MANUAL por release-group (lo que pide Serge: pegar el release-group de MusicBrainz, como Liderarrr).
+// Valida el RG contra MB y fija release_group.mbid + procedencia 'user-identify'. La edición concreta
+// (release.mbid) se deja para enrich/identify por edición: no se adivina para no mal-etiquetar.
+async function applyRgMbid(db, rgId, rgMbid, opts = {}) {
+  const mb = opts.mb || makeMb();
+  await mb('release-group/' + rgMbid);   // valida: lanza si el MBID no existe en MusicBrainz
+  db.exec('BEGIN');
+  try {
+    db.prepare('UPDATE release_group SET mbid=?, updated_at=datetime(\'now\') WHERE id=?').run(rgMbid, rgId);
+    db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at)
+       VALUES('release_group',?,'mbid','user-identify',?,datetime('now'))
+       ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source='user-identify', source_ref=excluded.source_ref, fetched_at=datetime('now')`).run(rgId, rgMbid);
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return { rgMbid, releaseMbid: null };
+}
+
+module.exports = { buildProfile, durScore, tokenOverlap, scoreCandidate, suggest, applyMbid, applyRgMbid, mbReleaseDurations, DUR_TOL_MS, makeMb };
 
 // ── CLI ──────────────────────────────────────────────────────────────────────────
 if (require.main === module) {

@@ -3415,6 +3415,56 @@ async function handleIdentifyApply(req, res) {
     return sendJSON(res, { ok: true, releaseMbid: r.releaseMbid, rgMbid: r.rgMbid, enriching: b.enrich !== false });
   } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
 }
+// ── ENLACE MANUAL a MusicBrainz (lo que pide Serge: pegar a mano el release-group / artista, como Liderarrr) ──
+// Acepta un MBID suelto o una URL de musicbrainz.org (release-group / release / artist). Un UUID suelto en un
+// álbum se trata como release-group (lo que pide Serge); si MB no lo reconoce como RG, se reintenta como release.
+function parseMbRef(ref) {
+  const s = String(ref || '').trim();
+  const uuid = (s.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i) || [])[1];
+  if (!uuid) return null;
+  const m = s.match(/musicbrainz\.org\/(release-group|release|artist)\//i);
+  return { uuid: uuid.toLowerCase(), type: m ? m[1].toLowerCase() : null };
+}
+async function handleAlbumLinkMb(req, res) {
+  try {
+    const b = await readBody(req);
+    const rg = parseInt(b.rg, 10); const p = parseMbRef(b.ref);
+    if (!rg || !p) return sendJSON(res, { ok: false, error: 'Pega un MBID o una URL de MusicBrainz (release-group) válida.' });
+    let r;
+    try {
+      if (p.type === 'release') r = await identifyAlbum.applyMbid(db, rg, p.uuid);
+      else if (p.type === 'release-group') r = await identifyAlbum.applyRgMbid(db, rg, p.uuid);
+      else { try { r = await identifyAlbum.applyRgMbid(db, rg, p.uuid); } catch (e) { r = await identifyAlbum.applyMbid(db, rg, p.uuid); } }
+    } catch (e) { return sendJSON(res, { ok: false, error: 'MusicBrainz no reconoció ese enlace: ' + e.message }); }
+    sseBroadcast('library');
+    _spawnIngest([path.join(_DL, 'enrich.js'), '--db', DB_PATH, '--rg', String(rg)]).then(() => sseBroadcast('library')).catch(() => {});
+    _spawnIngest([path.join(_DL, 'covers.js'), '--db', DB_PATH, '--rg', String(rg)]).then(() => sseBroadcast('library')).catch(() => {});
+    return sendJSON(res, { ok: true, rgMbid: r.rgMbid, releaseMbid: r.releaseMbid || null });
+  } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+}
+async function handleArtistLinkMb(req, res) {
+  try {
+    const b = await readBody(req);
+    const id = parseInt(b.id, 10); const p = parseMbRef(b.ref);
+    if (!id || !p) return sendJSON(res, { ok: false, error: 'Pega un MBID o una URL de artista de MusicBrainz.' });
+    if (!Q.artist.get(id)) return sendJSON(res, { ok: false, error: 'artista no encontrado' });
+    // artist.mbid es ÚNICO: si ese MB-artist ya existe como otra ficha, lo correcto es UNIR, no duplicar el mbid.
+    const clash = db.prepare('SELECT id, name FROM artist WHERE mbid=? AND id!=?').get(p.uuid, id);
+    if (clash) return sendJSON(res, { ok: false, error: 'Ese artista de MusicBrainz ya está en tu biblioteca como «' + clash.name + '». Úsalo con «Unir otro artista» para fundirlos, en vez de enlazar.', clashId: clash.id });
+    try { await identifyAlbum.makeMb()('artist/' + p.uuid); } catch (e) { return sendJSON(res, { ok: false, error: 'MusicBrainz no reconoció ese artista: ' + e.message }); }
+    db.exec('BEGIN');
+    try {
+      db.prepare("UPDATE artist SET mbid=?, updated_at=datetime('now') WHERE id=?").run(p.uuid, id);
+      db.prepare(`INSERT INTO provenance(subject_type,subject_id,field,source,source_ref,fetched_at)
+         VALUES('artist',?,'mbid','user-identify',?,datetime('now'))
+         ON CONFLICT(subject_type,subject_id,field) DO UPDATE SET source='user-identify', source_ref=excluded.source_ref, fetched_at=datetime('now')`).run(id, p.uuid);
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    sseBroadcast('library');
+    _spawnIngest([path.join(_DL, 'artist-images.js'), '--db', DB_PATH, '--artist', String(id)]).then(() => sseBroadcast('library')).catch(() => {});
+    return sendJSON(res, { ok: true, mbid: p.uuid });
+  } catch (e) { return sendJSON(res, { ok: false, error: String(e.message) }); }
+}
 
 // ── REANALIZAR un álbum desde la UI (estilo Roon edit_album_reanalyze) ───────────
 // POST /api/album/reanalyze {rg} → recalcula loudness/ReplayGain (analyze.js) y la barra
@@ -3944,6 +3994,8 @@ http.createServer((req, res) => {
   if (u.pathname === '/api/lyrics') return void getLyrics(parseInt(u.searchParams.get('track'), 10)).then(r => sendJSON(res, r)).catch(() => sendJSON(res, { found: false }));
   if (u.pathname === '/api/identify' && req.method === 'GET') return void handleIdentifySuggest(req, res, u);
   if (u.pathname === '/api/identify/apply' && req.method === 'POST') return void handleIdentifyApply(req, res);
+  if (u.pathname === '/api/album/link-mb' && req.method === 'POST') return void handleAlbumLinkMb(req, res);
+  if (u.pathname === '/api/artist/link-mb' && req.method === 'POST') return void handleArtistLinkMb(req, res);
   if (u.pathname === '/api/identify/all' && req.method === 'POST') return void sendJSON(res, { ok: true, ...startIdentifyAll() });
   if (u.pathname === '/api/identify/all/status' && req.method === 'GET') return void sendJSON(res, { ok: true, ...identifyAllStatus() });
   if (u.pathname === '/api/identify/all/stop' && req.method === 'POST') { if (_idAll) _idAll.running = false; return void sendJSON(res, { ok: true, ...identifyAllStatus() }); }
