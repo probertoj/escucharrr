@@ -132,6 +132,18 @@ function buildAlbumIndex() {
   }
   return { byMbid, byKey };
 }
+// Índice de artistas por nombre NORMALIZADO, solo nombres ÚNICOS: una nota de bios se empareja por
+// su frontmatter `artist` o por el nombre del fichero. Los nombres ambiguos (dos artistas que
+// normalizan igual) se descartan para no escribir la bio en el artista equivocado.
+function buildArtistIndex() {
+  const byName = new Map(), dup = new Set();
+  for (const r of db.prepare('SELECT id, name FROM artist').all()) {
+    const k = norm(r.name); if (!k) continue;
+    if (byName.has(k)) dup.add(k); else byName.set(k, r.id);
+  }
+  for (const k of dup) byName.delete(k);
+  return byName;
+}
 
 // ── sync ────────────────────────────────────────────────────────────────────
 const vaultRoot = path.resolve(path.dirname(CFG_PATH), cfg.vault);
@@ -142,6 +154,12 @@ if (cfg.albumsFolder && !fs.existsSync(dir)) {
   console.warn('  aviso: la carpeta de álbumes "' + cfg.albumsFolder + '" no existe en el vault; uso la raíz del vault');
   cfg.albumsFolder = ''; dir = vaultRoot;
 }
+// Carpeta de BIOGRAFÍAS (artistas). Puede estar FUERA del vault (p. ej. una hermana "00. Índices"),
+// por eso admite ruta absoluta. Si no está configurada o no existe, el pase de bios se omite.
+const biosFolderCfg = String(cfg.artistsFolder || cfg.biosFolder || '').trim();
+const biosDir = biosFolderCfg ? (path.isAbsolute(biosFolderCfg) ? path.resolve(biosFolderCfg) : path.join(vaultRoot, biosFolderCfg)) : '';
+const biosFolderRel = (biosFolderCfg && !path.isAbsolute(biosFolderCfg)) ? biosFolderCfg : '';   // para la poda cuando está dentro del vault
+const biosOn = !!(biosDir && fs.existsSync(biosDir));
 // Sync INCREMENTAL: --only <nombre.md> procesa una sola nota (el watcher lo usa cuando cambia
 // un .md), evitando el pase completo del vault y el rebuild de FTS que bloquean la BD.
 const ONLY = arg('only', null);
@@ -199,16 +217,64 @@ try {
   db.exec('COMMIT');
 } catch (e) { db.exec('ROLLBACK'); throw e; }
 
+// ── PASE DE BIOGRAFÍAS ────────────────────────────────────────────────────────
+// Lee la carpeta de bios y vuelca el cuerpo de cada nota como bio del artista (field 'bio',
+// source 'obsidian'), igual que los discos. Empareja por frontmatter `artist` o por el nombre del
+// fichero contra el índice de artistas (solo nombres únicos). Una nota que no corresponde a ningún
+// artista (p. ej. una nota de índice/MOC de esa misma carpeta) se ignora.
+let nb = 0, skippedBio = 0;
+if (biosOn) {
+  const aidx = buildArtistIndex();
+  let bioFiles = [];
+  if (ONLY) { const base = path.basename(String(ONLY)); bioFiles = fs.existsSync(path.join(biosDir, base)) ? [base] : []; }
+  else { try { bioFiles = fs.readdirSync(biosDir).filter(f => f.toLowerCase().endsWith('.md')); } catch (e) {} }
+  db.exec('BEGIN');
+  try {
+    for (const file of bioFiles) {
+      const abs = path.join(biosDir, file);
+      let text; try { text = fs.readFileSync(abs, 'utf8'); } catch (e) { continue; }
+      const { fm, body } = parseNote(text);
+      if (!body) continue;                                      // sin cuerpo no hay bio que volcar
+      const base = file.replace(/\.md$/i, '');
+      const fmArtist = pick(fm, cfg.fields.artist);
+      const artistId = aidx.get(norm(fmArtist || base));
+      if (!artistId) { skippedBio++; continue; }                // no corresponde a ningún artista
+      const rel = biosFolderRel ? path.join(biosFolderRel, file) : abs;   // relativa si está dentro del vault; si no, absoluta
+      S.edit.run('artist', artistId, 'bio', body);
+      S.prov.run('artist', artistId, 'bio', 'obsidian', rel);
+      const noteId = Number(S.note.get(cfg.vault, rel, String(fs.statSync(abs).mtimeMs), JSON.stringify(fm), body).id);
+      S.link.run(noteId, 'artist', artistId, fmArtist ? 'frontmatter_artist' : 'filename', fmArtist ? 1.0 : 0.9);
+      nb++;
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+
 // Poda: si una nota del vault ya no existe, deshaz JUSTO lo que aportó (según la procedencia:
 // tier/rating/"acerca de" con source='obsidian') y quita la nota; luego recoge la basura del
 // grafo (un álbum que solo existía por su nota desaparece). Así "tus notas mandan" también al
 // borrar. Solo poda si la carpeta del vault existe (evita vaciados si el vault no está montado).
-if (PRUNE && fs.existsSync(dir)) {
+const albumOn = fs.existsSync(dir);
+if (PRUNE && (albumOn || biosOn)) {
   const prune = require('./prune');
   const inFolder = (relPath) => {
     const p = relPath.replace(/\\/g, '/').toLowerCase();
     const pre = cfg.albumsFolder.replace(/\\/g, '/').toLowerCase();
     return p === pre || p.startsWith(pre.endsWith('/') ? pre : pre + '/');
+  };
+  const hasPrefix = (relPath, folder) => {
+    const p = relPath.replace(/\\/g, '/').toLowerCase();
+    const pre = String(folder || '').replace(/\\/g, '/').toLowerCase();
+    return pre !== '' && (p === pre || p.startsWith(pre.endsWith('/') ? pre : pre + '/'));
+  };
+  // ¿la nota está en el alcance de ESTE sync y dónde está su fichero? (null = fuera de alcance)
+  const scopeOf = (ntPath) => {
+    if (path.isAbsolute(ntPath)) {                                       // nota de bios con ruta absoluta (carpeta fuera del vault)
+      return (biosOn && ntPath.toLowerCase().startsWith(biosDir.toLowerCase() + path.sep)) ? ntPath : null;
+    }
+    if (albumOn && inFolder(ntPath)) return path.join(vaultRoot, ntPath);
+    if (biosOn && biosFolderRel && hasPrefix(ntPath, biosFolderRel)) return path.join(vaultRoot, ntPath);
+    return null;
   };
   const provOf = db.prepare("SELECT subject_type, subject_id, field FROM provenance WHERE source='obsidian' AND source_ref=?");
   const delTier = db.prepare("DELETE FROM rating_tier WHERE subject_type=? AND subject_id=? AND source='obsidian'");
@@ -223,8 +289,9 @@ if (PRUNE && fs.existsSync(dir)) {
       ? db.prepare('SELECT id, path FROM obsidian_note WHERE path LIKE ?').all('%' + path.basename(String(ONLY)))
       : db.prepare('SELECT id, path FROM obsidian_note').all();
     for (const nt of notesToCheck) {
-      if (!inFolder(nt.path)) continue;                                  // nota de otra carpeta no sincronizada ahora
-      let exists = false; try { exists = fs.existsSync(path.join(vaultRoot, nt.path)); } catch (e) {}
+      const absFile = scopeOf(nt.path);
+      if (absFile === null) continue;                                    // nota de otra carpeta no sincronizada ahora
+      let exists = false; try { exists = fs.existsSync(absFile); } catch (e) {}
       if (exists) continue;
       for (const pr of provOf.all(nt.path)) {                            // deshacer lo aportado por la nota
         if (pr.field === 'tier') delTier.run(pr.subject_type, pr.subject_id);
@@ -248,7 +315,7 @@ if (!ONLY) {
   db.exec(`INSERT INTO search_fts(name,kind,subject_type,subject_id) SELECT title,'track','recording',id FROM recording`);
 }
 
-console.log(`Enriquecidos ${n} discos desde el vault${CREATE_MISSING ? '' : ` (${skipped} notas sin disco, ignoradas)`} -> ${DB_PATH}`);
+console.log(`Enriquecidos ${n} discos${biosOn ? ` y ${nb} biografías` : ''} desde el vault${CREATE_MISSING ? '' : ` (${skipped} notas sin disco${biosOn ? `, ${skippedBio} sin artista` : ''}, ignoradas)`} -> ${DB_PATH}`);
 
 // ── demo: demuestra que tier/rating son consultables ──────────────────────────
 if (DEMO) {

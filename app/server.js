@@ -2792,6 +2792,14 @@ function startWatching() {   // (re)aplica el watcher según la config actual; s
   if (!c) { console.log('biblioteca en vivo: desactivada (crea app/watch.json a partir de watch.example.json, o configúrala en Ajustes)'); return; }
   for (const root of c.music) if (fs.existsSync(root)) { if (isUnc(root)) addPoll(root); else safeWatch(root, 'música', (ev, f) => { if (!f || _AUD.test(f)) _ingSchedule('music'); }); }
   if (c.vault && fs.existsSync(c.vault)) { if (isUnc(c.vault)) addPoll(c.vault); else safeWatch(c.vault, 'vault', (ev, f) => { if (isSelfWrite(f)) return; if (f && /\.md$/i.test(f)) _ingNote(f); else if (!f) _ingSchedule('vault'); }); }
+  // Carpeta de BIOGRAFÍAS: puede estar FUERA del vault (p. ej. hermana «00. Índices»); si lo está,
+  // se vigila aparte. Si está dentro del vault, el watcher del vault ya la cubre (no duplicar).
+  const bfCfg = c.obs && (c.obs.artistsFolder || c.obs.biosFolder);
+  if (bfCfg) {
+    const biosDir = path.isAbsolute(bfCfg) ? path.resolve(bfCfg) : path.join(c.vault || '', bfCfg);
+    const insideVault = c.vault && (path.resolve(biosDir) === path.resolve(c.vault) || path.resolve(biosDir).startsWith(path.resolve(c.vault) + path.sep));
+    if (biosDir && !insideVault && fs.existsSync(biosDir)) { if (isUnc(biosDir)) addPoll(biosDir); else safeWatch(biosDir, 'bios', (ev, f) => { if (isSelfWrite(f)) return; if (f && /\.md$/i.test(f)) _ingNote(f); else if (!f) _ingSchedule('vault'); }); }
+  }
 }
 async function rescanNow(kinds) {   // reescaneo manual inmediato
   const c = watchConfig(); if (!c) throw new Error('No hay carpetas configuradas (crea/edita la configuración de Biblioteca).');
