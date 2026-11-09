@@ -109,6 +109,7 @@ function initAppSchema(d) {
   CREATE TABLE IF NOT EXISTS smart_playlist (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, rules TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS genre_map (raw TEXT PRIMARY KEY, canonical TEXT, hidden INTEGER DEFAULT 0);
   CREATE TABLE IF NOT EXISTS merge_undo (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, keep_id INTEGER, label TEXT, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
+  CREATE TABLE IF NOT EXISTS ignored_dir (dir TEXT PRIMARY KEY, real_dir TEXT, rg INTEGER, title TEXT, at TEXT DEFAULT (datetime('now')));
   CREATE INDEX IF NOT EXISTS ix_recording_work ON recording(work_id);`);   // acelera obra→álbumes (compositores, obras) de ~27 s a instantáneo
   // FTS5 de PISTAS (título+álbum+artista por track) para la búsqueda del explorador de pistas: LIKE sobre 254K
   // (~480 ms) → MATCH (~5 ms). Se puebla en scan.js y, para BD ya existentes, perezosamente al arrancar si está vacía.
@@ -1226,6 +1227,7 @@ function album(id, relId) {
   a.version_count = 1 + a.versions.length;                 // esta copia + las demás (copias + hermanas)
   a.is_primary = (selRel && selRel === primId) ? 1 : 0;
   a.copy_count = rels.length;                              // nº de copias físicas (carpetas) de este álbum
+  try { a.ignored_copies = db.prepare('SELECT dir, real_dir, at FROM ignored_dir WHERE rg=? ORDER BY at DESC').all(id); } catch (e) { a.ignored_copies = []; }   // copias quitadas por el usuario (restaurables)
   a.tracks = selRel ? Q.tracksRel.all(selRel) : Q.tracks.all(id);
   a.has_audio = a.tracks.some(t => t.playable) ? 1 : 0;   // ¿hay ficheros locales que (re)analizar?
   a.reanalyzing = _reanalyzing.has(id) ? 1 : 0;            // ¿corre ahora un reanálisis de loudness/waveform?
@@ -4031,6 +4033,60 @@ http.createServer((req, res) => {
       Q.edSetUserEdit.run('release_group', rg, 'primary_release', String(rel));   // la copia primaria la elige el usuario (gana sobre la heurística)
       sseBroadcast('library'); return sendJSON(res, { ok: true, release_id: rel });
     } catch (e) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: e.message })); }
+  })();
+  // Quitar UNA copia física (carpeta) de un álbum que tiene varias copias del MISMO lanzamiento (caso de
+  // Serge: fragmentos duplicados del mismo release_group). Borra esa `release` y su subárbol del GRAFO
+  // (no toca el disco) y apunta su carpeta en ignored_dir para que el escáner no la vuelva a añadir.
+  if (req.method === 'POST' && u.pathname === '/api/album/drop-copy') return void (async () => {
+    try {
+      const b = await readBody(req); const rg = parseInt(b.rg, 10), rel = parseInt(b.rel, 10);
+      if (!rg || !rel) throw new Error('rg/rel requeridos');
+      const rels = Q.releasesOfRg.all(rg);
+      const relRow = rels.find(r => r.id === rel);
+      if (!relRow) throw new Error('esa copia no pertenece a este álbum');
+      if (rels.length <= 1) throw new Error('es la única copia del álbum; no se puede quitar como copia');
+      const srcDir = relRow.source_dir;
+      if (!srcDir) throw new Error('esta copia no tiene carpeta registrada; reescanea la biblioteca antes de quitarla');
+      // ruta real (para mostrar/restaurar) y título, desde un fichero de la copia
+      const sample = db.prepare('SELECT lf.path FROM local_file lf JOIN track tr ON tr.id=lf.track_id JOIN medium m ON m.id=tr.medium_id WHERE m.release_id=? AND lf.path IS NOT NULL LIMIT 1').get(rel);
+      let realDir = srcDir;
+      if (sample) { let d = path.dirname(sample.path); if (/^(cd|dis[ck]|disco|disque|vol(ume)?|digital\s*media)\s*\.?\s*\d/i.test(path.basename(d))) d = path.dirname(d); realDir = d; }
+      const title = (db.prepare('SELECT title FROM v_album WHERE id=?').get(rg) || {}).title || '';
+      const trackIds = Q.albumTrackIdsRel.all(rel).map(r => r.id);
+      const medIds = db.prepare('SELECT id FROM medium WHERE release_id=?').all(rel).map(r => r.id);
+      db.exec('BEGIN');
+      try {
+        if (trackIds.length) {
+          const ph = trackIds.map(() => '?').join(',');
+          db.prepare(`DELETE FROM local_file WHERE track_id IN (${ph})`).run(...trackIds);          // los ficheros de ESTA copia dejan de mapearse
+          db.prepare(`UPDATE play SET track_id=NULL WHERE track_id IN (${ph})`).run(...trackIds);     // el historial conserva recording_id
+          db.prepare(`UPDATE playlist_item SET track_id=NULL WHERE track_id IN (${ph})`).run(...trackIds);
+          try { db.prepare(`DELETE FROM track_fts WHERE track_id IN (${ph})`).run(...trackIds); } catch (e) {}
+          db.prepare(`DELETE FROM track WHERE id IN (${ph})`).run(...trackIds);
+        }
+        if (medIds.length) db.prepare(`DELETE FROM medium WHERE id IN (${medIds.map(() => '?').join(',')})`).run(...medIds);
+        db.prepare('DELETE FROM "release" WHERE id=?').run(rel);
+        const ov = Q.primaryOverride.get(rg);
+        if (ov && parseInt(ov.rel, 10) === rel) db.prepare(`DELETE FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='primary_release'`).run(rg);
+        db.prepare('INSERT OR REPLACE INTO ignored_dir(dir, real_dir, rg, title) VALUES(?,?,?,?)').run(srcDir, realDir, rg, title);
+        db.exec('COMMIT');
+      } catch (e) { db.exec('ROLLBACK'); throw e; }
+      sseBroadcast('library'); return sendJSON(res, { ok: true, rg, rel, dir: srcDir, real_dir: realDir });
+    } catch (e) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: e.message })); }
+  })();
+  // Restaurar una copia quitada: se borra de ignored_dir y volverá a aparecer en el próximo escaneo.
+  if (req.method === 'POST' && u.pathname === '/api/album/restore-copy') return void (async () => {
+    try {
+      const b = await readBody(req); const dir = String(b.dir || '');
+      if (!dir) throw new Error('dir requerido');
+      db.prepare('DELETE FROM ignored_dir WHERE dir=?').run(dir);
+      return sendJSON(res, { ok: true, dir, note: 'Volverá a añadirse en el próximo escaneo de la biblioteca.' });
+    } catch (e) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: e.message })); }
+  })();
+  // Lista de copias quitadas (para Ajustes y para restaurarlas).
+  if (req.method === 'GET' && u.pathname === '/api/ignored-dirs') return void (() => {
+    try { return sendJSON(res, { ok: true, items: db.prepare('SELECT dir, real_dir, rg, title, at FROM ignored_dir ORDER BY at DESC').all() }); }
+    catch (e) { return sendJSON(res, { ok: true, items: [] }); }
   })();
   if (req.method === 'POST' && u.pathname === '/api/obsidian/write') return void handleObsidianWrite(req, res);
   if (u.pathname.startsWith('/api/scrobble/')) return void handleScrobble(req, res, u);

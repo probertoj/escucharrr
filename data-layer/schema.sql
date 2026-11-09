@@ -221,6 +221,17 @@ CREATE TABLE IF NOT EXISTS lyrics (
 CREATE INDEX IF NOT EXISTS ix_file_recording ON local_file(recording_id);
 CREATE INDEX IF NOT EXISTS ix_file_track ON local_file(track_id);
 
+-- Copias (carpetas de álbum) que el usuario ha QUITADO de la biblioteca sin tocar el disco:
+-- el escáner salta estas carpetas para no re-añadir la copia duplicada. `dir` = carpeta normalizada
+-- (misma forma que release.source_dir, clave). `real_dir`/`title`/`rg` sirven para mostrarlas y restaurarlas.
+CREATE TABLE IF NOT EXISTS ignored_dir (
+  dir      TEXT PRIMARY KEY,
+  real_dir TEXT,
+  rg       INTEGER,
+  title    TEXT,
+  at       TEXT DEFAULT (datetime('now'))
+);
+
 -- ────────────────────────────────────────────────────────────────────────────
 -- 4. Tier y rating: campos de PRIMERA CLASE, indexados, con historial
 -- ────────────────────────────────────────────────────────────────────────────

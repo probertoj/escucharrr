@@ -42,6 +42,11 @@ require('./migrate').migrate(db);              // columnas isrc/acoustid/fingerp
 db.exec(`CREATE TABLE IF NOT EXISTS skipped_file (path TEXT, reason TEXT, at TEXT DEFAULT (datetime('now')))`);
 db.exec('DELETE FROM skipped_file');
 const insSkip = db.prepare('INSERT INTO skipped_file(path, reason) VALUES(?, ?)');
+// Carpetas de álbum que el usuario QUITÓ de la biblioteca (copias duplicadas): se saltan en el recorrido
+// para no re-añadirlas. La clave `dir` es la carpeta normalizada igual que release.source_dir = nrm(albumDir),
+// así que basta comparar nrm(f) en walk(). NUNCA se toca el disco: solo se omite de la biblioteca.
+let ignoredDirs = new Set();
+try { ignoredDirs = new Set(db.prepare('SELECT dir FROM ignored_dir').all().map(r => r.dir)); } catch (e) {}
 
 // ── parsers de cabecera (solo lectura, sin cargar el fichero entero) ──────────
 function readFlac(file) {
@@ -305,7 +310,7 @@ function walk(dir, out) {
   for (const e of ents) {
     const f = path.join(dir, e.name);
     let isDir = false; try { isDir = e.isDirectory(); } catch (x) {}
-    if (isDir) walk(f, out);
+    if (isDir) { if (ignoredDirs.has(nrm(f))) continue; walk(f, out); }   // copia quitada por el usuario → no re-añadir (disco intacto)
     else if (AUDIO_RE.test(e.name)) { out.push(f); seenPaths.add(nrm(f)); emitScan({ phase: 'descubriendo', found: out.length }); }
     else { const m = e.name.match(UNSUPPORTED_AUDIO_RE); if (m && !skippedUnsup.has(nrm(f))) { skippedUnsup.add(nrm(f)); try { insSkip.run(f, 'formato no soportado (.' + m[1].toLowerCase() + ')'); } catch (x) {} } }
   }

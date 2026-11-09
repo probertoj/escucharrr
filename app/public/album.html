@@ -123,9 +123,14 @@ function renderAlbum(a){
     +a.versions.map(v=>{ const inner=`<span class="vt">${esc(v.title)}${v.primary?' '+pbadge:''}</span><span class="vm">${[v.format,v.tracks?v.tracks+' pistas':'',v.year].filter(Boolean).map(esc).join(' · ')}</span>`;
         // copia física del MISMO álbum → solo enlace; versión hermana (otro release_group) → enlace + «Combinar» para fundirla aquí
         const verbtn=(cls,label,tip)=>`<button class="${cls}" data-id="${v.id}" data-title="${esc(v.title)}" title="${tip}" style="flex:none;font-size:11px;padding:2px 10px;border-radius:999px;border:1px solid var(--line);background:none;color:var(--text-2);cursor:pointer">${label}</button>`;
-        return v.copy ? `<a class="verrow" href="${verHref(v)}">${inner}</a>`
+        // copia física del MISMO álbum: enlace + «Quitar copia» (la saca de la biblioteca sin tocar el disco)
+        return v.copy ? `<div class="verrow"><a href="${verHref(v)}" style="flex:1;min-width:0;display:flex;align-items:baseline;justify-content:space-between;gap:14px;color:inherit;text-decoration:none">${inner}</a><button class="verdrop" data-rel="${v.rel}" data-title="${esc(v.title)}" title="Quitar esta copia duplicada de la biblioteca. NO borra nada del disco; el escáner no la volverá a añadir. Restaurable." style="flex:none;font-size:11px;padding:2px 10px;border-radius:999px;border:1px solid var(--line);background:none;color:var(--text-2);cursor:pointer">Quitar copia</button></div>`
           : `<div class="verrow"><a href="${verHref(v)}" style="flex:1;min-width:0;display:flex;align-items:baseline;justify-content:space-between;gap:14px;color:inherit;text-decoration:none">${inner}</a><div style="flex:none;display:flex;gap:6px">${verbtn('verfold','Fundir','Unir en UN solo álbum: sus pistas pasan a este tracklist (por discos). Para el mismo disco partido.')}${verbtn('verfuse','Combinar','Tratarlas como ediciones distintas del mismo álbum (se mantienen las dos como versiones).')}</div></div>`;
       }).join('')
+    +`</div>`:'';
+  // Copias que el usuario quitó de la biblioteca (restaurables; el disco está intacto).
+  const ignoredBlock=(a.ignored_copies&&a.ignored_copies.length)?`<div class="sec" style="font-size:14px">Copias quitadas <span style="color:var(--muted);font-size:13px;font-weight:400;font-family:var(--sans)">${a.ignored_copies.length} · no se vuelven a escanear</span></div><div class="versions">`
+    +a.ignored_copies.map(c=>`<div class="verrow"><span class="vt" style="color:var(--text-2);word-break:break-all">${esc((c.real_dir||c.dir||'').split(/[\\/]/).filter(Boolean).pop()||c.dir)}</span><button class="verrestore" data-dir="${esc(c.dir)}" title="Volver a añadir esta copia en el próximo escaneo" style="flex:none;font-size:11px;padding:2px 10px;border-radius:999px;border:1px solid var(--line);background:none;color:var(--accent);cursor:pointer">Restaurar</button></div>`).join('')
     +`</div>`:'';
   // Más del artista (profundizar en su discografía) y artistas afines de tu biblioteca (profundizar en sonidos), estilo Roon.
   const artNm=esc(a.artist||'');
@@ -165,6 +170,7 @@ function renderAlbum(a){
     ${about}
     ${tracks}
     ${versions}
+    ${ignoredBlock}
     ${moreBy}
     ${moreLabel}
     <div id="similarslot"></div>
@@ -490,6 +496,14 @@ function applyIdentify(mbid,btn){
 // Reproducir: encola el álbum y arranca (el player registra la escucha)
 document.addEventListener('click',e=>{
   const mp=e.target.closest('.makeprimary'); if(mp){const rel=+mp.dataset.rel; mp.disabled=true; fetch('/api/album/make-primary',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rg:id,rel})}).then(r=>r.json()).then(j=>{ if(j.ok){ if(window.toast)toast('Copia principal fijada'); curRel=null; history.replaceState(null,'','album.html?id='+id); load(); } else { mp.disabled=false; toast(j.error||'error'); } }).catch(()=>{mp.disabled=false;toast('error');}); return;}
+  // Quitar una copia duplicada (doble clic de confirmación; es reversible desde «Copias quitadas»).
+  const dp=e.target.closest('.verdrop'); if(dp){ e.preventDefault();
+    if(dp.dataset.confirm!=='1'){ dp.dataset.confirm='1'; dp.dataset.lbl=dp.textContent; dp.textContent='Confirmar quitar'; dp.style.color='#c0392b'; dp.style.borderColor='#c0392b'; setTimeout(()=>{ if(dp.dataset.confirm==='1'){ dp.dataset.confirm=''; dp.textContent=dp.dataset.lbl||'Quitar copia'; dp.style.color=''; dp.style.borderColor=''; } },4000); return; }
+    dp.disabled=true; const rel=+dp.dataset.rel;
+    fetch('/api/album/drop-copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rg:id,rel})}).then(r=>r.json()).then(j=>{ if(j.ok){ toast('Copia quitada de la biblioteca (el disco está intacto)'); load(); } else { dp.disabled=false; dp.dataset.confirm=''; dp.textContent='Quitar copia'; dp.style.color=''; dp.style.borderColor=''; toast(j.error||'error'); } }).catch(()=>{ dp.disabled=false; dp.dataset.confirm=''; toast('error'); }); return; }
+  // Restaurar una copia quitada.
+  const rr=e.target.closest('.verrestore'); if(rr){ e.preventDefault(); rr.disabled=true;
+    fetch('/api/album/restore-copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dir:rr.dataset.dir})}).then(r=>r.json()).then(j=>{ if(j.ok){ toast('Copia restaurada · reaparecerá al reescanear'); load(); } else { rr.disabled=false; toast(j.error||'error'); } }).catch(()=>{ rr.disabled=false; toast('error'); }); return; }
   const dc=e.target.closest('.discchip'); if(dc){const el=document.getElementById('disc'+dc.dataset.disc); if(el){el.scrollIntoView({behavior:'smooth',block:'start'}); document.querySelectorAll('.discchip').forEach(c=>c.classList.toggle('on',c===dc));} return;}
   const pd=e.target.closest('#app .playdisc'); if(pd){const d=+pd.dataset.disc;const idx=albumTracks.findIndex(t=>t.disc===d);if(idx>=0)player.playAlbum(id,idx,(window.ALB||{}).release_id);return;}
   const b=e.target.closest('.play'); if(b){player.playAlbum(id, +b.dataset.idx, (window.ALB||{}).release_id); return;}
