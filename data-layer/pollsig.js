@@ -9,31 +9,40 @@
 // Esta firma solo lista carpetas (readdir con tipos) y resume los NOMBRES: carpetas y ficheros de
 // audio, por carpeta. Detecta lo que importa a la biblioteca —añadir, borrar, mover y renombrar
 // ficheros o carpetas a cualquier profundidad— con ~0 stats (una pasada = tantos readdir como
-// carpetas, ~36.000 en vez de ~316.000 operaciones). Limitación asumida: una modificación EN SITIO
+// carpetas, ~75.000 en vez de ~350.000 operaciones). Limitación asumida: una modificación EN SITIO
 // (retaguear un fichero sin cambiar su nombre) no cambia la firma; para eso está «Reescanear ahora».
 //
-// Semántica de completitud (clave en SMB flojo): si algún readdir falla, la firma NO es fiable
-// (sería un subconjunto distinto cada vez → falsos «cambios» en bucle). Devuelve sig=null y
-// complete=false; el llamador lo trata como «no concluyente» (ni baseline ni disparo).
+// Carpetas ILEGIBLES: un readdir que falla entra en la firma como token «!código» (así, si la carpeta
+// se arregla o desaparece, la firma cambia y se reescanea). `complete=false` avisa de que hubo fallos;
+// `failedKey` identifica el CONJUNTO de fallos. El llamador distingue:
+//   - fallos que cambian de pasada a pasada = NAS flojo → firma no concluyente (ni baseline ni disparo);
+//   - el MISMO conjunto de fallos en pasadas seguidas = persistente (permisos, o dos carpetas que solo
+//     difieren en mayúsculas en un NAS Linux: Windows resuelve la ruta a una y la otra da ENOENT) → la
+//     firma es determinista y se puede usar.
+// Colisiones de mayúsculas: nombres que solo difieren en mayúsculas dentro de la misma carpeta se
+// reportan (`collisions`) porque son la causa típica de esas carpetas ilegibles y el usuario puede
+// arreglarlas en el NAS.
 const path = require('path');
 const crypto = require('crypto');
 
 const AUDIO_RE = /\.(flac|wav|mp3|m4a|ogg|oga|opus|aiff?|dsf|dff|aac)$/i;
+const SAMPLE = 200;   // tope de rutas devueltas en failed/collisions (los contadores son completos)
 
 // Normalización IGUAL que scan.js/server.js nrm(): clave de ignored_dir (release.source_dir).
 function nrmDefault(p) { return path.resolve(p).replace(/[\\/]+/g, '\\').toLowerCase(); }
 
 /**
- * dirSignature(root, opts) → { sig, complete, dirs, files, ms, failed }
- *   sig       : hash sha1 (hex) de nombres (null si la pasada no fue completa)
- *   complete  : true si TODOS los readdir respondieron
- *   dirs      : carpetas listadas; files: audios vistos; ms: duración; failed: carpetas ilegibles (máx. 5 rutas)
- * opts.ignore : Set de carpetas normalizadas (nrm) a SALTAR (copias quitadas por el usuario: sus cambios
- *               no deben disparar reescaneos, igual que el escáner no las re-añade)
- * opts.nrm    : normalizador (por defecto el de scan.js)
- * opts.fsp    : fs.promises inyectable (tests / conteo de operaciones)
- * opts.audioRe: regex de audio (por defecto la de arriba)
- * opts.signal : {aborted:boolean} opcional para cortar la pasada
+ * dirSignature(root, opts) → { sig, complete, failed, failedCount, failedKey, collisions, collisionCount, dirs, files, ms }
+ *   sig        : sha1 (hex) de nombres (+ tokens de fallo); null solo si la pasada se abortó (opts.signal)
+ *   complete   : true si TODOS los readdir respondieron
+ *   failed     : [{dir, code}] carpetas ilegibles (muestra de hasta SAMPLE); failedCount: total; failedKey: sha1 del conjunto (null si ninguna)
+ *   collisions : ['…\A ↔ a', …] nombres que solo difieren en mayúsculas en la misma carpeta (muestra); collisionCount: total
+ *   dirs/files : carpetas listadas / audios vistos; ms: duración
+ * opts.ignore  : Set de carpetas normalizadas (nrm) a SALTAR (copias quitadas por el usuario)
+ * opts.nrm     : normalizador (por defecto el de scan.js)
+ * opts.fsp     : fs.promises inyectable (tests / conteo de operaciones)
+ * opts.audioRe : regex de audio (por defecto la de arriba)
+ * opts.signal  : {aborted:boolean} opcional para cortar la pasada
  */
 async function dirSignature(root, opts = {}) {
   const fsp = opts.fsp || require('fs').promises;
@@ -42,15 +51,20 @@ async function dirSignature(root, opts = {}) {
   const audioRe = opts.audioRe || AUDIO_RE;
   const h = crypto.createHash('sha1');
   const t0 = Date.now();
-  let dirs = 0, files = 0, complete = true;
-  const failed = [];
+  let dirs = 0, files = 0, aborted = false, failedCount = 0, collisionCount = 0;
+  const failed = [], collisions = [];
   const rootAbs = path.resolve(root);
 
   async function walk(dir, rel) {
-    if (opts.signal && opts.signal.aborted) { complete = false; return; }
+    if (opts.signal && opts.signal.aborted) { aborted = true; return; }
     let ents;
     try { ents = await fsp.readdir(dir, { withFileTypes: true }); }
-    catch (e) { complete = false; if (failed.length < 5) failed.push(dir); return; }   // carpeta ilegible (NAS flojo) → pasada incompleta
+    catch (e) {   // carpeta ilegible: entra en la firma como fallo (determinista si es persistente)
+      const code = (e && e.code) || 'ERR';
+      failedCount++; if (failed.length < SAMPLE) failed.push({ dir, code });
+      h.update(rel + '\0!' + code + '\n');
+      return;
+    }
     dirs++;
     // Orden determinista: Samba/NTFS no garantizan el mismo orden entre llamadas.
     const subdirs = [], names = [];
@@ -61,6 +75,9 @@ async function dirSignature(root, opts = {}) {
     }
     subdirs.sort(); names.sort();
     h.update(rel + '\0d:' + subdirs.join('\u0001') + '\0f:' + names.join('\u0001') + '\n');
+    // Colisiones de mayúsculas entre hermanos (carpetas y audios): en un NAS Linux pueden convivir; Windows solo «ve» una.
+    const low = new Map();
+    for (const n of subdirs.concat(names)) { const k = n.toLowerCase(); if (low.has(k)) { collisionCount++; if (collisions.length < SAMPLE) collisions.push(path.join(dir, low.get(k)) + ' ↔ ' + n); } else low.set(k, n); }
     for (const name of subdirs) {
       const p = path.join(dir, name);
       if (ignore && ignore.has(nrm(p))) continue;                      // copia quitada → fuera de la firma
@@ -68,7 +85,9 @@ async function dirSignature(root, opts = {}) {
     }
   }
   await walk(rootAbs, '');
-  return { sig: complete ? h.digest('hex') : null, complete, dirs, files, ms: Date.now() - t0, failed };
+  const complete = failedCount === 0 && !aborted;
+  const failedKey = failedCount ? crypto.createHash('sha1').update(failed.map(f => f.dir + '|' + f.code).sort().join('\n') + '\n#' + failedCount).digest('hex') : null;
+  return { sig: aborted ? null : h.digest('hex'), complete, failed, failedCount, failedKey, collisions, collisionCount, dirs, files, ms: Date.now() - t0 };
 }
 
 module.exports = { dirSignature, AUDIO_RE, nrm: nrmDefault };

@@ -2767,11 +2767,23 @@ async function _pollTick() {
       if (!fs.existsSync(root)) continue;
       let r; try { r = await pollSignatureAsync(root); } catch (e) { continue; }
       slowest = Math.max(slowest, r.ms);
-      st.last = { at: Date.now(), ms: r.ms, dirs: r.dirs, files: r.files, complete: r.complete };
-      if (!r.complete) {   // lectura incompleta (NAS flojo) → no concluyente: ni baseline ni disparo (se avisa como mucho cada 10 min)
-        if (Date.now() - _pollIncompleteLogAt > 10 * 60 * 1000) { _pollIncompleteLogAt = Date.now(); console.log('  [poll] pasada incompleta en', root, '(carpetas ilegibles, p. ej. ' + (r.failed[0] || '?') + '); no concluyente'); }
-        continue;
-      }
+      st.last = { at: Date.now(), ms: r.ms, dirs: r.dirs, files: r.files, complete: r.complete, failed: r.failedCount, collisions: r.collisionCount, stableFailed: false,
+                  failedSample: r.failed.slice(0, 5).map(f => f.dir + ' (' + f.code + ')'), collisionSample: r.collisions.slice(0, 5) };
+      if (r.collisionCount && !st.loggedCollisions) { st.loggedCollisions = true; console.log('  [poll] aviso:', r.collisionCount, 'nombre(s) que solo difieren en mayúsculas dentro de la misma carpeta en', root, '(el NAS distingue mayúsculas; Windows solo ve uno y el otro queda ilegible), p. ej.', r.collisions[0]); }
+      if (r.sig == null) continue;   // pasada abortada
+      if (!r.complete) {
+        // Carpetas ilegibles. ¿Flaqueo del NAS o fallo PERSISTENTE (permisos, colisión de mayúsculas)? Si el conjunto de
+        // fallos es el MISMO que en la pasada anterior, es determinista → la firma vale (los fallos van dentro como tokens,
+        // así que arreglar la carpeta también cuenta como cambio). Si cambia de pasada a pasada → no concluyente.
+        if (st.failedKey && r.failedKey === st.failedKey) {
+          st.last.stableFailed = true;
+          if (!st.loggedStable) { st.loggedStable = true; console.log('  [poll]', r.failedCount, 'carpeta(s) ilegible(s) PERSISTENTE(S) en', root, '(p. ej. ' + r.failed[0].dir + ' ' + r.failed[0].code + '): se incorporan a la firma y el sondeo sigue'); }
+        } else {
+          st.failedKey = r.failedKey;
+          if (Date.now() - _pollIncompleteLogAt > 10 * 60 * 1000) { _pollIncompleteLogAt = Date.now(); console.log('  [poll] pasada incompleta en', root, '(' + r.failedCount + ' carpeta(s) ilegible(s), p. ej. ' + r.failed[0].dir + ' ' + r.failed[0].code + '); no concluyente hasta que el fallo se repita igual'); }
+          continue;
+        }
+      } else { st.failedKey = null; st.loggedStable = false; }
       const prev = st.sig; st.sig = r.sig;
       if (prev == null) { console.log('  [poll] baseline', root + ':', r.dirs.toLocaleString('es-ES'), 'carpetas,', r.files.toLocaleString('es-ES'), 'audios en', (r.ms / 1000).toFixed(1), 's'); continue; }   // fijar baseline sin disparar
       if (r.sig !== prev) { console.log('  [poll] cambio detectado en', root, '(pasada de ' + (r.ms / 1000).toFixed(1) + ' s)'); _ingSchedule('music'); }

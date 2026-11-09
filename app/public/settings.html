@@ -544,10 +544,17 @@ window.addEventListener('DOMContentLoaded', async () => {
     const parts = roots.map(r => {
       if (!r.at) return `Sondeo de red: primera pasada pendiente`;
       const ago = _s(Date.now() - r.at);
-      return `Sondeo de red: última pasada hace ${ago} (${_n(r.dirs)} carpetas, ${_n(r.files)} audios, ${_s(r.ms)})` + (r.complete ? '' : ' · incompleta, no concluyente');
+      let t = `Sondeo de red: última pasada hace ${ago} (${_n(r.dirs)} carpetas, ${_n(r.files)} audios, ${_s(r.ms)})`;
+      if (!r.complete) t += r.stableFailed ? ` · ${_n(r.failed)} carpeta(s) ilegible(s) persistente(s), incluidas en la firma` : ` · ${_n(r.failed)} carpeta(s) ilegible(s): no concluyente`;
+      if (r.collisions) t += ` · ${_n(r.collisions)} nombre(s) que solo difieren en mayúsculas (el NAS los distingue; Windows no)`;
+      return t;
     });
     const next = p.polling ? ' · sondeando…' : (p.nextInMs != null ? ' · próxima en ' + _s(p.nextInMs) : '');
-    pollInfo.textContent = parts.join(' · ') + next; pollInfo.style.display = '';
+    const samples = roots.flatMap(r => [...(r.failedSample || []).map(x => 'ilegible: ' + x), ...(r.collisionSample || []).map(x => 'mayúsculas: ' + x)]).slice(0, 6);
+    pollInfo.textContent = parts.join(' · ') + next; pollInfo.title = samples.join('\n'); pollInfo.style.display = '';
+    let det = document.getElementById('pollsamples');
+    if (samples.length) { if (!det) { det = document.createElement('div'); det.id = 'pollsamples'; det.className = 'd mono'; det.style.cssText = 'margin-top:3px;font-size:11.5px;white-space:pre-wrap;opacity:.85'; pollInfo.after(det); } det.textContent = samples.join('\n'); }
+    else if (det) det.remove();
   }
   function scanTick() { fetch('/api/scan/status').then(r => r.json()).then(s => { scanRender(s); pollRender(s && s.poll); if (s && s.active) { if (!scanPoll) scanPoll = setInterval(scanTick, 1000); } else if (scanPoll) { clearInterval(scanPoll); scanPoll = null; } }).catch(() => {}); }
   scanTick();   // estado inicial + reanuda el sondeo si ya hay un escaneo en marcha (p. ej. lanzado por el vigilante)
