@@ -2782,7 +2782,41 @@ function watchConfig() {
   if (obsidianConfig && fs.existsSync(obsidianConfig)) { try { obs = JSON.parse(fs.readFileSync(obsidianConfig, 'utf8')); vault = path.resolve(path.dirname(obsidianConfig), obs.vault); } catch (e) {} }
   return { cfgPath, music, obsidianConfig, vault, obs };
 }
-function _spawnIngest(args) { return new Promise(r => { const p = cp.spawn(process.execPath, args, { cwd: _DL }); let o = ''; p.stdout.on('data', d => o += d); p.stderr.on('data', d => o += d); p.on('close', () => r(o.trim().split('\n').pop() || '')); }); }
+// Estado de escaneo en vivo (estilo Roon): lo alimentan las líneas «@SCAN {json}» que emite scan.js
+// y lo leen Ajustes→Biblioteca (GET /api/scan/status). active=true mientras hay un escaneo en marcha.
+let _scanStatus = { active: false, phase: null, scanned: 0, total: 0, identified: 0, found: 0, root: null, startedAt: 0, endedAt: 0, last: null };
+function _scanBegin(root) { _scanStatus = { active: true, phase: 'iniciando', scanned: 0, total: 0, identified: 0, found: 0, root: root || null, startedAt: Date.now(), endedAt: 0, last: _scanStatus.last }; }
+function _scanEnd(summary) { _scanStatus.active = false; _scanStatus.phase = 'hecho'; _scanStatus.endedAt = Date.now(); if (summary) _scanStatus.last = summary; }
+// Lanza un proceso de data-layer y devuelve su ÚLTIMA línea normal. Con meta.scan=true, intercepta las
+// líneas de progreso «@SCAN {json}» (no entran en la salida) y actualiza _scanStatus en tiempo real.
+function _spawnIngest(args, meta) {
+  return new Promise(r => {
+    const p = cp.spawn(process.execPath, args, { cwd: _DL });
+    const scan = !!(meta && meta.scan);
+    let o = '', buf = '';
+    p.stdout.on('data', d => {
+      if (!scan) { o += d; return; }
+      buf += d; let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1);
+        if (line.startsWith('@SCAN ')) {
+          try {
+            const j = JSON.parse(line.slice(6));
+            _scanStatus.phase = j.phase; _scanStatus.root = (meta && meta.root) || _scanStatus.root;
+            if (j.found != null) _scanStatus.found = j.found;
+            if (j.scanned != null) _scanStatus.scanned = j.scanned;
+            if (j.total != null) _scanStatus.total = j.total;
+            if (j.identified != null) _scanStatus.identified = j.identified;
+            if (j.phase === 'hecho') { _scanStatus.active = false; _scanStatus.endedAt = Date.now(); }
+            else _scanStatus.active = true;
+          } catch (e) {}
+        } else { o += line + '\n'; }
+      }
+    });
+    p.stderr.on('data', d => o += d);
+    p.on('close', () => { if (buf) o += buf; r(o.trim().split('\n').pop() || ''); });
+  });
+}
 const _reanalyzing = new Set();   // release_group_ids con un reanálisis (loudness + waveform) en curso
 let _ingPending = new Set(), _ingTimer = null, _ingRunning = false;
 function _ingSchedule(kind) { _ingPending.add(kind); clearTimeout(_ingTimer); _ingTimer = setTimeout(_ingRun, 1500); }   // debounce 1.5 s
@@ -2802,7 +2836,7 @@ async function _ingRun() {
   const c = watchConfig(); if (!c) { _ingPending.clear(); return; }
   _ingRunning = true; const kinds = new Set(_ingPending); _ingPending.clear();
   try {
-    if (kinds.has('music')) for (const root of c.music) console.log('  [watch] música:', await _spawnIngest([path.join(_DL, 'scan.js'), '--db', DB_PATH, '--root', root]));
+    if (kinds.has('music')) for (const root of c.music) { _scanBegin(root); const sum = await _spawnIngest([path.join(_DL, 'scan.js'), '--db', DB_PATH, '--root', root], { scan: true, root }); _scanEnd(sum); console.log('  [watch] música:', sum); }
     if (kinds.has('vault') && c.obsidianConfig) console.log('  [watch] vault:', await _spawnIngest([path.join(_DL, 'obsidian-sync.js'), '--db', DB_PATH, '--config', c.obsidianConfig]));
     sseBroadcast('library');
   } catch (e) { console.error('  [watch] error:', e.message); }
@@ -2852,7 +2886,7 @@ function startWatching() {   // (re)aplica el watcher según la config actual; s
 async function rescanNow(kinds) {   // reescaneo manual inmediato
   const c = watchConfig(); if (!c) throw new Error('No hay carpetas configuradas (crea/edita la configuración de Biblioteca).');
   const out = { music: [], vault: null };
-  if (kinds.includes('music')) for (const root of c.music) out.music.push({ root, result: await _spawnIngest([path.join(_DL, 'scan.js'), '--db', DB_PATH, '--root', root]) });
+  if (kinds.includes('music')) for (const root of c.music) { _scanBegin(root); const result = await _spawnIngest([path.join(_DL, 'scan.js'), '--db', DB_PATH, '--root', root], { scan: true, root }); _scanEnd(result); out.music.push({ root, result }); }
   if (kinds.includes('vault') && c.obsidianConfig) out.vault = await _spawnIngest([path.join(_DL, 'obsidian-sync.js'), '--db', DB_PATH, '--config', c.obsidianConfig]);
   sseBroadcast('library');
   return out;
@@ -3997,6 +4031,7 @@ http.createServer((req, res) => {
   if (u.pathname === '/api/album/link-mb' && req.method === 'POST') return void handleAlbumLinkMb(req, res);
   if (u.pathname === '/api/artist/link-mb' && req.method === 'POST') return void handleArtistLinkMb(req, res);
   if (u.pathname === '/api/identify/all' && req.method === 'POST') return void sendJSON(res, { ok: true, ...startIdentifyAll() });
+  if (u.pathname === '/api/scan/status' && req.method === 'GET') return void sendJSON(res, { ok: true, ..._scanStatus });
   if (u.pathname === '/api/identify/all/status' && req.method === 'GET') return void sendJSON(res, { ok: true, ...identifyAllStatus() });
   if (u.pathname === '/api/identify/all/stop' && req.method === 'POST') { if (_idAll) _idAll.running = false; return void sendJSON(res, { ok: true, ...identifyAllStatus() }); }
   if (u.pathname === '/api/artists/dupes') return void sendJSON(res, artistDupeGroups());

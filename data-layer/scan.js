@@ -25,6 +25,15 @@ if (!ROOT) { console.error('Falta --root <carpeta de música>'); process.exit(1)
 // Normaliza una ruta para comparar bajo Windows (separadores + minúsculas). Igual que prune.js.
 const nrm = (p) => path.resolve(p).replace(/[\\/]+/g, '\\').toLowerCase();
 
+// Progreso en vivo (estilo Roon): el servidor que lanza este proceso lee las líneas «@SCAN {json}»
+// de stdout y las convierte en estado para Ajustes→Biblioteca. Throttle para no inundar el pipe.
+// No altera el resumen final (el servidor filtra estas líneas al quedarse con la última línea normal).
+let _emitLast = 0;
+function emitScan(o, force) {
+  const now = Date.now();
+  if (force || now - _emitLast >= 300) { _emitLast = now; try { process.stdout.write('@SCAN ' + JSON.stringify(o) + '\n'); } catch (e) {} }
+}
+
 const db = new DatabaseSync(DB_PATH);
 db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
 require('./migrate').migrate(db);              // columnas isrc/acoustid/fingerprint si faltan
@@ -293,7 +302,7 @@ function walk(dir, out) {
     const f = path.join(dir, e.name);
     let isDir = false; try { isDir = e.isDirectory(); } catch (x) {}
     if (isDir) walk(f, out);
-    else if (AUDIO_RE.test(e.name)) { out.push(f); seenPaths.add(nrm(f)); }
+    else if (AUDIO_RE.test(e.name)) { out.push(f); seenPaths.add(nrm(f)); emitScan({ phase: 'descubriendo', found: out.length }); }
     else { const m = e.name.match(UNSUPPORTED_AUDIO_RE); if (m && !skippedUnsup.has(nrm(f))) { skippedUnsup.add(nrm(f)); try { insSkip.run(f, 'formato no soportado (.' + m[1].toLowerCase() + ')'); } catch (x) {} } }
   }
 }
@@ -338,6 +347,8 @@ function reconcileMove(file, size, durMs, isrc, fp) {
 }
 
 let ok = 0, ident = 0, moved = 0, normed = 0;
+const _total = files.length;
+emitScan({ phase: 'escaneando', scanned: 0, total: _total, identified: 0 }, true);
 db.exec('BEGIN');
 try {
   for (const file of files) {
@@ -427,6 +438,7 @@ try {
     if (rec === 'move') moved++; else if (rec === 'norm') normed++;
     S.insFile.run(file, fmtLabel, inf.sampleRate, inf.bits, inf.channels, inf.durationMs, st.size, String(st.mtimeMs), isrc, acoustid, fingerprint, trackId, recId, matchBy, matchConf, SCAN_SEQ);
     ok++;
+    emitScan({ phase: 'escaneando', scanned: ok, total: _total, identified: ident });
    } catch (fileErr) {   // error transitorio en un fichero (stat/lectura): no abortar todo el escaneo, saltarlo y seguir
     console.warn('  error procesando', path.basename(file), '(' + (fileErr.code || fileErr.message) + ')'); try { insSkip.run(file, 'error al procesar: ' + (fileErr.code || fileErr.message)); } catch (x) {}
    }
@@ -461,6 +473,7 @@ db.exec(`INSERT INTO track_fts(title,album,artist,track_id)
     tr.id
   FROM track tr JOIN recording r ON r.id=tr.recording_id JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id JOIN release_group rg ON rg.id=rel.release_group_id`);
 
+emitScan({ phase: 'hecho', scanned: ok, total: _total, identified: ident }, true);
 const nIsrc = db.prepare('SELECT COUNT(*) n FROM local_file WHERE isrc IS NOT NULL').get().n;
 const nMb = db.prepare("SELECT COUNT(*) n FROM local_file WHERE match_by='mb-tag'").get().n;
 const nFp = db.prepare('SELECT COUNT(*) n FROM local_file WHERE fingerprint IS NOT NULL').get().n;
