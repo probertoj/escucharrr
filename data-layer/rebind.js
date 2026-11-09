@@ -196,23 +196,30 @@ function repairRenames(db, opts = {}) {
   return stats;
 }
 
-// Migra datos de usuario (tier, valoración, favorito/flag, edición manual, etiquetas) de un release_group
-// viejo a uno nuevo, SOLO donde el nuevo aún no los tenga (nunca pisa lo del usuario en el nuevo).
+// Migra TODOS los datos de usuario (tier, valoración, favorito/flag, edición manual, etiquetas, notas de
+// Obsidian) de un release_group viejo a uno nuevo SIN pisar lo que el nuevo ya tenga, y borra lo sobrante del
+// viejo para que quede SIN anclas de usuario (así la poda puede retirarlo). Misma lógica que mergeAlbumsTx del
+// servidor; lista de tablas idéntica. SOLO BD, no toca el disco. Debe correr dentro de una transacción.
+const _SUBJ_RG_TABLES = ['rating_tier', 'rating', 'rating_event', 'flag', 'user_edit', 'tag_item', 'provenance', 'obsidian_link'];
 function migrateUserData(db, oldRg, newRg) {
+  if (!oldRg || !newRg || oldRg === newRg) return;
   const move = (sql) => { try { db.prepare(sql).run({ neu: newRg, old: oldRg }); } catch (e) {} };
   // Mueve del viejo al nuevo SOLO donde el nuevo aún no lo tenga (nunca pisa lo del usuario en el nuevo).
-  // rating_tier y user_edit tienen PK/UNIQUE que incluye subject → OR IGNORE evita colisión; además el
-  // NOT EXISTS lo filtra de antemano. flag/rating/tag_item pueden tener varias filas: se mueven tal cual.
+  // rating_tier/rating van con NOT EXISTS (uno por álbum). user_edit tiene UNIQUE(subject,field) → OR IGNORE
+  // conserva el campo del nuevo y trae los del viejo que falten. flag/tag_item/obsidian_link: se mueven tal cual.
   move(`UPDATE OR IGNORE rating_tier SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old
         AND NOT EXISTS (SELECT 1 FROM rating_tier x WHERE x.subject_type='release_group' AND x.subject_id=$neu)`);
   move(`UPDATE OR IGNORE rating SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old
         AND NOT EXISTS (SELECT 1 FROM rating y WHERE y.subject_type='release_group' AND y.subject_id=$neu)`);
-  move(`UPDATE OR IGNORE flag     SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old`);
-  move(`UPDATE OR IGNORE user_edit SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old`);
-  move(`UPDATE OR IGNORE tag_item SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old`);
+  move(`UPDATE OR IGNORE flag         SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old`);
+  move(`UPDATE OR IGNORE user_edit    SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old`);
+  move(`UPDATE OR IGNORE tag_item     SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old`);
+  move(`UPDATE OR IGNORE obsidian_link SET subject_id=$neu WHERE subject_type='release_group' AND subject_id=$old`);
+  // Borra del viejo lo que no pudo moverse (el nuevo ya lo tenía) para dejarlo sin anclas de usuario → podable.
+  for (const t of _SUBJ_RG_TABLES) { try { db.prepare(`DELETE FROM ${t} WHERE subject_type='release_group' AND subject_id=$old`).run({ old: oldRg }); } catch (e) {} }
 }
 
-module.exports = { repairRenames };
+module.exports = { repairRenames, migrateUserData };
 
 // ── CLI: node rebind.js --db <db> --root <carpeta> [--root <otra>…] [--apply] ──
 // Sin --apply es DRY-RUN. Imprime una última línea JSON con las estadísticas (para el servidor).

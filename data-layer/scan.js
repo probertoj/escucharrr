@@ -8,6 +8,7 @@ const { DatabaseSync } = require('node:sqlite');
 const fs = require('fs');
 const path = require('path');
 const TAGS = require('./tags');   // MP3 (ID3v2) y M4A/MP4 (átomos): etiquetas + info, sin dependencias
+const { migrateUserData } = require('./rebind');   // re-anclaje de ediciones/valoraciones/notas al mover carpetas
 
 function arg(n, d) { const i = process.argv.indexOf('--' + n); return i >= 0 ? (process.argv[i + 1] || true) : d; }
 const DB_PATH = arg('db', 'escucharrr.db');
@@ -196,6 +197,9 @@ const S = {
   // Reconciliación de movimientos/renombrados (modelo Roon: rebind por identidad, no borrar+recrear).
   fileByPath: db.prepare('SELECT id FROM local_file WHERE path=?'),
   fileByNorm: db.prepare('SELECT id, path FROM local_file WHERE path=? OR path=?'),   // formas NFC/NFD
+  rgByFileId: db.prepare(`SELECT rel.release_group_id rg FROM local_file lf
+     JOIN track tr ON tr.id=lf.track_id JOIN medium m ON m.id=tr.medium_id JOIN "release" rel ON rel.id=m.release_id
+     WHERE lf.id=? LIMIT 1`),   // release_group actual de una fila (para capturar el grupo VIEJO antes de reanclar)
   moveByFinger: db.prepare('SELECT id, path FROM local_file WHERE fingerprint IS NOT NULL AND fingerprint=?'),
   moveByIsrcSize: db.prepare('SELECT id, path FROM local_file WHERE isrc IS NOT NULL AND isrc=? AND size_bytes=?'),
   moveBySizeDur: db.prepare('SELECT id, path FROM local_file WHERE size_bytes=? AND duration_ms IS NOT NULL AND duration_ms=?'),
@@ -331,22 +335,27 @@ if (!mountHealthy) console.warn('  [montaje] raíz no enumerada o sin ficheros: 
 // huella/ISRC+tamaño/tamaño+duración y su ruta antigua ya no está), renombramos la fila existente en
 // vez de insertar una nueva. Así se conserva el id, el análisis (loudness/peaks/gain) y el match, y
 // la ruta antigua no queda como "ausente" para podar. Solo paga coste una ruta nueva.
+// Devuelve null (ruta nueva de verdad), {type:'norm'} (misma ruta salvo Unicode) o {type:'move', oldRg}
+// (movimiento/renombrado: la fila existente se re-apunta a la ruta nueva; oldRg = su release_group ACTUAL,
+// capturado ANTES de que el upsert posterior le sobrescriba el track_id al grupo nuevo → permite re-anclar
+// las ediciones del grupo viejo al nuevo tras el escaneo).
 function reconcileMove(file, size, durMs, isrc, fp) {
   if (S.fileByPath.get(file)) return null;                 // ya existe por ruta exacta → upsert normal
   try {                                                     // 1) misma ruta salvo normalización Unicode (carpetas acentuadas)
     const nfc = file.normalize('NFC'), nfd = file.normalize('NFD');
-    if (nfc !== file || nfd !== file) { const r = S.fileByNorm.get(nfc, nfd); if (r && r.path !== file) { S.renamePath.run(file, r.id); return 'norm'; } }
+    if (nfc !== file || nfd !== file) { const r = S.fileByNorm.get(nfc, nfd); if (r && r.path !== file) { S.renamePath.run(file, r.id); return { type: 'norm' }; } }
   } catch (e) {}
   const gone = (p) => !seenPaths.has(nrm(p));               // la ruta antigua no se ha visto en este escaneo
   const uniqueGone = (rows) => { const c = rows.filter(r => gone(r.path) && nrm(r.path) !== nrm(file)); return c.length === 1 ? c[0] : null; };
   let src = fp ? uniqueGone(S.moveByFinger.all(fp)) : null;                                   // 2a) huella de audio: identidad exacta
   if (!src && isrc && size != null) src = uniqueGone(S.moveByIsrcSize.all(isrc, size));       // 2b) ISRC + tamaño
   if (!src && size != null && durMs != null) src = uniqueGone(S.moveBySizeDur.all(size, durMs)); // 2c) tamaño + duración
-  if (src) { S.renamePath.run(file, src.id); return 'move'; }
+  if (src) { const oldRg = (S.rgByFileId.get(src.id) || {}).rg || null; S.renamePath.run(file, src.id); return { type: 'move', oldRg }; }
   return null;
 }
 
 let ok = 0, ident = 0, moved = 0, normed = 0;
+const movePairs = [];   // {old, neu}: por cada fichero movido a OTRO release_group, para re-anclar ediciones tras el escaneo
 const _total = files.length;
 emitScan({ phase: 'escaneando', scanned: 0, total: _total, identified: 0 }, true);
 db.exec('BEGIN');
@@ -401,7 +410,7 @@ try {
     const acoustid = t.ACOUSTID_ID || null;
     const fingerprint = t.ACOUSTID_FINGERPRINT || null;
 
-    let trackId = null, recId = null;
+    let trackId = null, recId = null, newRg = null;
     if (haveGraph) {
       const aid = ensureArtist(artistName), cid = ensureCredit(aid, artistName);
       // first_release: conserva la FECHA COMPLETA del tag (YYYY-MM-DD) si la hay — así «En este día» funciona
@@ -409,7 +418,7 @@ try {
       // sobrescribir luego con la fecha autoritativa del release-group.)
       const _d = String(t.DATE || '');
       const rgDate = /^\d{4}-\d{2}-\d{2}/.test(_d) ? _d.slice(0, 10) : (_d.slice(0, 4) || null);
-      const rg = ensureRg(album, cid, rgDate);
+      const rg = ensureRg(album, cid, rgDate); newRg = rg;
       if (t.GENRE) S.linkGenre.run(rg, ensureGenre(t.GENRE.toLowerCase()));  // minúscula: convención común con MB/Discogs
       // recopilatorio → un release por grupo (pistas repartidas en carpetas); si no, versiones-por-carpeta
       const rel = isComp ? ensureRelComp(rg, album, cid, t.DATE || null, fmtLabel, nrm(albumDir))
@@ -435,7 +444,10 @@ try {
     const matchBy = recMbid ? 'mb-tag' : (identified ? 'tags' : (haveGraph ? 'folder' : null));
     const matchConf = recMbid ? 0.95 : (identified ? 0.7 : (haveGraph ? 0.35 : null));
     const rec = reconcileMove(file, st.size, inf.durationMs, isrc, fingerprint);   // rebind si es un movimiento/renombrado
-    if (rec === 'move') moved++; else if (rec === 'norm') normed++;
+    if (rec) {
+      if (rec.type === 'move') { moved++; if (rec.oldRg && newRg && rec.oldRg !== newRg) movePairs.push({ old: rec.oldRg, neu: newRg }); }
+      else if (rec.type === 'norm') normed++;
+    }
     S.insFile.run(file, fmtLabel, inf.sampleRate, inf.bits, inf.channels, inf.durationMs, st.size, String(st.mtimeMs), isrc, acoustid, fingerprint, trackId, recId, matchBy, matchConf, SCAN_SEQ);
     ok++;
     emitScan({ phase: 'escaneando', scanned: ok, total: _total, identified: ident });
@@ -445,6 +457,44 @@ try {
   }
   db.exec('COMMIT');
 } catch (e) { db.exec('ROLLBACK'); throw e; }
+
+// Re-anclaje de ediciones tras mover/renombrar carpetas (el bug «la principal» de Serge). Si al reescanear los
+// ficheros de un álbum se reanclan a OTRO release_group —porque su carpeta/identidad cambió y el grupo se
+// recreó con el título derivado de la carpeta—, el grupo VIEJO se queda SIN ficheros pero conserva las
+// ediciones del usuario (título/artista), valoraciones, favoritos, etiquetas y notas de Obsidian. Sin esto
+// saldría un álbum DUPLICADO con los datos viejos y la edición «perdida». Aquí migramos esos datos del grupo
+// viejo (ya vacío de ficheros) al nuevo (mayoritario si la carpeta se repartió), y la poda de abajo retira el
+// grupo viejo vacío. SOLO BD; el disco no se toca. reconcileMove ya cubre la mayoría de movimientos antes que
+// rebind.js (que solo corre en «Reparar» manual), así que el re-anclaje tiene que vivir aquí, en cada escaneo.
+if (movePairs.length) {
+  const byOld = new Map();                                 // oldRg -> Map<newRg, nº de ficheros movidos>
+  for (const p of movePairs) { if (!byOld.has(p.old)) byOld.set(p.old, new Map()); const m = byOld.get(p.old); m.set(p.neu, (m.get(p.neu) || 0) + 1); }
+  // ¿el grupo viejo aún ancla algún fichero? (mismo criterio que pruneGraph: pista con fichero directo, o
+  // fichero sin pista que casa por grabación). Si sí, NO está varado (p. ej. solo se movió una de sus copias).
+  const hasFile = db.prepare(`SELECT 1 FROM "release" rel JOIN medium m ON m.release_id=rel.id JOIN track tr ON tr.medium_id=m.id
+     WHERE rel.release_group_id=? AND EXISTS (SELECT 1 FROM local_file lf WHERE lf.track_id=tr.id OR (lf.recording_id=tr.recording_id AND lf.track_id IS NULL)) LIMIT 1`);
+  const hasUserData = db.prepare(`SELECT 1 WHERE
+       EXISTS (SELECT 1 FROM user_edit     x WHERE x.subject_type='release_group' AND x.subject_id=$rg)
+    OR EXISTS (SELECT 1 FROM rating_tier   x WHERE x.subject_type='release_group' AND x.subject_id=$rg)
+    OR EXISTS (SELECT 1 FROM rating        x WHERE x.subject_type='release_group' AND x.subject_id=$rg)
+    OR EXISTS (SELECT 1 FROM flag          x WHERE x.subject_type='release_group' AND x.subject_id=$rg)
+    OR EXISTS (SELECT 1 FROM tag_item      x WHERE x.subject_type='release_group' AND x.subject_id=$rg)
+    OR EXISTS (SELECT 1 FROM obsidian_link x WHERE x.subject_type='release_group' AND x.subject_id=$rg) LIMIT 1`);
+  let reanchored = 0;
+  db.exec('BEGIN');
+  try {
+    for (const [oldRg, dests] of byOld) {
+      if (hasFile.get(oldRg)) continue;                    // aún tiene ficheros → no varado
+      if (!hasUserData.get({ rg: oldRg })) continue;       // nada de usuario que migrar
+      let best = null, bestN = -1; for (const [neu, n] of dests) if (n > bestN) { best = neu; bestN = n; }   // destino = grupo nuevo mayoritario
+      if (!best || best === oldRg) continue;
+      migrateUserData(db, oldRg, best);
+      reanchored++;
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); console.warn('  re-anclaje de ediciones: error', e.message); }
+  if (reanchored) console.log(`  re-anclaje de ediciones: ${reanchored} álbum(es) movido(s) conservan sus ediciones/valoraciones/notas tras el reescaneo (grupo viejo retirado)`);
+}
 
 // Poda: quita de la biblioteca los ficheros borrados del disco (bajo esta raíz) y recoge la
 // basura del grafo que ya no ancla nada. Así el ciclo de la biblioteca en vivo se cierra:
