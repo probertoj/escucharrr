@@ -116,6 +116,11 @@ window.player = (function () {
   const BGKEY = 'escucharrr.bgplayback';
   function bgDefault() { try { return !!(window.matchMedia && window.matchMedia('(max-width:619px)').matches); } catch (e) { return false; } }
   let bgMode; try { const v = localStorage.getItem(BGKEY); bgMode = v == null ? bgDefault() : v === '1'; } catch (e) { bgMode = false; }
+  // iOS vs Android deciden ESTRATEGIAS OPUESTAS de avance de pista en 2º plano (ver advanceBg): iOS no deja
+  // iniciar una carga+play NUEVA con la app detrás → hay que precargar en un 2º deck y saltar a él; Android, en
+  // cambio, SUELTA el foco de audio si se cambia de elemento con la pantalla bloqueada → hay que seguir en el
+  // MISMO <audio>. iPadOS se presenta como Mac con pantalla táctil, de ahí la comprobación de maxTouchPoints.
+  const IS_IOS = (() => { try { return /iP(hone|od|ad)/.test(navigator.platform) || /iPad|iPhone|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1); } catch (e) { return false; } })();
   function getBgMode() { return bgMode; }
   function setBgMode(on) { on = !!on; const changed = on !== bgMode; try { localStorage.setItem(BGKEY, on ? '1' : '0'); } catch (e) {} if (changed) location.reload(); }
 
@@ -942,7 +947,7 @@ window.player = (function () {
   // buferizado en vez de pedir una descarga nueva — iOS no deja iniciar una carga+play nueva con la app detrás
   // o la pantalla apagada. Reusa el segundo deck (en 2º plano no hay crossfade, así que está libre).
   function preloadNext() {
-    if (!bgMode || nativeMode || upnpMode || irStation) return;
+    if (!bgMode || nativeMode || upnpMode || irStation || !IS_IOS) return;   // solo iOS usa el 2º deck precargado (Android reusa el activo)
     const ni = idx + 1 < q.length ? idx + 1 : (repeat === 'all' && q.length ? 0 : -1);
     if (ni < 0) return;
     const nt = q[ni]; if (!nt || nt.playable === false) return;
@@ -951,21 +956,40 @@ window.player = (function () {
     try { nd.el.pause(); } catch (e) {}
     nd.el.preload = 'auto'; nd.trackIdx = ni; nd.el.src = url; try { nd.el.load(); } catch (e) {}
   }
-  // Avance en 2º plano: cambia al otro deck (que ya trae la siguiente pista buferizada) y lo reproduce al
-  // instante, sin carga de red nueva; así la cola sigue sola con la pantalla apagada. Encadena la precarga.
+  // Avance de pista en 2º plano (pantalla bloqueada / app detrás). Dos estrategias OPUESTAS por plataforma:
+  //  · iOS: NO permite iniciar una carga+play nueva en 2º plano, así que saltamos al OTRO deck que ya trae la
+  //    pista precargada (preloadNext) y lo reproducimos al instante. Arrancamos el nuevo ANTES de pausar el
+  //    viejo para no dejar un hueco de silencio.
+  //  · Android/otros: cambiar de <audio> con la pantalla bloqueada hace que Android SUELTE el foco de audio y
+  //    la pista nueva se corte a los segundos (bug de Serge, Pixel 8a). Por eso seguimos en el MISMO elemento
+  //    activo —la reproducción es continuación de la sesión ya «bendecida» y su red no se estrangula en 2º
+  //    plano—: solo le cambiamos el src y reproducimos. Reafirmamos el estado 'playing' de la Media Session.
   function advanceBg() {
     const ni = idx + 1 < q.length ? idx + 1 : 0;
-    const nd = other();
-    if (!(nd.trackIdx === ni && nd.el.src)) return start(ni);   // no precargada (cola cambió, etc.) → camino normal
-    const od = active();
-    cur0 = 1 - cur0;                 // el deck precargado pasa a ser el activo
+    if (IS_IOS) {
+      const nd = other();
+      if (!(nd.trackIdx === ni && nd.el.src)) return start(ni);   // no precargada (cola cambió, etc.) → camino normal
+      const od = active();
+      cur0 = 1 - cur0;               // el deck precargado pasa a ser el activo
+      idx = ni; save(); loggedIdx = -1;
+      applyVol();                    // volumen (2º plano = el.volume) al nuevo deck activo
+      nd.el.play().catch(() => {});
+      try { od.el.pause(); } catch (e) {}   // pausa el viejo DESPUÉS de arrancar el nuevo (sin hueco de silencio)
+      trackStarted();
+      render();
+      preloadNext();                 // encadena la precarga de la siguiente
+      return;
+    }
+    const nt = q[ni];
+    if (!nt || nt.playable === false) return next();
     idx = ni; save(); loggedIdx = -1;
-    try { od.el.pause(); } catch (e) {}
-    applyVol();                      // volumen (2º plano = el.volume) al nuevo deck activo
-    nd.el.play().catch(() => {});
+    const d = active(); d.trackIdx = idx;
+    d.el.src = '/api/stream?track=' + nt.trackId;   // reutiliza el elemento activo (conserva foco de audio/sesión)
+    applyVol();
+    try { if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing'; } catch (e) {}
+    d.el.play().catch(() => {});
     trackStarted();
     render();
-    preloadNext();                   // encadena la precarga de la siguiente
   }
   function next() { if (nativeMode) { if (idx < q.length - 1) nativePlay(idx + 1); else if (repeat === 'all' && q.length) nativePlay(0); else if (radioOn) maybeRadio(); else { playing = false; stopNativePoll(); render(); } return; } if (upnpMode) { if (idx < q.length - 1) upnpPlay(idx + 1); else if (repeat === 'all' && q.length) upnpPlay(0); else if (radioOn) maybeRadio(); else { playing = false; stopUpnpPoll(); render(); } return; } if (idx < q.length - 1) start(idx + 1); else if (repeat === 'all' && q.length) start(0); else if (radioOn) maybeRadio(); else { playing = false; active().el.pause(); render(); } }
   function prev() { if (nativeMode) { if (nativePos > 3 || idx <= 0) nativePlay(idx, { seekSec: 0 }); else nativePlay(idx - 1); return; } if (upnpMode) { if (upnpPos > 3 || idx <= 0) upnpPlay(idx, { seekSec: 0 }); else upnpPlay(idx - 1); return; } const d = active(); if (d.trackIdx === idx && d.el.currentTime > 3) { d.el.currentTime = 0; } else if (idx > 0) start(idx - 1); else d.el.currentTime = 0; }
