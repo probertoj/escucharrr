@@ -3649,8 +3649,10 @@ function _dropCopyCore(rel) {
   return { rel, rg, dir: srcDir, real_dir: realDir };
 }
 // Candidatos a «copia redundante» de toda la biblioteca: por cada álbum con >1 copia física, las copias
-// NO principales. Confianza «alta» si la carpeta tiene sufijo de conflicto de sync («… [N]») o si duplica
-// a la principal (mismo formato y no aporta más pistas); si no, «revisar» (otro formato / otra cosa).
+// NO principales. Confianza: «alta» SOLO si la carpeta tiene sufijo de conflicto de sync («… [N]») — señal
+// inequívoca de basura de sincronización → es lo ÚNICO que se premarca. «media» si duplica a la principal
+// (mismo formato y no aporta más pistas): puede ser una copia de más, pero también el modelo legítimo de
+// versiones-por-carpeta, así que se MUESTRA pero NO se premarca. «revisar» el resto (otro formato, etc.).
 const _CONFLICT_RE = /\s\[\d{1,3}\]$/;
 function _copyFolderLabel(src) { const b = String(src || '').split(/[\\/]/).filter(Boolean).pop(); return b || String(src || ''); }
 function redundantCopyGroups() {
@@ -3670,7 +3672,7 @@ function redundantCopyGroups() {
       if (r.id === primId) continue;
       const conflict = _CONFLICT_RE.test(_copyFolderLabel(r.source_dir));
       const dupOfPrimary = r.format === prim.format && r.tracks > 0 && r.tracks <= prim.tracks;
-      candidates.push({ rel: r.id, folder: _copyFolderLabel(r.source_dir), format: r.format, tracks: r.tracks, conflict: conflict ? 1 : 0, confidence: (conflict || dupOfPrimary) ? 'alta' : 'revisar' });
+      candidates.push({ rel: r.id, folder: _copyFolderLabel(r.source_dir), format: r.format, tracks: r.tracks, conflict: conflict ? 1 : 0, confidence: conflict ? 'alta' : (dupOfPrimary ? 'media' : 'revisar') });
     }
     if (!candidates.length) continue;
     const va = db.prepare('SELECT title, artist FROM v_album WHERE id=?').get(rg) || {};
@@ -4115,8 +4117,16 @@ http.createServer((req, res) => {
   })();
   // Vista previa de copias redundantes de TODA la biblioteca (para la sección de Ajustes).
   if (req.method === 'GET' && u.pathname === '/api/library/redundant-copies') return void (() => {
-    try { const groups = redundantCopyGroups(); const cand = groups.reduce((s, g) => s + g.candidates.length, 0); const high = groups.reduce((s, g) => s + g.candidates.filter(c => c.confidence === 'alta').length, 0); return sendJSON(res, { ok: true, groups, candidates: cand, high }); }
-    catch (e) { return sendJSON(res, { ok: false, error: e.message, groups: [] }); }
+    try {
+      const all = u.searchParams.get('all') === '1';
+      const full = redundantCopyGroups();
+      const totalCand = full.reduce((s, g) => s + g.candidates.length, 0);
+      let groups = full;
+      if (!all) { groups = []; for (const g of full) { const cc = g.candidates.filter(c => c.conflict); if (cc.length) groups.push(Object.assign({}, g, { candidates: cc })); } }   // por defecto: solo conflictos de sync
+      const cand = groups.reduce((s, g) => s + g.candidates.length, 0);
+      const high = groups.reduce((s, g) => s + g.candidates.filter(c => c.confidence === 'alta').length, 0);
+      return sendJSON(res, { ok: true, groups, candidates: cand, high, total_candidates: totalCand, showing: all ? 'all' : 'conflict' });
+    } catch (e) { return sendJSON(res, { ok: false, error: e.message, groups: [] }); }
   })();
   // Quitar en BLOQUE varias copias (mismo efecto que «Quitar copia» por cada una; todo en una transacción).
   if (req.method === 'POST' && u.pathname === '/api/album/drop-copies-bulk') return void (async () => {
