@@ -2738,17 +2738,20 @@ function isUnc(p) { return /^\\\\/.test(String(p)) || /^\/\//.test(String(p)); }
 // grande (NAS) tiene miles de ficheros; un recorrido SÍNCRONO bloquearía el event loop y
 // congelaría el servidor (en el arranque y en cada sondeo). fs.promises cede el control.
 async function pollSignatureAsync(root) {
-  let n = 0, mt = 0, sz = 0;
+  let n = 0, mt = 0, sz = 0, ok = true;
   async function walk(dir) {
-    let ents; try { ents = await _fsp.readdir(dir, { withFileTypes: true }); } catch (e) { return; }
+    let ents; try { ents = await _fsp.readdir(dir, { withFileTypes: true }); } catch (e) { ok = false; return; }   // carpeta ilegible (NAS flojo) → lectura incompleta
     for (const e of ents) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) await walk(p);
-      else if (_AUD.test(e.name)) { try { const st = await _fsp.stat(p); n++; mt += st.mtimeMs; sz += st.size; } catch (x) {} }
+      else if (_AUD.test(e.name)) { try { const st = await _fsp.stat(p); n++; mt += st.mtimeMs; sz += st.size; } catch (x) { ok = false; } }
     }
   }
   await walk(root);
-  return n + ':' + Math.round(mt) + ':' + sz;
+  // Si la pasada no fue COMPLETA (algún readdir/stat falló por flaqueo del SMB), la firma sería un subconjunto
+  // distinto cada vez → falsos «cambios» en bucle. Devolvemos null: el sondeo lo trata como «no concluyente»
+  // (no fija baseline ni dispara). Solo una pasada COMPLETA que difiera de la última completa cuenta como cambio.
+  return ok ? (n + ':' + Math.round(mt) + ':' + sz) : null;
 }
 function addPoll(root) {   // registra una carpeta para sondeo; el baseline se fija en el 1er tick (no bloquea el arranque)
   if (!_pollRoots.has(root)) { _pollRoots.set(root, null); console.log('biblioteca en vivo: sondeando (red) ' + root); }
@@ -2757,14 +2760,19 @@ function addPoll(root) {   // registra una carpeta para sondeo; el baseline se f
 function startPolling() {
   if (_pollTimer || !_pollRoots.size) return;
   _pollTimer = setInterval(async () => {
-    if (_polling) return; _polling = true;
+    if (_polling || _ingRunning) return;   // no sondear mientras hay un escaneo: ni competir por el NAS ni dispararse por el propio trajín del escaneo
+    _polling = true;
     try {
       for (const root of _pollRoots.keys()) {
         if (!fs.existsSync(root)) continue;
         let sig; try { sig = await pollSignatureAsync(root); } catch (e) { continue; }
+        if (sig == null) continue;               // lectura incompleta (NAS flojo) → no concluyente: ni baseline ni disparo
         const prev = _pollRoots.get(root);
         _pollRoots.set(root, sig);
-        if (prev != null && sig !== prev) { console.log('  [poll] cambio detectado en', root); _ingSchedule('music'); }   // prev=null = fijar baseline sin disparar
+        if (prev != null && sig !== prev) {
+          if (Date.now() - _lastScanEndAt < POLL_COOLDOWN_MS) continue;   // enfriamiento tras un escaneo: evita relanzar en cadena
+          console.log('  [poll] cambio detectado en', root); _ingSchedule('music');
+        }   // prev=null = fijar baseline sin disparar
       }
     } finally { _polling = false; }
   }, POLL_MS);
@@ -2819,6 +2827,7 @@ function _spawnIngest(args, meta) {
 }
 const _reanalyzing = new Set();   // release_group_ids con un reanálisis (loudness + waveform) en curso
 let _ingPending = new Set(), _ingTimer = null, _ingRunning = false;
+let _lastScanEndAt = 0; const POLL_COOLDOWN_MS = 5 * 60 * 1000;   // tras un escaneo, el sondeo no relanza otro en 5 min (rompe el bucle de reescaneos sobre NAS con trajín)
 function _ingSchedule(kind) { _ingPending.add(kind); clearTimeout(_ingTimer); _ingTimer = setTimeout(_ingRun, 1500); }   // debounce 1.5 s
 // Sync INCREMENTAL de una sola nota (cuando cambia un .md en el vault): obsidian-sync --only,
 // que evita el pase completo del vault y el rebuild de FTS (no bloquea la BD como el full).
@@ -2840,7 +2849,7 @@ async function _ingRun() {
     if (kinds.has('vault') && c.obsidianConfig) console.log('  [watch] vault:', await _spawnIngest([path.join(_DL, 'obsidian-sync.js'), '--db', DB_PATH, '--config', c.obsidianConfig]));
     sseBroadcast('library');
   } catch (e) { console.error('  [watch] error:', e.message); }
-  finally { _ingRunning = false; if (_ingPending.size) { const r = [..._ingPending][0]; _ingPending.delete('rerun'); _ingSchedule(r === 'rerun' ? 'music' : r); } }
+  finally { _ingRunning = false; _lastScanEndAt = Date.now(); if (_ingPending.size) { const r = [..._ingPending][0]; _ingPending.delete('rerun'); _ingSchedule(r === 'rerun' ? 'music' : r); } }
 }
 // Supresión de escrituras propias: cuando la app escribe una nota (write-back a Obsidian) ya
 // espeja el estado en la BD, así que el re-sync que dispararía el watcher es redundante y encima
