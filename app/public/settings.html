@@ -104,7 +104,8 @@ window.addEventListener('DOMContentLoaded', async () => {
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><input id="newfolder" placeholder="Escribe la ruta (p. ej. /music) o pulsa Explorar…" style="flex:1;min-width:220px"><button id="browsefolder">Explorar…</button><button id="addfolder">Añadir carpeta</button></div>
       <div class="d" style="margin-top:5px;font-size:12px">En Docker/NAS suele ser <span class="mono">/music</span>; en Windows, <span class="mono">C:\\Users\\tú\\Music</span>. Puedes <b>escribir la ruta</b> y pulsar «Añadir carpeta», o navegar con «Explorar…».</div>
       <div id="cfgmsg" style="margin-top:8px;font-size:12.5px;display:none"></div>
-      <div class="d" style="margin-top:6px">Se vigilan en vivo (añadir/quitar ficheros reescanea solo; las carpetas de red se sondean cada ~30 s). Metadatos, carátulas, letras y análisis se amplían con las herramientas de <span class="mono">data-layer/</span>.</div></div>
+      <div class="d" style="margin-top:6px">Se vigilan en vivo (añadir/quitar ficheros reescanea solo). Las carpetas de red se sondean por nombres de carpetas y ficheros, sin leer cada fichero, con una pausa que se adapta a lo que tarde el NAS; un cambio de etiquetas sin renombrar no se detecta: usa «Reescanear ahora». Metadatos, carátulas, letras y análisis se amplían con las herramientas de <span class="mono">data-layer/</span>.</div>
+      <div id="pollinfo" class="d" style="margin-top:4px;font-size:12px;display:none"></div></div>
     <div class="row" style="display:block"><div class="k" style="margin-bottom:8px">Fuente Obsidian <span class="d" style="font-weight:400">(opcional; tus notas mandan)</span></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input id="obsvault" placeholder="ruta del vault" style="flex:1;min-width:200px"><button id="browseobs">Explorar…</button><input id="obsfolder" placeholder="carpeta de álbumes" style="width:150px"><input id="obsbiosfolder" placeholder="carpeta de biografías" style="width:170px"><button id="saveobs">Guardar</button></div>
       <div class="d" style="margin-top:6px;font-size:12px">Los discos se guardan en la <b>carpeta de álbumes</b> y las biografías de artista en la <b>carpeta de biografías</b>, respetando la estructura de tu vault. La de biografías admite una ruta <b>absoluta</b> si está fuera del vault (p. ej. una carpeta hermana como <span class="mono">…\\00. Índices</span>).</div></div>
@@ -533,8 +534,24 @@ window.addEventListener('DOMContentLoaded', async () => {
       }
     } else { scanLiveRow.style.display = 'none'; }
   }
-  function scanTick() { fetch('/api/scan/status').then(r => r.json()).then(s => { scanRender(s); if (s && s.active) { if (!scanPoll) scanPoll = setInterval(scanTick, 1000); } else if (scanPoll) { clearInterval(scanPoll); scanPoll = null; } }).catch(() => {}); }
+  // Estado del sondeo de carpetas de red (NAS): última pasada, coste y cuándo toca la siguiente.
+  const pollInfo = document.getElementById('pollinfo');
+  function pollRender(p) {
+    if (!pollInfo) return;
+    const roots = (p && p.roots) || [];
+    if (!roots.length) { pollInfo.style.display = 'none'; return; }
+    const _s = ms => ms >= 60000 ? Math.round(ms / 60000) + ' min' : Math.max(1, Math.round(ms / 1000)) + ' s';
+    const parts = roots.map(r => {
+      if (!r.at) return `Sondeo de red: primera pasada pendiente`;
+      const ago = _s(Date.now() - r.at);
+      return `Sondeo de red: última pasada hace ${ago} (${_n(r.dirs)} carpetas, ${_n(r.files)} audios, ${_s(r.ms)})` + (r.complete ? '' : ' · incompleta, no concluyente');
+    });
+    const next = p.polling ? ' · sondeando…' : (p.nextInMs != null ? ' · próxima en ' + _s(p.nextInMs) : '');
+    pollInfo.textContent = parts.join(' · ') + next; pollInfo.style.display = '';
+  }
+  function scanTick() { fetch('/api/scan/status').then(r => r.json()).then(s => { scanRender(s); pollRender(s && s.poll); if (s && s.active) { if (!scanPoll) scanPoll = setInterval(scanTick, 1000); } else if (scanPoll) { clearInterval(scanPoll); scanPoll = null; } }).catch(() => {}); }
   scanTick();   // estado inicial + reanuda el sondeo si ya hay un escaneo en marcha (p. ej. lanzado por el vigilante)
+  setInterval(() => { if (!scanPoll && !document.hidden) scanTick(); }, 20000);   // refresco suave del estado del sondeo de red
   document.getElementById('rescanbtn').addEventListener('click', async () => { const b = document.getElementById('rescanbtn'), st = document.getElementById('rescanstatus'); b.disabled = true; b.textContent = 'Reescaneando…'; st.textContent = 'reescaneando… (puede tardar)'; scanTick(); try { const r = await fetch('/api/config/rescan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ what: ['music', 'vault'] }) }).then(x => x.json()); if (r.ok) { const m = (r.music || []).map(x => x.result).filter(Boolean).join(' · '); st.textContent = 'Listo. ' + (m || '') + (r.vault ? ' · ' + r.vault : ''); } else st.textContent = 'Error: ' + (r.error || ''); } catch (e) { st.textContent = 'Error de red.'; } b.disabled = false; b.textContent = 'Reescanear ahora'; scanTick(); });
   const repairBtn = document.getElementById('repairbtn');
   if (repairBtn) repairBtn.addEventListener('click', async () => { const b = repairBtn, st = document.getElementById('repairstatus'); const prev = st.textContent; b.disabled = true; b.textContent = 'Reparando…'; st.textContent = 'buscando renombrados y moviéndolos en la base de datos… (puede tardar en carpetas de red)'; try { const r = await fetch('/api/config/repair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(x => x.json()); if (r.ok) st.textContent = `Listo. ${r.orphans} huérfano(s) · ${r.rebound} re-vinculado(s) · ${r.merged} duplicado(s) fundido(s)` + (r.unresolved ? ` · ${r.unresolved} sin resolver (borrados de verdad)` : '') + '.'; else st.textContent = 'Error: ' + (r.error || ''); } catch (e) { st.textContent = 'Error de red.'; } b.disabled = false; b.textContent = 'Reparar ahora'; });

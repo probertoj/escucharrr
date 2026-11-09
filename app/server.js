@@ -45,6 +45,9 @@ const PORT = process.env.PORT || 7733;
 // Ruta de la BD: por defecto junto a la app, pero ESC_DB permite moverla a una carpeta escribible
 // (p. ej. %LOCALAPPDATA% en un standalone instalado en Archivos de programa). También facilita el QA.
 const DB_PATH = process.env.ESC_DB ? path.resolve(process.env.ESC_DB) : path.join(__dirname, 'escucharrr.db');
+// Config de carpetas vigiladas: por defecto app/watch.json; ESC_WATCH permite otra (una instancia de QA
+// no debe leer la config real y ponerse a sondear/escanear el NAS del usuario).
+const WATCH_PATH = process.env.ESC_WATCH ? path.resolve(process.env.ESC_WATCH) : path.join(__dirname, 'watch.json');
 const PUB = path.join(__dirname, 'public');
 
 // ffmpeg (opcional): sólo hace falta para transcodificar lo que el navegador no decodifica (DSD) y para el
@@ -2693,7 +2696,7 @@ function settingsInfo() {
   };
   const watch = { active: false, folders: [], obsidian: null };
   try {
-    const wp = path.join(__dirname, 'watch.json');
+    const wp = WATCH_PATH;
     if (fs.existsSync(wp)) {
       const w = JSON.parse(fs.readFileSync(wp, 'utf8'));
       watch.active = true; watch.folders = Array.isArray(w.music) ? w.music : [];
@@ -2731,59 +2734,58 @@ const _AUD = /\.(flac|wav|mp3|m4a|ogg|opus|aiff?|dsf|dff)$/i;
 let _watchers = [];
 // ── vigilado por SONDEO para carpetas de red (SMB/UNC): fs.watch recursivo no va en
 // shares de red en Windows, así que esas carpetas se sondean por firma de cambios. ──
-let _pollRoots = new Map();   // root -> última firma
-let _pollTimer = null, _polling = false;
-const POLL_MS = 30000;
-const _fsp = fs.promises;
+const POLLSIG = require('../data-layer/pollsig');
+let _pollRoots = new Map();   // root -> { sig: última firma COMPLETA, last: {at, ms, dirs, files, complete} }
+let _pollTimer = null, _polling = false, _pollNextAt = 0, _pollIncompleteLogAt = 0;
+const POLL_MS = 30000;                       // pausa MÍNIMA entre pasadas
+const POLL_DUTY = 2;                         // pausa ≥ POLL_DUTY × duración de la pasada anterior → el NAS descansa ≥ 2/3 del tiempo
+const POLL_MAX_PAUSE_MS = 15 * 60 * 1000;    // tope de la pausa adaptativa (un NAS muy lento no se queda sin vigilar)
 function isUnc(p) { return /^\\\\/.test(String(p)) || /^\/\//.test(String(p)); }
-// Firma barata de cambios (nº de audios + Σmtime + Σtamaño), ASÍNCRONA: una carpeta de red
-// grande (NAS) tiene miles de ficheros; un recorrido SÍNCRONO bloquearía el event loop y
-// congelaría el servidor (en el arranque y en cada sondeo). fs.promises cede el control.
-async function pollSignatureAsync(root) {
-  let n = 0, mt = 0, sz = 0, ok = true;
-  async function walk(dir) {
-    let ents; try { ents = await _fsp.readdir(dir, { withFileTypes: true }); } catch (e) { ok = false; return; }   // carpeta ilegible (NAS flojo) → lectura incompleta
-    for (const e of ents) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) await walk(p);
-      else if (_AUD.test(e.name)) { try { const st = await _fsp.stat(p); n++; mt += st.mtimeMs; sz += st.size; } catch (x) { ok = false; } }
-    }
-  }
-  await walk(root);
-  // Si la pasada no fue COMPLETA (algún readdir/stat falló por flaqueo del SMB), la firma sería un subconjunto
-  // distinto cada vez → falsos «cambios» en bucle. Devolvemos null: el sondeo lo trata como «no concluyente»
-  // (no fija baseline ni dispara). Solo una pasada COMPLETA que difiera de la última completa cuenta como cambio.
-  return ok ? (n + ':' + Math.round(mt) + ':' + sz) : null;
-}
+// Firma barata de cambios por NOMBRES (carpetas + audios), SIN stat por fichero — ver data-layer/pollsig.js.
+// La firma anterior (Σmtime+Σtamaño) hacía un stat por cada audio: ~280.000 round-trips SMB por pasada cada
+// 30 s, que es justo la carga sostenida que tumba el NAS. Ahora una pasada = un readdir por carpeta (~10×
+// menos operaciones) y las carpetas de copias quitadas (ignored_dir) quedan fuera, igual que en el escáner.
+// Completitud: si algún readdir falla, sig=null → «no concluyente» (ni baseline ni disparo), porque una lectura
+// parcial sería un subconjunto distinto cada vez y daría falsos «cambios» en bucle.
+function _pollIgnoreSet() { try { return new Set(db.prepare('SELECT dir FROM ignored_dir').all().map(r => r.dir)); } catch (e) { return null; } }
+async function pollSignatureAsync(root) { return POLLSIG.dirSignature(root, { ignore: _pollIgnoreSet(), nrm: POLLSIG.nrm }); }
 function addPoll(root) {   // registra una carpeta para sondeo; el baseline se fija en el 1er tick (no bloquea el arranque)
-  if (!_pollRoots.has(root)) { _pollRoots.set(root, null); console.log('biblioteca en vivo: sondeando (red) ' + root); }
+  if (!_pollRoots.has(root)) { _pollRoots.set(root, { sig: null, last: null }); console.log('biblioteca en vivo: sondeando (red) ' + root); }
   startPolling();
 }
-function startPolling() {
-  if (_pollTimer || !_pollRoots.size) return;
-  _pollTimer = setInterval(async () => {
-    if (_polling || _ingRunning) return;   // no sondear mientras hay un escaneo: ni competir por el NAS ni dispararse por el propio trajín del escaneo
-    _polling = true;
-    try {
-      for (const root of _pollRoots.keys()) {
-        if (!fs.existsSync(root)) continue;
-        let sig; try { sig = await pollSignatureAsync(root); } catch (e) { continue; }
-        if (sig == null) continue;               // lectura incompleta (NAS flojo) → no concluyente: ni baseline ni disparo
-        const prev = _pollRoots.get(root);
-        _pollRoots.set(root, sig);
-        if (prev != null && sig !== prev) {
-          if (Date.now() - _lastScanEndAt < POLL_COOLDOWN_MS) continue;   // enfriamiento tras un escaneo: evita relanzar en cadena
-          console.log('  [poll] cambio detectado en', root); _ingSchedule('music');
-        }   // prev=null = fijar baseline sin disparar
+function _pollSchedule(ms) { clearTimeout(_pollTimer); _pollNextAt = Date.now() + ms; _pollTimer = setTimeout(_pollTick, ms); if (_pollTimer.unref) _pollTimer.unref(); }
+function startPolling() { if (_pollTimer || !_pollRoots.size) return; _pollSchedule(POLL_MS); }
+async function _pollTick() {
+  _pollTimer = null;
+  if (!_pollRoots.size) return;
+  if (_polling || _ingRunning) return _pollSchedule(POLL_MS);   // no sondear mientras hay un escaneo: ni competir por el NAS ni dispararse por el propio trajín del escaneo
+  const cool = POLL_COOLDOWN_MS - (Date.now() - _lastScanEndAt);
+  if (cool > 0) return _pollSchedule(Math.min(cool, POLL_MAX_PAUSE_MS));   // enfriamiento tras un escaneo: ni sondear (el NAS acaba de trabajar) ni relanzar en cadena; el baseline NO avanza, así un cambio real se recoge al salir del enfriamiento
+  _polling = true; let slowest = 0;
+  try {
+    for (const [root, st] of _pollRoots) {
+      if (!fs.existsSync(root)) continue;
+      let r; try { r = await pollSignatureAsync(root); } catch (e) { continue; }
+      slowest = Math.max(slowest, r.ms);
+      st.last = { at: Date.now(), ms: r.ms, dirs: r.dirs, files: r.files, complete: r.complete };
+      if (!r.complete) {   // lectura incompleta (NAS flojo) → no concluyente: ni baseline ni disparo (se avisa como mucho cada 10 min)
+        if (Date.now() - _pollIncompleteLogAt > 10 * 60 * 1000) { _pollIncompleteLogAt = Date.now(); console.log('  [poll] pasada incompleta en', root, '(carpetas ilegibles, p. ej. ' + (r.failed[0] || '?') + '); no concluyente'); }
+        continue;
       }
-    } finally { _polling = false; }
-  }, POLL_MS);
-  if (_pollTimer.unref) _pollTimer.unref();
+      const prev = st.sig; st.sig = r.sig;
+      if (prev == null) { console.log('  [poll] baseline', root + ':', r.dirs.toLocaleString('es-ES'), 'carpetas,', r.files.toLocaleString('es-ES'), 'audios en', (r.ms / 1000).toFixed(1), 's'); continue; }   // fijar baseline sin disparar
+      if (r.sig !== prev) { console.log('  [poll] cambio detectado en', root, '(pasada de ' + (r.ms / 1000).toFixed(1) + ' s)'); _ingSchedule('music'); }
+    }
+  } finally { _polling = false; }
+  if (_pollRoots.size) _pollSchedule(Math.min(POLL_MAX_PAUSE_MS, Math.max(POLL_MS, POLL_DUTY * slowest)));
 }
-function stopPolling() { if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; } _pollRoots.clear(); }
+function stopPolling() { clearTimeout(_pollTimer); _pollTimer = null; _polling = false; _pollRoots.clear(); }
+function pollStatus() {   // para Ajustes→Biblioteca: qué se sondea, cuánto tarda y cuándo toca
+  return { roots: [..._pollRoots].map(([root, st]) => ({ root, baseline: st.sig != null, ...(st.last || {}) })), polling: _polling, nextInMs: _pollTimer ? Math.max(0, _pollNextAt - Date.now()) : null, minPauseMs: POLL_MS };
+}
 // lee app/watch.json + resuelve el config de Obsidian (vault/albumsFolder)
 function watchConfig() {
-  const cfgPath = path.join(__dirname, 'watch.json');
+  const cfgPath = WATCH_PATH;
   if (!fs.existsSync(cfgPath)) return null;
   let cfg; try { cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch (e) { return null; }
   const music = Array.isArray(cfg.music) ? cfg.music : [];
@@ -2904,7 +2906,7 @@ async function rescanNow(kinds) {   // reescaneo manual inmediato
 }
 // ── escritura de la config desde la UI (carpetas vigiladas + Obsidian) ──
 function writeWatchFolders(folders) {
-  const cfgPath = path.join(__dirname, 'watch.json');
+  const cfgPath = WATCH_PATH;
   let cfg = {}; try { if (fs.existsSync(cfgPath)) cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch (e) {}
   const seen = new Set();
   cfg.music = (folders || []).map(f => String(f || '').trim()).filter(f => f && !seen.has(f) && seen.add(f));
@@ -2912,7 +2914,7 @@ function writeWatchFolders(folders) {
   fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 }
 function writeObsidian(vault, albumsFolder, artistsFolder) {
-  const cfgPath = path.join(__dirname, 'watch.json');
+  const cfgPath = WATCH_PATH;
   let wcfg = {}; try { if (fs.existsSync(cfgPath)) wcfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch (e) {}
   let base = {};   // preserva fields/tierMap del config actual o del ejemplo
   const curPath = wcfg.obsidianConfig ? path.resolve(__dirname, wcfg.obsidianConfig) : null;
@@ -4168,7 +4170,7 @@ http.createServer((req, res) => {
   if (u.pathname === '/api/album/link-mb' && req.method === 'POST') return void handleAlbumLinkMb(req, res);
   if (u.pathname === '/api/artist/link-mb' && req.method === 'POST') return void handleArtistLinkMb(req, res);
   if (u.pathname === '/api/identify/all' && req.method === 'POST') return void sendJSON(res, { ok: true, ...startIdentifyAll() });
-  if (u.pathname === '/api/scan/status' && req.method === 'GET') return void sendJSON(res, { ok: true, ..._scanStatus });
+  if (u.pathname === '/api/scan/status' && req.method === 'GET') return void sendJSON(res, { ok: true, ..._scanStatus, poll: pollStatus() });
   if (u.pathname === '/api/identify/all/status' && req.method === 'GET') return void sendJSON(res, { ok: true, ...identifyAllStatus() });
   if (u.pathname === '/api/identify/all/stop' && req.method === 'POST') { if (_idAll) _idAll.running = false; return void sendJSON(res, { ok: true, ...identifyAllStatus() }); }
   if (u.pathname === '/api/artists/dupes') return void sendJSON(res, artistDupeGroups());
