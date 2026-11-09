@@ -3615,6 +3615,71 @@ function mergeAlbumsTx(keep, drop) {
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
 }
+// ── Quitar una COPIA física (release) del grafo sin tocar el disco + marcar su carpeta en ignored_dir.
+// Núcleo reutilizable por /api/album/drop-copy (una) y /api/album/drop-copies-bulk (varias). NO abre
+// transacción: el llamante la gestiona. Valida ANTES de mutar (si lanza, no deja estado a medias) y
+// nunca deja un release_group sin ninguna copia (cuenta las que quedan en vivo, también dentro de un lote).
+function _dropCopyCore(rel) {
+  const relRow = db.prepare('SELECT id, release_group_id rg, source_dir FROM "release" WHERE id=?').get(rel);
+  if (!relRow) throw new Error('copia inexistente (rel ' + rel + ')');
+  const rg = relRow.rg;
+  const remaining = db.prepare('SELECT COUNT(*) n FROM "release" WHERE release_group_id=? AND id<>?').get(rg, rel).n;
+  if (remaining < 1) throw new Error('es la única copia del álbum; no se puede quitar como copia');
+  const srcDir = relRow.source_dir;
+  if (!srcDir) throw new Error('esta copia no tiene carpeta registrada; reescanea la biblioteca antes de quitarla');
+  const sample = db.prepare('SELECT lf.path FROM local_file lf JOIN track tr ON tr.id=lf.track_id JOIN medium m ON m.id=tr.medium_id WHERE m.release_id=? AND lf.path IS NOT NULL LIMIT 1').get(rel);
+  let realDir = srcDir;
+  if (sample) { let d = path.dirname(sample.path); if (/^(cd|dis[ck]|disco|disque|vol(ume)?|digital\s*media)\s*\.?\s*\d/i.test(path.basename(d))) d = path.dirname(d); realDir = d; }
+  const title = (db.prepare('SELECT title FROM v_album WHERE id=?').get(rg) || {}).title || '';
+  const trackIds = db.prepare('SELECT tr.id FROM track tr JOIN medium m ON m.id=tr.medium_id WHERE m.release_id=?').all(rel).map(r => r.id);
+  const medIds = db.prepare('SELECT id FROM medium WHERE release_id=?').all(rel).map(r => r.id);
+  if (trackIds.length) {
+    const ph = trackIds.map(() => '?').join(',');
+    db.prepare(`DELETE FROM local_file WHERE track_id IN (${ph})`).run(...trackIds);
+    db.prepare(`UPDATE play SET track_id=NULL WHERE track_id IN (${ph})`).run(...trackIds);
+    db.prepare(`UPDATE playlist_item SET track_id=NULL WHERE track_id IN (${ph})`).run(...trackIds);
+    try { db.prepare(`DELETE FROM track_fts WHERE track_id IN (${ph})`).run(...trackIds); } catch (e) {}
+    db.prepare(`DELETE FROM track WHERE id IN (${ph})`).run(...trackIds);
+  }
+  if (medIds.length) db.prepare(`DELETE FROM medium WHERE id IN (${medIds.map(() => '?').join(',')})`).run(...medIds);
+  db.prepare('DELETE FROM "release" WHERE id=?').run(rel);
+  const ov = Q.primaryOverride.get(rg);
+  if (ov && parseInt(ov.rel, 10) === rel) db.prepare(`DELETE FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='primary_release'`).run(rg);
+  db.prepare('INSERT OR REPLACE INTO ignored_dir(dir, real_dir, rg, title) VALUES(?,?,?,?)').run(srcDir, realDir, rg, title);
+  return { rel, rg, dir: srcDir, real_dir: realDir };
+}
+// Candidatos a «copia redundante» de toda la biblioteca: por cada álbum con >1 copia física, las copias
+// NO principales. Confianza «alta» si la carpeta tiene sufijo de conflicto de sync («… [N]») o si duplica
+// a la principal (mismo formato y no aporta más pistas); si no, «revisar» (otro formato / otra cosa).
+const _CONFLICT_RE = /\s\[\d{1,3}\]$/;
+function _copyFolderLabel(src) { const b = String(src || '').split(/[\\/]/).filter(Boolean).pop(); return b || String(src || ''); }
+function redundantCopyGroups() {
+  const rows = db.prepare(`SELECT rel.id, rel.release_group_id rg, rel.format, rel.source_dir,
+      (SELECT COUNT(*) FROM medium m JOIN track t ON t.medium_id=m.id WHERE m.release_id=rel.id) tracks
+    FROM "release" rel WHERE rel.source_dir IS NOT NULL`).all();
+  const byRg = new Map();
+  for (const r of rows) { if (!byRg.has(r.rg)) byRg.set(r.rg, []); byRg.get(r.rg).push(r); }
+  const overrides = new Map(); for (const o of Q.primaryOverrides.all()) overrides.set(o.rg, parseInt(o.rel, 10));
+  const groups = [];
+  for (const [rg, rels] of byRg) {
+    if (rels.length < 2) continue;
+    const primId = pickPrimaryRelease(rels, overrides.get(rg) || null);
+    const prim = rels.find(r => r.id === primId) || rels[0];
+    const candidates = [];
+    for (const r of rels) {
+      if (r.id === primId) continue;
+      const conflict = _CONFLICT_RE.test(_copyFolderLabel(r.source_dir));
+      const dupOfPrimary = r.format === prim.format && r.tracks > 0 && r.tracks <= prim.tracks;
+      candidates.push({ rel: r.id, folder: _copyFolderLabel(r.source_dir), format: r.format, tracks: r.tracks, conflict: conflict ? 1 : 0, confidence: (conflict || dupOfPrimary) ? 'alta' : 'revisar' });
+    }
+    if (!candidates.length) continue;
+    const va = db.prepare('SELECT title, artist FROM v_album WHERE id=?').get(rg) || {};
+    groups.push({ rg, title: va.title || '', artist: va.artist || '', primary: { rel: primId, folder: _copyFolderLabel(prim.source_dir), format: prim.format, tracks: prim.tracks }, candidates });
+  }
+  const hasHigh = g => g.candidates.some(c => c.confidence === 'alta');
+  groups.sort((a, b) => (hasHigh(b) ? 1 : 0) - (hasHigh(a) ? 1 : 0) || String(a.title).localeCompare(String(b.title)));
+  return groups;
+}
 // ── Deshacer un merge (Roon tiene unmerge; nuestro merge borraba la entidad → era irreversible). Antes de
 // combinar guardamos un snapshot de lo necesario para revertir; el endpoint de undo lo reconstruye. ──
 const _SUBJ_TABLES = ['rating_tier', 'rating', 'rating_event', 'flag', 'user_edit', 'tag_item', 'provenance', 'obsidian_link'];
@@ -4040,39 +4105,36 @@ http.createServer((req, res) => {
   if (req.method === 'POST' && u.pathname === '/api/album/drop-copy') return void (async () => {
     try {
       const b = await readBody(req); const rg = parseInt(b.rg, 10), rel = parseInt(b.rel, 10);
-      if (!rg || !rel) throw new Error('rg/rel requeridos');
-      const rels = Q.releasesOfRg.all(rg);
-      const relRow = rels.find(r => r.id === rel);
-      if (!relRow) throw new Error('esa copia no pertenece a este álbum');
-      if (rels.length <= 1) throw new Error('es la única copia del álbum; no se puede quitar como copia');
-      const srcDir = relRow.source_dir;
-      if (!srcDir) throw new Error('esta copia no tiene carpeta registrada; reescanea la biblioteca antes de quitarla');
-      // ruta real (para mostrar/restaurar) y título, desde un fichero de la copia
-      const sample = db.prepare('SELECT lf.path FROM local_file lf JOIN track tr ON tr.id=lf.track_id JOIN medium m ON m.id=tr.medium_id WHERE m.release_id=? AND lf.path IS NOT NULL LIMIT 1').get(rel);
-      let realDir = srcDir;
-      if (sample) { let d = path.dirname(sample.path); if (/^(cd|dis[ck]|disco|disque|vol(ume)?|digital\s*media)\s*\.?\s*\d/i.test(path.basename(d))) d = path.dirname(d); realDir = d; }
-      const title = (db.prepare('SELECT title FROM v_album WHERE id=?').get(rg) || {}).title || '';
-      const trackIds = Q.albumTrackIdsRel.all(rel).map(r => r.id);
-      const medIds = db.prepare('SELECT id FROM medium WHERE release_id=?').all(rel).map(r => r.id);
+      if (!rel) throw new Error('rel requerido');
+      if (rg) { const rels = Q.releasesOfRg.all(rg); if (!rels.some(r => r.id === rel)) throw new Error('esa copia no pertenece a este álbum'); }
       db.exec('BEGIN');
-      try {
-        if (trackIds.length) {
-          const ph = trackIds.map(() => '?').join(',');
-          db.prepare(`DELETE FROM local_file WHERE track_id IN (${ph})`).run(...trackIds);          // los ficheros de ESTA copia dejan de mapearse
-          db.prepare(`UPDATE play SET track_id=NULL WHERE track_id IN (${ph})`).run(...trackIds);     // el historial conserva recording_id
-          db.prepare(`UPDATE playlist_item SET track_id=NULL WHERE track_id IN (${ph})`).run(...trackIds);
-          try { db.prepare(`DELETE FROM track_fts WHERE track_id IN (${ph})`).run(...trackIds); } catch (e) {}
-          db.prepare(`DELETE FROM track WHERE id IN (${ph})`).run(...trackIds);
-        }
-        if (medIds.length) db.prepare(`DELETE FROM medium WHERE id IN (${medIds.map(() => '?').join(',')})`).run(...medIds);
-        db.prepare('DELETE FROM "release" WHERE id=?').run(rel);
-        const ov = Q.primaryOverride.get(rg);
-        if (ov && parseInt(ov.rel, 10) === rel) db.prepare(`DELETE FROM user_edit WHERE subject_type='release_group' AND subject_id=? AND field='primary_release'`).run(rg);
-        db.prepare('INSERT OR REPLACE INTO ignored_dir(dir, real_dir, rg, title) VALUES(?,?,?,?)').run(srcDir, realDir, rg, title);
-        db.exec('COMMIT');
-      } catch (e) { db.exec('ROLLBACK'); throw e; }
-      sseBroadcast('library'); return sendJSON(res, { ok: true, rg, rel, dir: srcDir, real_dir: realDir });
+      let out;
+      try { out = _dropCopyCore(rel); db.exec('COMMIT'); } catch (e) { db.exec('ROLLBACK'); throw e; }
+      sseBroadcast('library'); return sendJSON(res, { ok: true, rg: out.rg, rel: out.rel, dir: out.dir, real_dir: out.real_dir });
     } catch (e) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: e.message })); }
+  })();
+  // Vista previa de copias redundantes de TODA la biblioteca (para la sección de Ajustes).
+  if (req.method === 'GET' && u.pathname === '/api/library/redundant-copies') return void (() => {
+    try { const groups = redundantCopyGroups(); const cand = groups.reduce((s, g) => s + g.candidates.length, 0); const high = groups.reduce((s, g) => s + g.candidates.filter(c => c.confidence === 'alta').length, 0); return sendJSON(res, { ok: true, groups, candidates: cand, high }); }
+    catch (e) { return sendJSON(res, { ok: false, error: e.message, groups: [] }); }
+  })();
+  // Quitar en BLOQUE varias copias (mismo efecto que «Quitar copia» por cada una; todo en una transacción).
+  if (req.method === 'POST' && u.pathname === '/api/album/drop-copies-bulk') return void (async () => {
+    try {
+      const b = await readBody(req);
+      const rels = (Array.isArray(b.rels) ? b.rels : []).map(x => parseInt(x, 10)).filter(Boolean);
+      if (!rels.length) throw new Error('rels requerido');
+      const dropped = [], skipped = [];
+      db.exec('BEGIN');
+      try { for (const rel of rels) { try { dropped.push(_dropCopyCore(rel)); } catch (e) { skipped.push({ rel, error: e.message }); } } db.exec('COMMIT'); }
+      catch (e) { db.exec('ROLLBACK'); throw e; }
+      sseBroadcast('library'); return sendJSON(res, { ok: true, dropped: dropped.length, skipped });
+    } catch (e) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: e.message })); }
+  })();
+  // Restaurar TODAS las copias quitadas (reaparecen en el próximo escaneo).
+  if (req.method === 'POST' && u.pathname === '/api/library/restore-all-copies') return void (() => {
+    try { const n = db.prepare('SELECT COUNT(*) n FROM ignored_dir').get().n; db.prepare('DELETE FROM ignored_dir').run(); return sendJSON(res, { ok: true, restored: n }); }
+    catch (e) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: e.message })); }
   })();
   // Restaurar una copia quitada: se borra de ignored_dir y volverá a aparecer en el próximo escaneo.
   if (req.method === 'POST' && u.pathname === '/api/album/restore-copy') return void (async () => {

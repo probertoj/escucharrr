@@ -114,6 +114,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     <div class="row"><div class="lbl"><div class="k">Identificar los «no identificados»</div><div class="d" id="idallstatus">reintenta identificar con MusicBrainz todos los álbumes sin identificar de golpe (por nº de pistas y duraciones). Útil tras corregir nombres o artistas: no hay que ir uno a uno con la lupa. Va en segundo plano; solo aplica las coincidencias fiables.</div></div><button id="idallbtn">Identificar todos</button></div>
     <div class="row" style="display:block"><div class="k" style="margin-bottom:6px">Ficheros saltados en el último escaneo <span id="skipcount" style="color:var(--muted);font-weight:400"></span></div><div id="skiplist" class="d" style="max-height:220px;overflow:auto;font-size:12px;line-height:1.5">cargando…</div></div>
     <div class="row" style="display:block"><div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><div class="k" style="flex:1">Artistas duplicados <span id="adupcount" style="color:var(--muted);font-weight:400"></span></div><button id="adupmergeall" style="flex:none;display:none">Unir todos</button></div><div class="d" style="margin-bottom:8px">Mismo artista con varias fichas (p. ej. «The X» y «X», o con y sin tilde). Únelos: sus álbumes y créditos pasan al que más álbumes tiene y las demás fichas se borran. <b>Unir todos</b> hace el lote de golpe (deshacible de una vez). Puedes <b>deshacerlo</b> desde «Fusiones hechas».</div><div id="aduplist" class="d" style="max-height:300px;overflow:auto;font-size:12.5px;line-height:1.5">cargando…</div></div>
+    <div class="row" style="display:block"><div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><div class="k" style="flex:1">Copias duplicadas del mismo álbum <span id="rcopcount" style="color:var(--muted);font-weight:400"></span></div><button id="rcopdropsel" style="flex:none;display:none">Quitar seleccionadas</button></div><div class="d" style="margin-bottom:8px">Álbumes con varias copias físicas (carpetas) del mismo lanzamiento — típico de las carpetas de conflicto de sync «… [N]». Quitar una copia la saca de la biblioteca <b>sin tocar el disco</b> (el escáner no la vuelve a añadir) y es <b>restaurable</b>. Vienen marcadas las de <b>alta confianza</b> (conflicto de sync, o copia idéntica de la principal); revisa antes de quitar.</div><div id="rcoplist" class="d" style="max-height:320px;overflow:auto;font-size:12.5px;line-height:1.5">cargando…</div></div>
+    <div class="row" style="display:block"><div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><div class="k" style="flex:1">Copias quitadas <span id="rcopremcount" style="color:var(--muted);font-weight:400"></span></div><button id="rcoprestoreall" style="flex:none;display:none">Restaurar todas</button></div><div class="d" style="margin-bottom:8px">Copias que quitaste de la biblioteca. <b>Restaurar</b> las vuelve a añadir en el próximo escaneo (el disco nunca se tocó).</div><div id="rcopremlist" class="d" style="max-height:220px;overflow:auto;font-size:12.5px;line-height:1.5">cargando…</div></div>
     <div class="row" style="display:block"><div class="k" style="margin-bottom:6px">Fusiones hechas <span id="mergecount" style="color:var(--muted);font-weight:400"></span></div><div class="d" style="margin-bottom:8px">Uniones de artista/álbum y tracklists fundidas. Puedes <b>deshacer cualquiera cuando quieras</b>, no solo justo después.</div><div id="mergelist" class="d" style="max-height:260px;overflow:auto;font-size:12.5px;line-height:1.5">cargando…</div></div>
   </div></div>
 
@@ -652,6 +654,67 @@ window.addEventListener('DOMContentLoaded', async () => {
     try { const r = await fetch('/api/artist/merge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ into, from }) }).then(x => x.json());
       if (r.ok) { loadArtistDupes(); loadMerges(); } else { b.disabled = false; b.textContent = 'Unir'; alert('No se pudo unir: ' + (r.error || '')); }
     } catch (e2) { b.disabled = false; b.textContent = 'Unir'; alert('No se pudo contactar con el servidor.'); }
+  });
+  // Copias duplicadas del mismo álbum (toda la biblioteca): vista previa + quitar en bloque. Reversible.
+  function loadRedundantCopies() {
+    const cnt = document.getElementById('rcopcount'), box = document.getElementById('rcoplist'), btn = document.getElementById('rcopdropsel'); if (!box) return;
+    fetch('/api/library/redundant-copies').then(r => r.json()).then(j => {
+      const gs = (j && j.groups) || [], cand = (j && j.candidates) || 0;
+      cnt.textContent = cand ? '(' + cand + ' copia' + (cand === 1 ? '' : 's') + ' en ' + gs.length + ' álbum' + (gs.length === 1 ? '' : 'es') + ')' : '';
+      if (btn) btn.style.display = cand ? '' : 'none';
+      if (!gs.length) { box.innerHTML = '<span style="color:var(--text-2)">Ninguna — no hay álbumes con copias duplicadas.</span>'; return; }
+      box.innerHTML = gs.map(g => {
+        const cands = g.candidates.map(c => {
+          const badge = c.conflict ? '<span style="color:#c0392b">conflicto de sync</span>' : (c.confidence === 'alta' ? '<span style="color:#c0392b">copia de la principal</span>' : '<span style="color:var(--muted)">revisar</span>');
+          return `<label style="display:flex;align-items:center;gap:8px;padding:2px 0 2px 14px"><input type="checkbox" class="rcopchk" data-rel="${c.rel}" ${c.confidence === 'alta' ? 'checked' : ''}><span style="flex:1;min-width:0;word-break:break-all">${esc(c.folder)} <span style="color:var(--muted)">· ${esc(c.format || '')} · ${c.tracks} pistas · ${badge}</span></span></label>`;
+        }).join('');
+        return `<div style="padding:7px 0;border-bottom:1px solid var(--border)"><div><a href="album.html?id=${g.rg}" style="color:var(--text)">${esc(g.title)}</a> <span style="color:var(--muted)">· ${esc(g.artist || '')}</span></div><div style="color:var(--muted);font-size:11.5px;margin:2px 0 4px">Se conserva: <b style="color:var(--text)">${esc(g.primary.folder)}</b> (${esc(g.primary.format || '')} · ${g.primary.tracks} pistas)</div>${cands}</div>`;
+      }).join('');
+    }).catch(() => { box.textContent = 'No se pudo cargar.'; });
+  }
+  loadRedundantCopies();
+  document.getElementById('rcopdropsel').addEventListener('click', async e => {
+    const rels = [...document.querySelectorAll('.rcopchk:checked')].map(c => parseInt(c.dataset.rel, 10)).filter(Boolean);
+    if (!rels.length) { alert('No hay copias marcadas.'); return; }
+    if (!confirm('¿Quitar ' + rels.length + ' copia(s) de la biblioteca? No se borra nada del disco; podrás restaurarlas desde «Copias quitadas».')) return;
+    const b = e.target; b.disabled = true; b.textContent = 'Quitando…';
+    try {
+      const r = await fetch('/api/album/drop-copies-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rels }) }).then(x => x.json());
+      if (r.ok) { loadRedundantCopies(); loadRemovedCopies(); alert('Quitadas ' + r.dropped + ' copia(s)' + (r.skipped && r.skipped.length ? ' (' + r.skipped.length + ' omitidas)' : '') + '. Restaurables desde «Copias quitadas».'); }
+      else alert('No se pudo: ' + (r.error || ''));
+    } catch (e2) { alert('No se pudo contactar con el servidor.'); }
+    b.disabled = false; b.textContent = 'Quitar seleccionadas';
+  });
+  // Copias quitadas: gestor para restaurarlas (una o todas).
+  function loadRemovedCopies() {
+    const cnt = document.getElementById('rcopremcount'), box = document.getElementById('rcopremlist'), btn = document.getElementById('rcoprestoreall'); if (!box) return;
+    fetch('/api/ignored-dirs').then(r => r.json()).then(j => {
+      const items = (j && j.items) || []; cnt.textContent = items.length ? '(' + items.length + ')' : '';
+      if (btn) btn.style.display = items.length ? '' : 'none';
+      if (!items.length) { box.innerHTML = '<span style="color:var(--text-2)">Ninguna.</span>'; return; }
+      box.innerHTML = items.map(it => {
+        const label = (it.real_dir || it.dir || '').split(/[\\/]/).filter(Boolean).pop() || it.dir;
+        return `<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid var(--border)"><span style="flex:1;min-width:0;word-break:break-all">${esc(label)}${it.title ? ` <span style="color:var(--muted)">· ${esc(it.title)}</span>` : ''}</span><button class="rcoprestore" data-dir="${esc(it.dir)}" style="flex:none">Restaurar</button></div>`;
+      }).join('');
+    }).catch(() => { box.textContent = 'No se pudo cargar.'; });
+  }
+  loadRemovedCopies();
+  document.getElementById('rcopremlist').addEventListener('click', async e => {
+    const b = e.target.closest('.rcoprestore'); if (!b) return;
+    b.disabled = true; b.textContent = '…';
+    try {
+      const r = await fetch('/api/album/restore-copy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dir: b.dataset.dir }) }).then(x => x.json());
+      if (r.ok) { loadRemovedCopies(); loadRedundantCopies(); } else { b.disabled = false; b.textContent = 'Restaurar'; alert('No se pudo: ' + (r.error || '')); }
+    } catch (e2) { b.disabled = false; b.textContent = 'Restaurar'; alert('No se pudo contactar con el servidor.'); }
+  });
+  document.getElementById('rcoprestoreall').addEventListener('click', async e => {
+    if (!confirm('¿Restaurar todas las copias quitadas? Reaparecerán en el próximo escaneo.')) return;
+    const b = e.target; b.disabled = true; b.textContent = 'Restaurando…';
+    try {
+      const r = await fetch('/api/library/restore-all-copies', { method: 'POST' }).then(x => x.json());
+      if (r.ok) { loadRemovedCopies(); loadRedundantCopies(); } else alert('No se pudo: ' + (r.error || ''));
+    } catch (e2) { alert('No se pudo contactar con el servidor.'); }
+    b.disabled = false; b.textContent = 'Restaurar todas';
   });
   // Otras pantallas (Modelo A): direcciones LAN/Tailscale por las que abrir esta instancia desde otro dispositivo.
   function loadNet() {
