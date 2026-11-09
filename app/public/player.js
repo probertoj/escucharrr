@@ -1028,7 +1028,10 @@ window.player = (function () {
   const repeatTitle = () => 'Repetir: ' + (repeat === 'all' ? 'toda la cola' : repeat === 'one' ? 'una pista' : 'desactivado') + ' (⇧R)';
   // Tope de volumen (soft limit): dB máx del fader (0 = sin límite). Recorta el volumen actual si supera el tope.
   function setVolLimit(db) { db = db >= 0 ? 0 : Math.max(VOL_FLOOR_DB + 1, db); volLimitDb = db; try { localStorage.setItem('escucharrr.vollimit', String(db)); } catch (e) {} setVol(vol); }
-  function playTracks(tracks, i) { if (!tracks || !tracks.length) return; q = tracks; if (shuffle && tracks.length > 2) { fyShuffle(q, 0); i = 0; } start(i || 0); }
+  // Reproduce una lista empezando SIEMPRE por la pista pedida (p. ej. «Reproducir» de un álbum/disco = su 1ª
+  // canción). Con aleatorio activo se baraja solo lo que VIENE DESPUÉS (no se reinicia a una pista al azar),
+  // así pulsar play en la ficha del disco arranca por la primera y el resto suena en aleatorio.
+  function playTracks(tracks, i) { if (!tracks || !tracks.length) return; q = tracks; i = i || 0; if (shuffle && tracks.length > 2) fyShuffle(q, i + 1); start(i); }
   function playAlbum(id, i, rel) { fetch('/api/album?id=' + id + (rel ? '&rel=' + rel : '')).then(r => r.json()).then(a => { const tr = (a.tracks || []).map(t => ({ trackId: t.trackId, recording_id: t.recording_id, title: t.title, artist: a.artist, album: a.title || a.name || '', albumId: a.id, length_ms: t.length_ms, playable: t.playable !== 0, gain_db: t.gain_db, peak_dbfs: t.peak_dbfs, album_gain_db: t.album_gain_db, album_peak_dbfs: t.album_peak_dbfs })); if (!tr.length) { alert('Este álbum aún no tiene pistas en tu biblioteca.'); return; } playTracks(tr, i || 0); }); }
 
   // ── RADIO POR INTERNET: stream en vivo (sin cola/seek/duración), título "ahora suena" por ICY ──
