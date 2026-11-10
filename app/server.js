@@ -2868,7 +2868,15 @@ function _spawnIngest(args, meta) {
       }
     });
     p.stderr.on('data', d => o += d);
-    p.on('close', () => { if (buf) o += buf; r(o.trim().split('\n').pop() || ''); });
+    // Si el proceso acaba mal, la última línea de la salida es la versión de Node («Node.js v24…»), no el error:
+    // se devuelve la línea del error para que el registro diga qué pasó (antes un fallo quedaba irreconocible).
+    p.on('close', (code) => {
+      if (buf) o += buf;
+      const lines = o.trim().split('\n').map(l => l.trim()).filter(Boolean);
+      let last = lines[lines.length - 1] || '';
+      if (code) { const err = lines.slice().reverse().find(l => /^\w*Error\b/.test(l)); last = 'FALLO (salida ' + code + '): ' + (err || last || 'sin salida'); }
+      r(last);
+    });
   });
 }
 const _reanalyzing = new Set();   // release_group_ids con un reanálisis (loudness + waveform) en curso

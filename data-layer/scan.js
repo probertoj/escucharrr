@@ -36,8 +36,13 @@ function emitScan(o, force) {
 }
 
 const db = new DatabaseSync(DB_PATH);
+// Espera en vez de fallar si el servidor u otra herramienta está escribiendo justo ahora (antes del esquema,
+// que ya escribe; migrate() la baja a 5 s, así que se repite después).
+const _busy = () => { try { db.exec('PRAGMA busy_timeout=30000'); } catch (e) {} };
+_busy();
 db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
 require('./migrate').migrate(db);              // columnas isrc/acoustid/fingerprint si faltan
+_busy();
 // Registro de ficheros/carpetas saltados (errores de lectura, p. ej. SMB del NAS) para mostrarlo en Ajustes.
 db.exec(`CREATE TABLE IF NOT EXISTS skipped_file (path TEXT, reason TEXT, at TEXT DEFAULT (datetime('now')))`);
 db.exec('DELETE FROM skipped_file');
@@ -418,9 +423,19 @@ let ok = 0, ident = 0, moved = 0, normed = 0, cased = 0;
 const movePairs = [];   // {old, neu}: por cada fichero movido a OTRO release_group, para re-anclar ediciones tras el escaneo
 const _total = files.length;
 emitScan({ phase: 'escaneando', scanned: 0, total: _total, identified: 0 }, true);
-db.exec('BEGIN');
+// La escritura va por TANDAS cortas, no en una sola transacción: con una sola, la BD quedaba bloqueada para
+// escribir durante todo el escaneo (casi una hora en el NAS) y fallaba con «database is locked» todo lo demás:
+// la sincronización de una nota de Obsidian recién guardada, una valoración, el historial de escucha. Entre
+// tanda y tanda se suelta el bloqueo un instante (YIELD_MS > los 100 ms que tarda en reintentar quien espera).
+// BEGIN IMMEDIATE: se pide el bloqueo al empezar, donde sí se espera; con BEGIN a secas, si otro escribe entre
+// la primera lectura y la primera escritura de la tanda, SQLite falla sin esperar.
+const BATCH_MS = parseInt(arg('batch-ms', '3000'), 10) || 3000;
+const YIELD_MS = parseInt(arg('yield-ms', '110'), 10) || 110;
+let _batchAt = Date.now();
+db.exec('BEGIN IMMEDIATE');
 try {
   for (const file of files) {
+   if (Date.now() - _batchAt >= BATCH_MS) { db.exec('COMMIT'); sleepSync(YIELD_MS); db.exec('BEGIN IMMEDIATE'); _batchAt = Date.now(); }
    try {
     const ext = path.extname(file).slice(1).toLowerCase();
     const parseOne = () => ext === 'flac' ? readFlac(file) : ext === 'dsf' ? readDsf(file) : ext === 'dff' ? readDff(file)
@@ -517,7 +532,7 @@ try {
    }
   }
   db.exec('COMMIT');
-} catch (e) { db.exec('ROLLBACK'); throw e; }
+} catch (e) { try { db.exec('ROLLBACK'); } catch (_) {} throw e; }
 
 // Re-anclaje de ediciones tras mover/renombrar carpetas (el bug «la principal» de Serge). Si al reescanear los
 // ficheros de un álbum se reanclan a OTRO release_group —porque su carpeta/identidad cambió y el grupo se

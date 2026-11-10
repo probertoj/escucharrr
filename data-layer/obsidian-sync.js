@@ -17,6 +17,9 @@ const PRUNE = !process.argv.includes('--no-prune');   // poda notas ausentes + G
 
 const cfg = JSON.parse(fs.readFileSync(CFG_PATH, 'utf8'));
 const db = new DatabaseSync(DB_PATH);
+// Espera en vez de fallar con «database is locked» si el escáner (u otra herramienta) está escribiendo: el
+// escáner suelta el bloqueo cada pocos segundos. Sin esto, guardar una nota durante un reescaneo no llegaba.
+try { db.exec('PRAGMA busy_timeout=20000'); } catch (e) {}
 db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
 
 // ── frontmatter (YAML plano: key: value, y listas inline [a, b]) ──────────────
@@ -168,7 +171,7 @@ if (ONLY) { const base = path.basename(String(ONLY)); files = fs.existsSync(path
 else { try { files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.md')); } catch (e) { console.error('  no se puede leer la carpeta del vault:', dir, '(' + (e.code || e.message) + '); 0 notas'); } }
 let n = 0, skipped = 0;
 const idx = buildAlbumIndex();
-db.exec('BEGIN');
+db.exec('BEGIN IMMEDIATE');
 try {
   for (const file of files) {
     const abs = path.join(dir, file);
@@ -228,7 +231,7 @@ if (biosOn) {
   let bioFiles = [];
   if (ONLY) { const base = path.basename(String(ONLY)); bioFiles = fs.existsSync(path.join(biosDir, base)) ? [base] : []; }
   else { try { bioFiles = fs.readdirSync(biosDir).filter(f => f.toLowerCase().endsWith('.md')); } catch (e) {} }
-  db.exec('BEGIN');
+  db.exec('BEGIN IMMEDIATE');
   try {
     for (const file of bioFiles) {
       const abs = path.join(biosDir, file);
@@ -283,7 +286,7 @@ if (PRUNE && (albumOn || biosOn)) {
   const delProv = db.prepare('DELETE FROM provenance WHERE subject_type=? AND subject_id=? AND field=?');
   const delNote = db.prepare('DELETE FROM obsidian_note WHERE id=?');   // CASCADE → obsidian_link
   let gone = 0;
-  db.exec('BEGIN');
+  db.exec('BEGIN IMMEDIATE');
   try {
     const notesToCheck = ONLY
       ? db.prepare('SELECT id, path FROM obsidian_note WHERE path LIKE ?').all('%' + path.basename(String(ONLY)))
