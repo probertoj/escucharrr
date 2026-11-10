@@ -3679,6 +3679,8 @@ function _dropCopyCore(rel) {
   const medIds = db.prepare('SELECT id FROM medium WHERE release_id=?').all(rel).map(r => r.id);
   if (trackIds.length) {
     const ph = trackIds.map(() => '?').join(',');
+    // el historial se conserva desvinculado del fichero (si no, la clave foránea play.local_file_id impide quitar una copia ya escuchada)
+    db.prepare(`UPDATE play SET local_file_id=NULL WHERE local_file_id IN (SELECT id FROM local_file WHERE track_id IN (${ph}))`).run(...trackIds);
     db.prepare(`DELETE FROM local_file WHERE track_id IN (${ph})`).run(...trackIds);
     db.prepare(`UPDATE play SET track_id=NULL WHERE track_id IN (${ph})`).run(...trackIds);
     db.prepare(`UPDATE playlist_item SET track_id=NULL WHERE track_id IN (${ph})`).run(...trackIds);

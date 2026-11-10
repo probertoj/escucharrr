@@ -36,6 +36,9 @@ function pruneMissingFiles(db, roots, log, opts) {
     if (opts.mountHealthy === false) { if (log) log('poda: OMITIDA (montaje no sano)'); return 0; }
     const thr = opts.missThreshold || 2;
     const del = db.prepare('DELETE FROM local_file WHERE id=?');
+    // El historial se conserva: se desvincula del fichero antes de borrarlo. Sin esto, la clave foránea
+    // play.local_file_id hacía fallar el borrado de un fichero ya escuchado y abortaba toda la poda.
+    const unplay = db.prepare('UPDATE play SET local_file_id=NULL WHERE local_file_id=?');
     const tomb = db.prepare("UPDATE local_file SET missing_since=COALESCE(missing_since, datetime('now')), missing_count=COALESCE(missing_count,0)+1 WHERE id=?");
     let removed = 0, tombed = 0, unreadable = 0;
     db.exec('BEGIN');
@@ -45,7 +48,7 @@ function pruneMissingFiles(db, roots, log, opts) {
         if (opts.seenPaths.has(nf(row.path))) continue;                  // visto en disco → presente (el upsert ya limpió la lápida)
         if (!opts.okDirs.has(nf(path.dirname(row.path)))) { unreadable++; continue; }  // carpeta no leída este escaneo → no confirmar ausencia
         // carpeta leída OK y fichero no visto → genuinamente ausente: lápida, y retira al llegar al umbral
-        if ((row.missing_count || 0) + 1 >= thr) { del.run(row.id); removed++; }
+        if ((row.missing_count || 0) + 1 >= thr) { unplay.run(row.id); del.run(row.id); removed++; }
         else { tomb.run(row.id); tombed++; }
       }
       db.exec('COMMIT');
@@ -57,6 +60,7 @@ function pruneMissingFiles(db, roots, log, opts) {
   }
   // ── Camino de compatibilidad (sin opts): confirma por listado de carpeta con reintentos. ──
   const del = db.prepare('DELETE FROM local_file WHERE id=?');
+  const unplay = db.prepare('UPDATE play SET local_file_id=NULL WHERE local_file_id=?');
   const dirCache = new Map();
   function sleepSync(ms) { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch (e) {} }
   function listing(dir) {
@@ -77,7 +81,7 @@ function pruneMissingFiles(db, roots, log, opts) {
       if (!live.some(r => isUnder(row.path, r))) continue;      // fichero de otra raíz no vigilada ahora
       const names = listing(path.dirname(row.path));
       if (names === null) { kept++; continue; }                 // carpeta ilegible: no se confirma ausencia
-      if (!names.has(path.basename(row.path).toLowerCase())) { del.run(row.id); n++; }
+      if (!names.has(path.basename(row.path).toLowerCase())) { unplay.run(row.id); del.run(row.id); n++; }
     }
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }

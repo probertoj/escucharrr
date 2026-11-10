@@ -282,6 +282,10 @@ function statRetry(file, tries = 4) {   // stat de un fichero de red con reinten
 // okDirs y su ruta NO está en seenPaths — así un fallo de lectura (SMB) nunca marca nada ausente.
 const okDirs = new Set();
 const seenPaths = new Set();
+// seenExact: las mismas rutas pero TAL CUAL salen del listado (con sus mayúsculas reales). Windows/SMB abre
+// «Black Midi\x.flac» aunque en disco solo exista «black midi\x.flac», así que seenPaths (en minúsculas) no
+// distingue una fila con la capitalización vieja de la que de verdad está en disco. Ver reconcileCase().
+const seenExact = new Set();
 const AUDIO_RE = /\.(flac|wav|dsf|dff|mp3|m4a|aac|aiff|aif|ogg|oga|opus)$/i;   // sin pérdida + MP3/M4A/AAC/AIFF/OGG/Opus
 // Extensiones que SON audio pero que aún no sabemos leer: se registran como "formato no soportado" para que el
 // usuario vea que esos ficheros existen pero no entraron (como "Skipped Files" de Roon), en vez de ignorarlos en
@@ -311,7 +315,7 @@ function walk(dir, out) {
     const f = path.join(dir, e.name);
     let isDir = false; try { isDir = e.isDirectory(); } catch (x) {}
     if (isDir) { if (ignoredDirs.has(nrm(f))) continue; walk(f, out); }   // copia quitada por el usuario → no re-añadir (disco intacto)
-    else if (AUDIO_RE.test(e.name)) { out.push(f); seenPaths.add(nrm(f)); emitScan({ phase: 'descubriendo', found: out.length }); }
+    else if (AUDIO_RE.test(e.name)) { out.push(f); seenPaths.add(nrm(f)); seenExact.add(f); emitScan({ phase: 'descubriendo', found: out.length }); }
     else { const m = e.name.match(UNSUPPORTED_AUDIO_RE); if (m && !skippedUnsup.has(nrm(f))) { skippedUnsup.add(nrm(f)); try { insSkip.run(f, 'formato no soportado (.' + m[1].toLowerCase() + ')'); } catch (x) {} } }
   }
 }
@@ -335,6 +339,53 @@ if (deferredDirs.length) {
 const mountHealthy = okDirs.has(nrm(ROOT)) && seenPaths.size > 0;
 if (!mountHealthy) console.warn('  [montaje] raíz no enumerada o sin ficheros: se OMITE toda poda (posible red/volumen caído)');
 
+// Filas «con otra capitalización»: su ruta EXACTA ya no sale en ningún listado, pero la misma ruta sin distinguir
+// mayúsculas sí (se renombró «Black Midi» → «black midi», o se fusionaron en el NAS dos carpetas que solo se
+// diferenciaban en eso). Como Windows/SMB sigue abriendo la ruta vieja, ni la poda las ve ausentes ni el
+// movimiento por identidad las ve «idas»: sin esto se quedan para siempre como pistas y álbumes duplicados.
+// Se resuelven al procesar el fichero real (reconcileCase). Con dos variantes AÚN presentes en disco ambas salen
+// en el listado, así que aquí no entra ninguna. Solo con el montaje sano.
+const caseStale = new Map();   // nrm(ruta) -> [{id, path}]
+if (mountHealthy) {
+  for (const r of db.prepare('SELECT id, path FROM local_file').all()) {
+    if (seenExact.has(r.path)) continue;
+    const k = nrm(r.path);
+    if (!seenPaths.has(k)) continue;
+    const a = caseStale.get(k); if (a) a.push(r); else caseStale.set(k, [r]);
+  }
+}
+const _AN_COLS = ['loudness_lufs', 'gain_db', 'peak_dbfs', 'album_gain_db', 'album_peak_dbfs', 'peaks'];
+const _caseS = {
+  analysis: db.prepare('SELECT size_bytes, ' + _AN_COLS.join(', ') + ' FROM local_file WHERE id=?'),
+  inherit: db.prepare('UPDATE local_file SET ' + _AN_COLS.map(c => c + '=COALESCE(' + c + ', ?)').join(', ') + ' WHERE id=?'),
+  clear: db.prepare('UPDATE local_file SET ' + _AN_COLS.map(c => c + '=NULL').join(', ') + ' WHERE id=?'),
+  repointPlay: db.prepare('UPDATE play SET local_file_id=? WHERE local_file_id=?'),
+  del: db.prepare('DELETE FROM local_file WHERE id=?'),
+};
+// `file` es la ruta real (del listado) y `stale` las filas de esa misma ruta con otra capitalización.
+//  - Si aún no hay fila con la ruta exacta, la primera fila vieja se RENOMBRA (conserva id, historial y match).
+//  - Si ya la hay (la insertó un escaneo anterior), la vieja sobra: su historial pasa a la buena y se borra.
+// El análisis de audio (loudness/onda) solo se hereda o se conserva si el tamaño coincide: tras una fusión la
+// fila vieja puede ser de OTRO fichero (otra copia del disco) que ya no está.
+// Devuelve {type:'case', oldRgs}: los release_group de las filas viejas, capturados antes de que el upsert
+// reasigne la pista, para re-anclar las ediciones del usuario si el grupo viejo se queda sin ficheros.
+function reconcileCase(file, size, stale) {
+  const exact = S.fileByPath.get(file);
+  let keep = exact ? exact.id : null;
+  const oldRgs = [];
+  for (const r of stale) {
+    const rg = (S.rgByFileId.get(r.id) || {}).rg || null; if (rg) oldRgs.push(rg);
+    const an = _caseS.analysis.get(r.id) || {};
+    const same = size != null && an.size_bytes === size;
+    if (keep == null) { S.renamePath.run(file, r.id); keep = r.id; if (!same) _caseS.clear.run(r.id); }
+    else {
+      if (same) _caseS.inherit.run(..._AN_COLS.map(c => an[c] == null ? null : an[c]), keep);
+      _caseS.repointPlay.run(keep, r.id); _caseS.del.run(r.id);
+    }
+  }
+  return { type: 'case', oldRgs };
+}
+
 // Reconciliación de movimientos/renombrados (modelo Roon: rebind por identidad, no borrar+recrear).
 // Si una ruta es "nueva" pero corresponde a un fichero que ya teníamos (misma forma NFC/NFD, o misma
 // huella/ISRC+tamaño/tamaño+duración y su ruta antigua ya no está), renombramos la fila existente en
@@ -345,10 +396,14 @@ if (!mountHealthy) console.warn('  [montaje] raíz no enumerada o sin ficheros: 
 // capturado ANTES de que el upsert posterior le sobrescriba el track_id al grupo nuevo → permite re-anclar
 // las ediciones del grupo viejo al nuevo tras el escaneo).
 function reconcileMove(file, size, durMs, isrc, fp) {
+  const k = nrm(file), stale = caseStale.get(k);
+  if (stale) { caseStale.delete(k); return reconcileCase(file, size, stale); }   // 0) misma ruta salvo mayúsculas
   if (S.fileByPath.get(file)) return null;                 // ya existe por ruta exacta → upsert normal
   try {                                                     // 1) misma ruta salvo normalización Unicode (carpetas acentuadas)
     const nfc = file.normalize('NFC'), nfd = file.normalize('NFD');
-    if (nfc !== file || nfd !== file) { const r = S.fileByNorm.get(nfc, nfd); if (r && r.path !== file) { S.renamePath.run(file, r.id); return { type: 'norm' }; } }
+    // Solo si la otra forma YA NO está en disco: en un NAS pueden convivir «Odé.flac» en NFC y en NFD como dos
+    // ficheros distintos, y renombrar la fila de uno al otro en cada escaneo dejaba siempre a uno sin fila.
+    if (nfc !== file || nfd !== file) { const r = S.fileByNorm.all(nfc, nfd).find(x => x.path !== file && !seenExact.has(x.path)); if (r) { S.renamePath.run(file, r.id); return { type: 'norm' }; } }
   } catch (e) {}
   const gone = (p) => !seenPaths.has(nrm(p));               // la ruta antigua no se ha visto en este escaneo
   const uniqueGone = (rows) => { const c = rows.filter(r => gone(r.path) && nrm(r.path) !== nrm(file)); return c.length === 1 ? c[0] : null; };
@@ -359,7 +414,7 @@ function reconcileMove(file, size, durMs, isrc, fp) {
   return null;
 }
 
-let ok = 0, ident = 0, moved = 0, normed = 0;
+let ok = 0, ident = 0, moved = 0, normed = 0, cased = 0;
 const movePairs = [];   // {old, neu}: por cada fichero movido a OTRO release_group, para re-anclar ediciones tras el escaneo
 const _total = files.length;
 emitScan({ phase: 'escaneando', scanned: 0, total: _total, identified: 0 }, true);
@@ -452,6 +507,7 @@ try {
     if (rec) {
       if (rec.type === 'move') { moved++; if (rec.oldRg && newRg && rec.oldRg !== newRg) movePairs.push({ old: rec.oldRg, neu: newRg }); }
       else if (rec.type === 'norm') normed++;
+      else if (rec.type === 'case') { cased++; for (const o of rec.oldRgs) if (newRg && o !== newRg) movePairs.push({ old: o, neu: newRg }); }
     }
     S.insFile.run(file, fmtLabel, inf.sampleRate, inf.bits, inf.channels, inf.durationMs, st.size, String(st.mtimeMs), isrc, acoustid, fingerprint, trackId, recId, matchBy, matchConf, SCAN_SEQ);
     ok++;
@@ -534,7 +590,7 @@ const nMb = db.prepare("SELECT COUNT(*) n FROM local_file WHERE match_by='mb-tag
 const nFp = db.prepare('SELECT COUNT(*) n FROM local_file WHERE fingerprint IS NOT NULL').get().n;
 console.log(`Escaneados ${ok} ficheros (${ident} identificados por tags) -> ${DB_PATH}`);
 console.log(`  identificadores embebidos: ${nMb} con MBID · ${nIsrc} con ISRC · ${nFp} con huella Chromaprint`);
-if (moved || normed) console.log(`  reconciliados por identidad: ${moved} movimiento(s)/renombrado(s) · ${normed} por normalización Unicode (sin borrar+recrear)`);
+if (moved || normed || cased) console.log(`  reconciliados por identidad: ${moved} movimiento(s)/renombrado(s) · ${normed} por normalización Unicode · ${cased} por cambio de mayúsculas (sin borrar+recrear)`);
 
 if (DEMO) {
   const show = (l, rows) => { console.log('\n== ' + l + ' =='); rows.forEach(r => console.log('  ' + Object.values(r).join('  |  '))); };
