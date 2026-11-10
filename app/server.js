@@ -2735,7 +2735,7 @@ let _watchers = [];
 // ── vigilado por SONDEO para carpetas de red (SMB/UNC): fs.watch recursivo no va en
 // shares de red en Windows, así que esas carpetas se sondean por firma de cambios. ──
 const POLLSIG = require('../data-layer/pollsig');
-let _pollRoots = new Map();   // root -> { sig: última firma COMPLETA, last: {at, ms, dirs, files, complete} }
+let _pollRoots = new Map();   // root -> { sig: última firma válida, last: {at, ms, dirs, files, complete…}, quarantine: Map(nrm(dir) → {dir, code, at}), collisions: [...] }
 let _pollTimer = null, _polling = false, _pollNextAt = 0, _pollIncompleteLogAt = 0;
 const POLL_MS = 30000;                       // pausa MÍNIMA entre pasadas
 const POLL_DUTY = 2;                         // pausa ≥ POLL_DUTY × duración de la pasada anterior → el NAS descansa ≥ 2/3 del tiempo
@@ -2745,12 +2745,19 @@ function isUnc(p) { return /^\\\\/.test(String(p)) || /^\/\//.test(String(p)); }
 // La firma anterior (Σmtime+Σtamaño) hacía un stat por cada audio: ~280.000 round-trips SMB por pasada cada
 // 30 s, que es justo la carga sostenida que tumba el NAS. Ahora una pasada = un readdir por carpeta (~10×
 // menos operaciones) y las carpetas de copias quitadas (ignored_dir) quedan fuera, igual que en el escáner.
-// Completitud: si algún readdir falla, sig=null → «no concluyente» (ni baseline ni disparo), porque una lectura
-// parcial sería un subconjunto distinto cada vez y daría falsos «cambios» en bucle.
-function _pollIgnoreSet() { try { return new Set(db.prepare('SELECT dir FROM ignored_dir').all().map(r => r.dir)); } catch (e) { return null; } }
-async function pollSignatureAsync(root) { return POLLSIG.dirSignature(root, { ignore: _pollIgnoreSet(), nrm: POLLSIG.nrm }); }
+// Carpetas ilegibles: una pasada con readdir fallidos NUEVOS es «no concluyente» (ni baseline ni disparo), porque una
+// lectura parcial sería un subconjunto distinto cada vez y daría falsos «cambios» en bucle. Esas carpetas pasan a
+// CUARENTENA (st.quarantine): en adelante no se desciende a ellas (su nombre sigue contando en la carpeta madre), así
+// que una carpeta que flaquea en el NAS no mueve la firma, y arreglarla de verdad (renombrar/fusionar) sí. Es lo que
+// pasa con las colisiones de mayúsculas de un NAS Linux (`AIR` y `Air` juntas): Windows resuelve a una y la otra da ENOENT.
+function _pollIgnoreSet(st) {
+  let ign = new Set(); try { for (const r of db.prepare('SELECT dir FROM ignored_dir').all()) ign.add(r.dir); } catch (e) {}
+  if (st && st.quarantine) for (const k of st.quarantine.keys()) ign.add(k);
+  return ign;
+}
+async function pollSignatureAsync(root, st) { return POLLSIG.dirSignature(root, { ignore: _pollIgnoreSet(st), nrm: POLLSIG.nrm }); }
 function addPoll(root) {   // registra una carpeta para sondeo; el baseline se fija en el 1er tick (no bloquea el arranque)
-  if (!_pollRoots.has(root)) { _pollRoots.set(root, { sig: null, last: null }); console.log('biblioteca en vivo: sondeando (red) ' + root); }
+  if (!_pollRoots.has(root)) { _pollRoots.set(root, { sig: null, last: null, quarantine: new Map(), collisions: [] }); console.log('biblioteca en vivo: sondeando (red) ' + root); }
   startPolling();
 }
 function _pollSchedule(ms) { clearTimeout(_pollTimer); _pollNextAt = Date.now() + ms; _pollTimer = setTimeout(_pollTick, ms); if (_pollTimer.unref) _pollTimer.unref(); }
@@ -2765,27 +2772,25 @@ async function _pollTick() {
   try {
     for (const [root, st] of _pollRoots) {
       if (!fs.existsSync(root)) continue;
-      let r; try { r = await pollSignatureAsync(root); } catch (e) { continue; }
+      let r; try { r = await pollSignatureAsync(root, st); } catch (e) { continue; }
       slowest = Math.max(slowest, r.ms);
-      st.last = { at: Date.now(), ms: r.ms, dirs: r.dirs, files: r.files, complete: r.complete, failed: r.failedCount, collisions: r.collisionCount, stableFailed: false,
-                  failedSample: r.failed.slice(0, 5).map(f => f.dir + ' (' + f.code + ')'), collisionSample: r.collisions.slice(0, 5) };
-      if (r.collisionCount && !st.loggedCollisions) { st.loggedCollisions = true; console.log('  [poll] aviso:', r.collisionCount, 'nombre(s) que solo difieren en mayúsculas dentro de la misma carpeta en', root, '(el NAS distingue mayúsculas; Windows solo ve uno y el otro queda ilegible), p. ej.', r.collisions[0]); }
+      // Las carpetas ilegibles de esta pasada entran en cuarentena (no se vuelve a descender a ellas en esta sesión).
+      const now = Date.now();
+      for (const f of r.failed) { const k = POLLSIG.nrm(f.dir); if (!st.quarantine.has(k)) st.quarantine.set(k, { dir: f.dir, code: f.code, at: now }); }
+      st.collisions = r.collisions;   // lista completa de la última pasada (GET /api/library/case-collisions)
+      const qs = [...st.quarantine.values()];
+      st.last = { at: now, ms: r.ms, dirs: r.dirs, files: r.files, complete: r.complete, failed: r.failedCount, quarantined: st.quarantine.size, collisions: r.collisionCount,
+                  failedSample: qs.slice(0, 5).map(f => f.dir + ' (' + f.code + ')'), collisionSample: r.collisions.slice(0, 5).map(POLLSIG.collisionText) };
+      if (r.collisionCount && !st.loggedCollisions) { st.loggedCollisions = true; console.log('  [poll] aviso:', r.collisionCount, 'grupo(s) de nombres que solo difieren en mayúsculas dentro de la misma carpeta en', root, '(el NAS distingue mayúsculas; Windows solo ve uno y el otro queda ilegible), p. ej.', POLLSIG.collisionText(r.collisions[0]), '— lista completa en Ajustes → Biblioteca'); }
       if (r.sig == null) continue;   // pasada abortada
       if (!r.complete) {
-        // Carpetas ilegibles. ¿Flaqueo del NAS o fallo PERSISTENTE (permisos, colisión de mayúsculas)? Si el conjunto de
-        // fallos es el MISMO que en la pasada anterior, es determinista → la firma vale (los fallos van dentro como tokens,
-        // así que arreglar la carpeta también cuenta como cambio). Si cambia de pasada a pasada → no concluyente.
-        if (st.failedKey && r.failedKey === st.failedKey) {
-          st.last.stableFailed = true;
-          if (!st.loggedStable) { st.loggedStable = true; console.log('  [poll]', r.failedCount, 'carpeta(s) ilegible(s) PERSISTENTE(S) en', root, '(p. ej. ' + r.failed[0].dir + ' ' + r.failed[0].code + '): se incorporan a la firma y el sondeo sigue'); }
-        } else {
-          st.failedKey = r.failedKey;
-          if (Date.now() - _pollIncompleteLogAt > 10 * 60 * 1000) { _pollIncompleteLogAt = Date.now(); console.log('  [poll] pasada incompleta en', root, '(' + r.failedCount + ' carpeta(s) ilegible(s), p. ej. ' + r.failed[0].dir + ' ' + r.failed[0].code + '); no concluyente hasta que el fallo se repita igual'); }
-          continue;
-        }
-      } else { st.failedKey = null; st.loggedStable = false; }
+        // Hubo carpetas ilegibles NUEVAS → esta pasada no es concluyente (ni baseline ni disparo). Ya están en cuarentena:
+        // la siguiente pasada no entra en ellas y, si no aparecen otras, será completa y determinista.
+        if (Date.now() - _pollIncompleteLogAt > 10 * 60 * 1000) { _pollIncompleteLogAt = Date.now(); console.log('  [poll] pasada incompleta en', root, '(' + r.failedCount + ' carpeta(s) ilegible(s) nueva(s), p. ej. ' + r.failed[0].dir + ' ' + r.failed[0].code + '): quedan en cuarentena (' + st.quarantine.size + ' en total) y se repite la pasada'); }
+        continue;
+      }
       const prev = st.sig; st.sig = r.sig;
-      if (prev == null) { console.log('  [poll] baseline', root + ':', r.dirs.toLocaleString('es-ES'), 'carpetas,', r.files.toLocaleString('es-ES'), 'audios en', (r.ms / 1000).toFixed(1), 's'); continue; }   // fijar baseline sin disparar
+      if (prev == null) { console.log('  [poll] baseline', root + ':', r.dirs.toLocaleString('es-ES'), 'carpetas,', r.files.toLocaleString('es-ES'), 'audios en', (r.ms / 1000).toFixed(1), 's' + (st.quarantine.size ? ' (' + st.quarantine.size + ' carpeta(s) ilegible(s) en cuarentena, fuera de la firma)' : '')); continue; }   // fijar baseline sin disparar
       if (r.sig !== prev) { console.log('  [poll] cambio detectado en', root, '(pasada de ' + (r.ms / 1000).toFixed(1) + ' s)'); _ingSchedule('music'); }
     }
   } finally { _polling = false; }
@@ -2794,6 +2799,32 @@ async function _pollTick() {
 function stopPolling() { clearTimeout(_pollTimer); _pollTimer = null; _polling = false; _pollRoots.clear(); }
 function pollStatus() {   // para Ajustes→Biblioteca: qué se sondea, cuánto tarda y cuándo toca
   return { roots: [..._pollRoots].map(([root, st]) => ({ root, baseline: st.sig != null, ...(st.last || {}) })), polling: _polling, nextInMs: _pollTimer ? Math.max(0, _pollNextAt - Date.now()) : null, minPauseMs: POLL_MS };
+}
+// Lista COMPLETA de la salud de las carpetas de red según la última pasada del sondeo: grupos de nombres que solo
+// difieren en mayúsculas (con cuál de ellos es ilegible desde Windows) y carpetas ilegibles en cuarentena.
+// JSON para Ajustes; ?format=txt para descargarla y arreglar las carpetas en el NAS.
+function pollHealth() {
+  return [..._pollRoots].map(([root, st]) => {
+    const q = st.quarantine || new Map();
+    const collisions = (st.collisions || []).map(c => ({ dir: c.dir, names: c.names.map(n => { const p = path.join(c.dir, n.name); const f = n.isDir ? q.get(POLLSIG.nrm(p)) : null; return { name: n.name, isDir: n.isDir, unreadable: !!f, code: f ? f.code : null }; }) }));
+    const explained = new Set(); for (const c of collisions) for (const n of c.names) if (n.unreadable) explained.add(POLLSIG.nrm(path.join(c.dir, n.name)));
+    const unreadable = [...q.values()].map(f => ({ dir: f.dir, code: f.code, collision: explained.has(POLLSIG.nrm(f.dir)) }));
+    return { root, at: st.last ? st.last.at : null, collisions, unreadable };
+  });
+}
+function pollHealthText(roots) {
+  const L = [];
+  for (const r of roots) {
+    L.push('Salud de la carpeta de red ' + r.root + (r.at ? ' (pasada del ' + new Date(r.at).toLocaleString('es-ES') + ')' : ''), '');
+    L.push('== ' + r.collisions.length + ' grupo(s) de nombres que solo difieren en mayúsculas ==');
+    L.push('El NAS (Linux) los distingue; desde Windows solo se ve uno de cada grupo y el resto da ENOENT. Fusiona cada grupo en una sola carpeta/fichero.', '');
+    for (const c of r.collisions) { L.push(c.dir); for (const n of c.names) L.push('    ' + n.name + (n.isDir ? '\\' : '') + (n.unreadable ? '    [ilegible desde Windows: ' + n.code + ']' : '')); }
+    const other = r.unreadable.filter(u => !u.collision);
+    L.push('', '== ' + r.unreadable.length + ' carpeta(s) ilegible(s) en cuarentena (' + (r.unreadable.length - other.length) + ' explicadas por las colisiones de arriba) ==', '');
+    for (const u of r.unreadable) L.push(u.dir + '    ' + u.code + (u.collision ? '' : '    [sin colisión: revisar permisos o subcarpetas]'));
+    L.push('');
+  }
+  return L.join('\r\n');
 }
 // lee app/watch.json + resuelve el config de Obsidian (vault/albumsFolder)
 function watchConfig() {
@@ -4170,6 +4201,14 @@ http.createServer((req, res) => {
     } catch (e) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: e.message })); }
   })();
   // Lista de copias quitadas (para Ajustes y para restaurarlas).
+  if (req.method === 'GET' && u.pathname === '/api/library/case-collisions') return void (() => {
+    const roots = pollHealth();
+    if (u.searchParams.get('format') === 'txt') {
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': 'attachment; filename="escucharrr-colisiones-mayusculas.txt"', 'Cache-Control': 'no-store' });
+      return res.end('﻿' + pollHealthText(roots));
+    }
+    return sendJSON(res, { ok: true, roots });
+  })();
   if (req.method === 'GET' && u.pathname === '/api/ignored-dirs') return void (() => {
     try { return sendJSON(res, { ok: true, items: db.prepare('SELECT dir, real_dir, rg, title, at FROM ignored_dir ORDER BY at DESC').all() }); }
     catch (e) { return sendJSON(res, { ok: true, items: [] }); }

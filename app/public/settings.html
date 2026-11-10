@@ -545,8 +545,9 @@ window.addEventListener('DOMContentLoaded', async () => {
       if (!r.at) return `Sondeo de red: primera pasada pendiente`;
       const ago = _s(Date.now() - r.at);
       let t = `Sondeo de red: última pasada hace ${ago} (${_n(r.dirs)} carpetas, ${_n(r.files)} audios, ${_s(r.ms)})`;
-      if (!r.complete) t += r.stableFailed ? ` · ${_n(r.failed)} carpeta(s) ilegible(s) persistente(s), incluidas en la firma` : ` · ${_n(r.failed)} carpeta(s) ilegible(s): no concluyente`;
-      if (r.collisions) t += ` · ${_n(r.collisions)} nombre(s) que solo difieren en mayúsculas (el NAS los distingue; Windows no)`;
+      if (!r.complete) t += ` · ${_n(r.failed)} carpeta(s) ilegible(s) nueva(s): no concluyente, repite`;
+      if (r.quarantined) t += ` · ${_n(r.quarantined)} carpeta(s) ilegible(s) en cuarentena (fuera de la firma)`;
+      if (r.collisions) t += ` · ${_n(r.collisions)} grupo(s) de nombres que solo difieren en mayúsculas (el NAS los distingue; Windows no)`;
       return t;
     });
     const next = p.polling ? ' · sondeando…' : (p.nextInMs != null ? ' · próxima en ' + _s(p.nextInMs) : '');
@@ -555,6 +556,38 @@ window.addEventListener('DOMContentLoaded', async () => {
     let det = document.getElementById('pollsamples');
     if (samples.length) { if (!det) { det = document.createElement('div'); det.id = 'pollsamples'; det.className = 'd mono'; det.style.cssText = 'margin-top:3px;font-size:11.5px;white-space:pre-wrap;opacity:.85'; pollInfo.after(det); } det.textContent = samples.join('\n'); }
     else if (det) det.remove();
+    // Lista completa (colisiones de mayúsculas + carpetas en cuarentena) para arreglarlas en el NAS: ver aquí o descargar .txt.
+    const nColl = roots.reduce((a, r) => a + (r.collisions || 0), 0), nQ = roots.reduce((a, r) => a + (r.quarantined || 0), 0);
+    let bar = document.getElementById('pollhealth');
+    if (!nColl && !nQ) { if (bar) bar.remove(); return; }
+    if (!bar) {
+      bar = document.createElement('div'); bar.id = 'pollhealth'; bar.style.cssText = 'margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center';
+      bar.innerHTML = '<button id="pollhealth-toggle" type="button"></button><a id="pollhealth-dl" href="/api/library/case-collisions?format=txt" download="escucharrr-colisiones-mayusculas.txt" style="font-size:12.5px">Descargar lista (.txt)</a>';
+      (det || pollInfo).after(bar);
+      bar.querySelector('#pollhealth-toggle').addEventListener('click', pollHealthToggle);
+    } else if (det && bar.previousElementSibling !== det) det.after(bar);
+    bar.querySelector('#pollhealth-toggle').textContent = (document.getElementById('pollhealth-list') ? 'Ocultar lista' : 'Ver lista completa') + ' (' + _n(nColl) + ' grupo(s), ' + _n(nQ) + ' ilegible(s))';
+  }
+  function pollHealthToggle() {
+    const bar = document.getElementById('pollhealth'); let box = document.getElementById('pollhealth-list');
+    if (box) { box.remove(); bar.querySelector('#pollhealth-toggle').textContent = bar.querySelector('#pollhealth-toggle').textContent.replace('Ocultar lista', 'Ver lista completa'); return; }
+    box = document.createElement('div'); box.id = 'pollhealth-list'; box.className = 'mono'; box.style.cssText = 'margin-top:6px;max-height:360px;overflow:auto;font-size:11.5px;line-height:1.45;white-space:pre-wrap;border:1px solid var(--border);border-radius:6px;padding:8px 10px';
+    box.textContent = 'cargando…'; bar.after(box);
+    bar.querySelector('#pollhealth-toggle').textContent = bar.querySelector('#pollhealth-toggle').textContent.replace('Ver lista completa', 'Ocultar lista');
+    fetch('/api/library/case-collisions').then(r => r.json()).then(j => {
+      const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+      const H = [];
+      for (const r of (j.roots || [])) {
+        const rel = d => d.toLowerCase().startsWith(r.root.toLowerCase()) ? ('…' + d.slice(r.root.length) || '…\\') : d;
+        H.push(`<div style="font-weight:600;margin-bottom:6px">${esc(r.root)}: ${_n(r.collisions.length)} grupo(s) de nombres que solo difieren en mayúsculas</div>`);
+        H.push('<div class="d" style="margin-bottom:8px">El NAS (Linux) los distingue; desde Windows solo se ve uno de cada grupo y el resto queda ilegible. Fusiona cada grupo en una sola carpeta en el NAS; el sondeo detectará el cambio y reescaneará.</div>');
+        for (const c of r.collisions) H.push(`<div style="margin-top:5px">${esc(rel(c.dir))}</div>` + c.names.map(n => `<div style="padding-left:2em">${esc(n.name)}${n.isDir ? '\\' : ''}${n.unreadable ? ` <span class="d">— ilegible desde Windows (${esc(n.code)})</span>` : ''}</div>`).join(''));
+        const other = r.unreadable.filter(u => !u.collision);
+        H.push(`<div style="font-weight:600;margin:14px 0 6px">${_n(r.unreadable.length)} carpeta(s) ilegible(s) en cuarentena · ${_n(r.unreadable.length - other.length)} explicadas por las colisiones de arriba</div>`);
+        if (other.length) { H.push('<div class="d" style="margin-bottom:6px">Sin colisión de nombres: revisa permisos o subcarpetas.</div>'); for (const u of other) H.push(`<div>${esc(rel(u.dir))} <span class="d">${esc(u.code)}</span></div>`); }
+      }
+      box.innerHTML = H.join('') || 'Sin datos todavía: espera a la primera pasada del sondeo.';
+    }).catch(() => { box.textContent = 'No se pudo cargar la lista.'; });
   }
   function scanTick() { fetch('/api/scan/status').then(r => r.json()).then(s => { scanRender(s); pollRender(s && s.poll); if (s && s.active) { if (!scanPoll) scanPoll = setInterval(scanTick, 1000); } else if (scanPoll) { clearInterval(scanPoll); scanPoll = null; } }).catch(() => {}); }
   scanTick();   // estado inicial + reanuda el sondeo si ya hay un escaneo en marcha (p. ej. lanzado por el vigilante)
