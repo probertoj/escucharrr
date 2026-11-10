@@ -18,6 +18,9 @@
 // su nombre sigue contando en la carpeta madre pero no se desciende a ellas. Resultado: que una carpeta
 // flaquee (ilegible una vez, legible la siguiente) no cambia la firma ni dispara reescaneos; arreglarla
 // de verdad en el NAS (renombrar/fusionar) sí, porque cambian los nombres de la carpeta madre.
+// La cuarentena NO distingue mayúsculas a propósito: con dos carpetas que solo difieren en la caja, qué
+// variante resuelve el cliente SMB de Windows cambia de una pasada a otra (medido en el NAS real), así
+// que se dejan fuera todas las variantes de la ruta que falló.
 // Colisiones de mayúsculas: nombres que solo difieren en mayúsculas dentro de la misma carpeta se
 // reportan (`collisions`, lista COMPLETA hasta MAX_LIST) porque son la causa típica de esas carpetas
 // ilegibles (un NAS Linux las distingue; el cliente SMB de Windows resuelve la ruta a una sola y la otra
@@ -30,8 +33,6 @@ const MAX_LIST = 20000;   // tope de entradas devueltas en failed/collisions (lo
 
 // Normalización IGUAL que scan.js/server.js nrm(): clave de ignored_dir (release.source_dir).
 function nrmDefault(p) { return path.resolve(p).replace(/[\\/]+/g, '\\').toLowerCase(); }
-// Ruta exacta (separadores normalizados, mayúsculas respetadas): clave de la cuarentena.
-function exact(p) { return path.resolve(p).replace(/[\\/]+/g, '\\'); }
 
 /**
  * dirSignature(root, opts) → { sig, complete, failed, failedCount, failedKey, collisions, collisionCount, dirs, files, ms }
@@ -40,11 +41,8 @@ function exact(p) { return path.resolve(p).replace(/[\\/]+/g, '\\'); }
  *   failed     : [{dir, code}] carpetas ilegibles (hasta MAX_LIST); failedCount: total; failedKey: sha1 del conjunto (null si ninguna)
  *   collisions : [{dir, names:[{name, isDir}]}] grupos de nombres que solo difieren en mayúsculas en la misma carpeta (hasta MAX_LIST); collisionCount: total de grupos
  *   dirs/files : carpetas listadas / audios vistos; ms: duración
- * opts.ignore  : Set de carpetas normalizadas (nrm, sin distinguir mayúsculas) a NO DESCENDER (copias quitadas por el usuario);
- *                su nombre sigue contando en la carpeta madre
- * opts.skip    : Set de rutas EXACTAS (exact(): mayúsculas respetadas) a NO DESCENDER: la cuarentena. Debe distinguir
- *                mayúsculas porque la carpeta ilegible es justo la variante de caja que el NAS no resuelve; su hermana
- *                `Songs And Instrumentals\Disc1` sí se lee y debe seguir dentro de la firma.
+ * opts.ignore  : Set de carpetas normalizadas (nrm, sin distinguir mayúsculas) a NO DESCENDER (copias quitadas por el
+ *                usuario, carpetas en cuarentena); su nombre sigue contando en la carpeta madre
  * opts.nrm     : normalizador (por defecto el de scan.js)
  * opts.fsp     : fs.promises inyectable (tests / conteo de operaciones)
  * opts.audioRe : regex de audio (por defecto la de arriba)
@@ -54,7 +52,6 @@ async function dirSignature(root, opts = {}) {
   const fsp = opts.fsp || require('fs').promises;
   const nrm = opts.nrm || nrmDefault;
   const ignore = opts.ignore || null;
-  const skip = opts.skip && opts.skip.size ? opts.skip : null;
   const audioRe = opts.audioRe || AUDIO_RE;
   const h = crypto.createHash('sha1');
   const t0 = Date.now();
@@ -89,8 +86,7 @@ async function dirSignature(root, opts = {}) {
     for (const g of low.values()) if (g.length > 1) { collisionCount++; if (collisions.length < MAX_LIST) collisions.push({ dir, names: g }); }
     for (const name of subdirs) {
       const p = path.join(dir, name);
-      if (ignore && ignore.has(nrm(p))) continue;                      // copia quitada → no se desciende
-      if (skip && skip.has(exact(p))) continue;                        // cuarentena (ruta exacta) → no se desciende
+      if (ignore && ignore.has(nrm(p))) continue;                      // copia quitada / cuarentena → no se desciende
       await walk(p, rel + '/' + name);
     }
   }
@@ -103,4 +99,47 @@ async function dirSignature(root, opts = {}) {
 // Texto de un grupo de colisión para logs/UI: «…\carpeta\A ↔ a».
 function collisionText(c) { return path.join(c.dir, c.names[0].name) + c.names.slice(1).map(n => ' ↔ ' + n.name).join(''); }
 
-module.exports = { dirSignature, collisionText, AUDIO_RE, nrm: nrmDefault, exact, MAX_LIST };
+/**
+ * healthReport({root, at, collisions, quarantine}) → informe de salud de una carpeta de red para Ajustes / .txt.
+ *   collisions : los grupos de dirSignature; quarantine: [{dir, code}] carpetas ilegibles acumuladas
+ * Devuelve { root, at, collisions:[{dir, names:[{name,isDir}], unreadable, code}], unreadable:[{dir, code, collision}] }:
+ *   - cada grupo lleva cuántas carpetas en cuarentena cuelgan de alguno de sus miembros (`unreadable`) y el primer código;
+ *   - cada carpeta en cuarentena lleva `collision=true` si ella o un antecesor es miembro de un grupo (el más cercano).
+ * Todo sin distinguir mayúsculas: no se señala CUÁL variante es la invisible porque desde Windows cambia de una vez a otra.
+ */
+function healthReport({ root, at, collisions, quarantine }, nrm = nrmDefault) {
+  const members = new Map();   // nrm(ruta de un miembro carpeta) → índice de su grupo
+  const groups = (collisions || []).map((c, i) => {
+    for (const n of c.names) if (n.isDir) members.set(nrm(path.join(c.dir, n.name)), i);
+    return { dir: c.dir, names: c.names.map(n => ({ name: n.name, isDir: n.isDir })), unreadable: 0, code: null };
+  });
+  const unreadable = (quarantine || []).map(f => {
+    let k = nrm(f.dir), hit = -1;
+    for (;;) { if (members.has(k)) { hit = members.get(k); break; } const up = path.dirname(k); if (up === k) break; k = up; }
+    if (hit >= 0) { groups[hit].unreadable++; if (!groups[hit].code) groups[hit].code = f.code; }
+    return { dir: f.dir, code: f.code, collision: hit >= 0 };
+  });
+  return { root, at: at || null, collisions: groups, unreadable };
+}
+// Texto descargable (CRLF) de uno o varios healthReport.
+function healthText(roots) {
+  const L = [];
+  for (const r of roots) {
+    L.push('Salud de la carpeta de red ' + r.root + (r.at ? ' (pasada del ' + new Date(r.at).toLocaleString('es-ES') + ')' : ''), '');
+    L.push('== ' + r.collisions.length + ' grupo(s) de nombres que solo difieren en mayúsculas ==');
+    L.push('El NAS (Linux) los distingue; desde Windows solo se resuelve una variante de cada grupo (y puede cambiar de una vez a otra),');
+    L.push('así que parte de su contenido da ENOENT y no entra en la biblioteca. Fusiona cada grupo en una sola carpeta/fichero en el NAS.', '');
+    for (const c of r.collisions) {
+      L.push(c.dir);
+      for (const n of c.names) L.push('    ' + n.name + (n.isDir ? '\\' : ''));
+      if (c.unreadable) L.push('    -> ' + c.unreadable + ' subcarpeta(s) ilegible(s) desde Windows (' + c.code + ')');
+    }
+    const other = r.unreadable.filter(u => !u.collision);
+    L.push('', '== ' + r.unreadable.length + ' carpeta(s) ilegible(s) en cuarentena (' + (r.unreadable.length - other.length) + ' explicadas por los grupos de arriba) ==', '');
+    for (const u of r.unreadable) L.push(u.dir + '    ' + u.code + (u.collision ? '' : '    [sin colisión: revisar permisos o subcarpetas]'));
+    L.push('');
+  }
+  return L.join('\r\n');
+}
+
+module.exports = { dirSignature, collisionText, healthReport, healthText, AUDIO_RE, nrm: nrmDefault, MAX_LIST };

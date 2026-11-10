@@ -2750,10 +2750,16 @@ function isUnc(p) { return /^\\\\/.test(String(p)) || /^\/\//.test(String(p)); }
 // CUARENTENA (st.quarantine): en adelante no se desciende a ellas (su nombre sigue contando en la carpeta madre), así
 // que una carpeta que flaquea en el NAS no mueve la firma, y arreglarla de verdad (renombrar/fusionar) sí. Es lo que
 // pasa con las colisiones de mayúsculas de un NAS Linux (`AIR` y `Air` juntas): Windows resuelve a una y la otra da ENOENT.
-// La cuarentena va por ruta EXACTA (mayúsculas respetadas): la ilegible es una variante de caja concreta y su hermana
-// (`Songs And Instrumentals\Disc1` frente a `songs and instrumentals\Disc1`) sí se lee y debe seguir en la firma.
-function _pollIgnoreSet() { const ign = new Set(); try { for (const r of db.prepare('SELECT dir FROM ignored_dir').all()) ign.add(r.dir); } catch (e) {} return ign; }
-async function pollSignatureAsync(root, st) { return POLLSIG.dirSignature(root, { ignore: _pollIgnoreSet(), skip: st ? new Set(st.quarantine.keys()) : null, nrm: POLLSIG.nrm }); }
+// La cuarentena NO distingue mayúsculas (clave nrm): medido en el NAS real, qué variante de caja resuelve el cliente SMB
+// de Windows cambia de una pasada a otra (`Alabaster Deplume\Gold` falla en una y `Alabaster dePlume\Gold` en la
+// siguiente), así que por ruta exacta cada pasada encontraba ilegibles «nuevas» y nunca había baseline. Se dejan fuera
+// todas las variantes de esa ruta; fusionar el grupo en el NAS cambia los nombres de la carpeta madre y sí se detecta.
+function _pollIgnoreSet(st) {
+  const ign = new Set(); try { for (const r of db.prepare('SELECT dir FROM ignored_dir').all()) ign.add(r.dir); } catch (e) {}
+  if (st && st.quarantine) for (const k of st.quarantine.keys()) ign.add(k);
+  return ign;
+}
+async function pollSignatureAsync(root, st) { return POLLSIG.dirSignature(root, { ignore: _pollIgnoreSet(st), nrm: POLLSIG.nrm }); }
 function addPoll(root) {   // registra una carpeta para sondeo; el baseline se fija en el 1er tick (no bloquea el arranque)
   if (!_pollRoots.has(root)) { _pollRoots.set(root, { sig: null, last: null, quarantine: new Map(), collisions: [] }); console.log('biblioteca en vivo: sondeando (red) ' + root); }
   startPolling();
@@ -2774,7 +2780,7 @@ async function _pollTick() {
       slowest = Math.max(slowest, r.ms);
       // Las carpetas ilegibles de esta pasada entran en cuarentena (no se vuelve a descender a ellas en esta sesión).
       const now = Date.now();
-      for (const f of r.failed) { const k = POLLSIG.exact(f.dir); if (!st.quarantine.has(k)) st.quarantine.set(k, { dir: f.dir, code: f.code, at: now }); }
+      for (const f of r.failed) { const k = POLLSIG.nrm(f.dir); if (!st.quarantine.has(k)) st.quarantine.set(k, { dir: f.dir, code: f.code, at: now }); }
       st.collisions = r.collisions;   // lista completa de la última pasada (GET /api/library/case-collisions)
       const qs = [...st.quarantine.values()];
       st.last = { at: now, ms: r.ms, dirs: r.dirs, files: r.files, complete: r.complete, failed: r.failedCount, quarantined: st.quarantine.size, collisions: r.collisionCount,
@@ -2799,40 +2805,12 @@ function pollStatus() {   // para Ajustes→Biblioteca: qué se sondea, cuánto 
   return { roots: [..._pollRoots].map(([root, st]) => ({ root, baseline: st.sig != null, ...(st.last || {}) })), polling: _polling, nextInMs: _pollTimer ? Math.max(0, _pollNextAt - Date.now()) : null, minPauseMs: POLL_MS };
 }
 // Lista COMPLETA de la salud de las carpetas de red según la última pasada del sondeo: grupos de nombres que solo
-// difieren en mayúsculas (con cuál de ellos es ilegible desde Windows) y carpetas ilegibles en cuarentena.
-// JSON para Ajustes; ?format=txt para descargarla y arreglar las carpetas en el NAS.
+// difieren en mayúsculas (y cuántas subcarpetas ilegibles cuelgan de cada uno) y carpetas ilegibles en cuarentena.
+// JSON para Ajustes; ?format=txt para descargarla y arreglar las carpetas en el NAS. La lógica vive en pollsig.js (testeable).
 function pollHealth() {
-  return [..._pollRoots].map(([root, st]) => {
-    const q = st.quarantine || new Map();
-    // Un miembro de un grupo es «ilegible» si él mismo o alguna subcarpeta suya está en cuarentena (lo típico en SMB: la
-    // carpeta mal resuelta se lista, pero sus hijas dan ENOENT). Una carpeta en cuarentena queda «explicada» si ella o
-    // alguno de sus antecesores es miembro de un grupo de colisión.
-    const members = new Set(); for (const c of st.collisions || []) for (const n of c.names) if (n.isDir) members.add(POLLSIG.exact(path.join(c.dir, n.name)));
-    const under = new Map();   // miembro exacto → primer código de fallo visto debajo
-    const unreadable = [...q.values()].map(f => {
-      let k = POLLSIG.exact(f.dir), hit = null;
-      for (;;) { if (members.has(k)) { hit = k; break; } const up = path.dirname(k); if (up === k) break; k = up; }
-      if (hit && !under.has(hit)) under.set(hit, f.code);
-      return { dir: f.dir, code: f.code, collision: !!hit };
-    });
-    const collisions = (st.collisions || []).map(c => ({ dir: c.dir, names: c.names.map(n => { const code = n.isDir ? under.get(POLLSIG.exact(path.join(c.dir, n.name))) : null; return { name: n.name, isDir: n.isDir, unreadable: !!code, code: code || null }; }) }));
-    return { root, at: st.last ? st.last.at : null, collisions, unreadable };
-  });
+  return [..._pollRoots].map(([root, st]) => POLLSIG.healthReport({ root, at: st.last ? st.last.at : null, collisions: st.collisions || [], quarantine: st.quarantine ? [...st.quarantine.values()] : [] }));
 }
-function pollHealthText(roots) {
-  const L = [];
-  for (const r of roots) {
-    L.push('Salud de la carpeta de red ' + r.root + (r.at ? ' (pasada del ' + new Date(r.at).toLocaleString('es-ES') + ')' : ''), '');
-    L.push('== ' + r.collisions.length + ' grupo(s) de nombres que solo difieren en mayúsculas ==');
-    L.push('El NAS (Linux) los distingue; desde Windows solo se ve uno de cada grupo y el resto da ENOENT. Fusiona cada grupo en una sola carpeta/fichero.', '');
-    for (const c of r.collisions) { L.push(c.dir); for (const n of c.names) L.push('    ' + n.name + (n.isDir ? '\\' : '') + (n.unreadable ? '    [ilegible desde Windows: ' + n.code + ']' : '')); }
-    const other = r.unreadable.filter(u => !u.collision);
-    L.push('', '== ' + r.unreadable.length + ' carpeta(s) ilegible(s) en cuarentena (' + (r.unreadable.length - other.length) + ' explicadas por las colisiones de arriba) ==', '');
-    for (const u of r.unreadable) L.push(u.dir + '    ' + u.code + (u.collision ? '' : '    [sin colisión: revisar permisos o subcarpetas]'));
-    L.push('');
-  }
-  return L.join('\r\n');
-}
+const pollHealthText = POLLSIG.healthText;
 // lee app/watch.json + resuelve el config de Obsidian (vault/albumsFolder)
 function watchConfig() {
   const cfgPath = WATCH_PATH;

@@ -580,10 +580,10 @@ window.addEventListener('DOMContentLoaded', async () => {
       for (const r of (j.roots || [])) {
         const rel = d => d.toLowerCase().startsWith(r.root.toLowerCase()) ? ('…' + d.slice(r.root.length) || '…\\') : d;
         H.push(`<div style="font-weight:600;margin-bottom:6px">${esc(r.root)}: ${_n(r.collisions.length)} grupo(s) de nombres que solo difieren en mayúsculas</div>`);
-        H.push('<div class="d" style="margin-bottom:8px">El NAS (Linux) los distingue; desde Windows solo se ve uno de cada grupo y el resto queda ilegible. Fusiona cada grupo en una sola carpeta en el NAS; el sondeo detectará el cambio y reescaneará.</div>');
-        for (const c of r.collisions) H.push(`<div style="margin-top:5px">${esc(rel(c.dir))}</div>` + c.names.map(n => `<div style="padding-left:2em">${esc(n.name)}${n.isDir ? '\\' : ''}${n.unreadable ? ` <span class="d">— ilegible desde Windows (${esc(n.code)})</span>` : ''}</div>`).join(''));
+        H.push('<div class="d" style="margin-bottom:8px">El NAS (Linux) los distingue; desde Windows solo se resuelve una variante de cada grupo (y puede cambiar de una vez a otra), así que parte de su contenido queda ilegible y no entra en la biblioteca. Fusiona cada grupo en una sola carpeta en el NAS; el sondeo detectará el cambio y reescaneará.</div>');
+        for (const c of r.collisions) H.push(`<div style="margin-top:5px">${esc(rel(c.dir))}</div>` + c.names.map(n => `<div style="padding-left:2em">${esc(n.name)}${n.isDir ? '\\' : ''}</div>`).join('') + (c.unreadable ? `<div class="d" style="padding-left:2em">${_n(c.unreadable)} subcarpeta(s) ilegible(s) desde Windows (${esc(c.code)})</div>` : ''));
         const other = r.unreadable.filter(u => !u.collision);
-        H.push(`<div style="font-weight:600;margin:14px 0 6px">${_n(r.unreadable.length)} carpeta(s) ilegible(s) en cuarentena · ${_n(r.unreadable.length - other.length)} explicadas por las colisiones de arriba</div>`);
+        H.push(`<div style="font-weight:600;margin:14px 0 6px">${_n(r.unreadable.length)} carpeta(s) ilegible(s) en cuarentena · ${_n(r.unreadable.length - other.length)} explicadas por los grupos de arriba</div>`);
         if (other.length) { H.push('<div class="d" style="margin-bottom:6px">Sin colisión de nombres: revisa permisos o subcarpetas.</div>'); for (const u of other) H.push(`<div>${esc(rel(u.dir))} <span class="d">${esc(u.code)}</span></div>`); }
       }
       box.innerHTML = H.join('') || 'Sin datos todavía: espera a la primera pasada del sondeo.';
