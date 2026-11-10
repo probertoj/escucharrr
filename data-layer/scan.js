@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const TAGS = require('./tags');   // MP3 (ID3v2) y M4A/MP4 (átomos): etiquetas + info, sin dependencias
 const { migrateUserData } = require('./rebind');   // re-anclaje de ediciones/valoraciones/notas al mover carpetas
+const TRACKNO = require('./trackno');              // nº de pista/disco deducido del nombre cuando falta la etiqueta
 
 function arg(n, d) { const i = process.argv.indexOf('--' + n); return i >= 0 ? (process.argv[i + 1] || true) : d; }
 const DB_PATH = arg('db', 'escucharrr.db');
@@ -163,9 +164,11 @@ function discInfo(dir, rawAlbum) {
   if (tm) { const base = album.slice(0, tm.index).trim(); if (base.length >= 2) { titleDisc = parseInt(tm[1], 10) || null; album = base; } }   // quita "CDn" solo si queda un título con sentido
   return { albumDir, discFolder, album: album || String(rawAlbum || ''), titleDisc };
 }
-function titleFromName(file, artistName) {
-  let n = path.basename(file).replace(/\.[^.]+$/, '');
-  n = n.replace(/^\s*\d{1,3}\s*[-._)\s]\s*/, '');        // nº de pista inicial
+// `rest`: nombre ya sin extensión ni numeración (lo da trackno.fromName para «01 - 05 - Título» y «B2 - Título»);
+// en ese caso no se vuelve a quitar ni la extensión ni un número inicial, que serían parte del título.
+function titleFromName(file, artistName, rest) {
+  let n = rest != null ? String(rest) : path.basename(file).replace(/\.[^.]+$/, '');
+  if (rest == null) n = n.replace(/^\s*\d{1,3}\s*[-._)\s]\s*/, '');        // nº de pista inicial
   n = n.replace(/[-_][a-z0-9]{5,8}$/i, '');              // hash de release al final (p. ej. -14ajwq)
   if (artistName && artistName !== 'Artista desconocido') { const re = new RegExp('^' + artistName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*[-–_\\s]+', 'i'); n = n.replace(re, ''); }   // quita "Artista-" si va delante
   return _clean(n) || path.basename(file);
@@ -419,6 +422,66 @@ function reconcileMove(file, size, durMs, isrc, fp) {
   return null;
 }
 
+// ── Pistas sin etiqueta TRACKNUMBER válida ──────────────────────────────────────────────────────────────
+// La posición sale del nombre del fichero (trackno.js); los vinilos («A1», «B2») se ordenan por cara dentro de
+// su carpeta. Si no se deduce nada, o ese sitio lo ocupa OTRA grabación, la pista va detrás de la última.
+const RELIC_POS = 1000;        // posiciones ≥ 1000 = restos del contador global antiguo
+const _byDir = new Map();      // carpeta -> nombres de audio vistos en este escaneo (para ordenar vinilos)
+for (const f of files) { const d = path.dirname(f); const a = _byDir.get(d); if (a) a.push(path.basename(f)); else _byDir.set(d, [path.basename(f)]); }
+const _vinyl = new Map();      // carpeta -> Map<nombre, posición>
+function nameInfo(file) {
+  const base = path.basename(file), r = TRACKNO.fromName(base);
+  if (!r) return null;
+  if (r.kind === 'vinilo') {
+    const d = path.dirname(file); let vo = _vinyl.get(d);
+    if (!vo) { vo = TRACKNO.vinylOrder(_byDir.get(d) || [base]); _vinyl.set(d, vo); }
+    r.track = vo.has(base) ? vo.get(base) : null;
+  }
+  return r;
+}
+const _trkS = {
+  fileTrack: db.prepare('SELECT lf.track_id id, tr.medium_id med, tr.position pos, tr.recording_id rec FROM local_file lf JOIN track tr ON tr.id=lf.track_id WHERE lf.path=?'),
+  at: db.prepare('SELECT id, recording_id rec FROM track WHERE medium_id=? AND position=? LIMIT 1'),
+  byRecSane: db.prepare('SELECT id FROM track WHERE medium_id=? AND recording_id=? AND position<' + RELIC_POS + ' LIMIT 1'),
+  count: db.prepare('SELECT COUNT(*) n FROM track WHERE medium_id=?'),
+  positions: db.prepare('SELECT position FROM track WHERE medium_id=?'),
+  otherFiles: db.prepare('SELECT COUNT(*) n FROM local_file WHERE track_id=? AND path<>?'),
+  move: db.prepare('UPDATE track SET medium_id=?, position=?, recording_id=?, title=?, artist_credit_id=?, length_ms=? WHERE id=?'),
+  recUsed: db.prepare('SELECT 1 FROM track WHERE recording_id=? LIMIT 1'),
+  playRec: db.prepare('UPDATE play SET recording_id=? WHERE recording_id=?'),
+  listRec: db.prepare('UPDATE playlist_item SET recording_id=? WHERE recording_id=?'),
+};
+let namedNew = 0, relicMoved = 0;
+const firstFreePos = (med) => { const used = new Set(_trkS.positions.all(med).map(r => r.position)); let p = 1; while (used.has(p)) p++; return p; };
+// Devuelve el id de la pista del fichero. Es estable entre escaneos: una vez colocada, la pista se reencuentra
+// en su sitio (misma grabación en esa posición) o por el propio fichero (su fila ya apunta a ella y su posición
+// cabe en el disco). La pista que ya tenía el fichero se RECOLOCA en vez de crear otra (mismo id: conserva
+// historial, listas y ediciones) y de paso se corrigen su título y su grabación, que el contador antiguo,
+// distinto en cada escaneo, había ido cruzando entre ficheros.
+// `late` = segunda vuelta. En la primera solo se colocan las pistas cuyo sitio está libre (o ya es suyo); las
+// que no tienen número o encuentran su sitio ocupado por otra grabación devuelven POSTPONE y se colocan al final
+// del todo, en el primer hueco: así no le quitan el sitio a otra pista que sí lo tiene claro por su nombre.
+const POSTPONE = -1;
+function placeUntagged(file, med, pos, recId, title, tcid, lenMs, isComp, late) {
+  if (isComp) { const d = _trkS.byRecSane.get(med, recId); if (d) return d.id; }   // recopilatorio: misma grabación ya en el disco
+  const prev = _trkS.fileTrack.get(file) || null;
+  const at = pos != null ? _trkS.at.get(med, pos) : null;
+  if (at && at.rec === recId) return at.id;                                        // ya está en su sitio
+  if (pos == null || (at && !(prev && at.id === prev.id))) {                       // sin número, o el sitio es de otra grabación
+    if (prev && prev.med === med && prev.rec === recId && prev.pos >= 1 && prev.pos <= _trkS.count.get(med).n) return prev.id;   // se queda donde estaba
+    if (!late) return POSTPONE;
+    pos = firstFreePos(med);                                                       // primer hueco (normalmente, detrás de la última)
+  }
+  if (prev && !_trkS.otherFiles.get(prev.id, file).n) {                            // la pista es solo de este fichero → se recoloca
+    _trkS.move.run(med, pos, recId, title, tcid, lenMs, prev.id);
+    if (prev.rec !== recId && !_trkS.recUsed.get(prev.rec)) { _trkS.playRec.run(recId, prev.rec); _trkS.listRec.run(recId, prev.rec); }   // la grabación vieja se queda sin pistas: su historial pasa a la buena
+    relicMoved++;
+    return prev.id;
+  }
+  namedNew++;
+  return Number(S.insTrack.run(med, pos, recId, title, tcid, lenMs).lastInsertRowid);
+}
+
 let ok = 0, ident = 0, moved = 0, normed = 0, cased = 0;
 const movePairs = [];   // {old, neu}: por cada fichero movido a OTRO release_group, para re-anclar ediciones tras el escaneo
 const _total = files.length;
@@ -434,20 +497,28 @@ const YIELD_MS = parseInt(arg('yield-ms', '110'), 10) || 110;
 let _batchAt = Date.now();
 db.exec('BEGIN IMMEDIATE');
 try {
-  for (const file of files) {
+  // Los ficheros sin etiqueta de número se dejan para el FINAL (ya leídos, no se releen): así, cuando se
+  // colocan, todas las pistas etiquetadas del escaneo ya ocupan su sitio y el resultado no depende del orden.
+  const queue = files.map(f => ({ file: f, parsed: null }));
+  const deferredUntagged = new Set();
+  for (let qi = 0; qi < queue.length; qi++) {
+   const file = queue[qi].file;
    if (Date.now() - _batchAt >= BATCH_MS) { db.exec('COMMIT'); sleepSync(YIELD_MS); db.exec('BEGIN IMMEDIATE'); _batchAt = Date.now(); }
    try {
     const ext = path.extname(file).slice(1).toLowerCase();
     const parseOne = () => ext === 'flac' ? readFlac(file) : ext === 'dsf' ? readDsf(file) : ext === 'dff' ? readDff(file)
       : ext === 'mp3' ? TAGS.readMp3(file) : (ext === 'm4a' || ext === 'aac') ? TAGS.readMp4(file)
       : (ext === 'aiff' || ext === 'aif') ? TAGS.readAiff(file) : (ext === 'ogg' || ext === 'oga' || ext === 'opus') ? TAGS.readOgg(file) : readWav(file);
-    let parsed = null, perr = null;
+    let parsed = queue[qi].parsed, perr = null;
+    const late = !!queue[qi].late;                           // segunda vuelta de una pista sin etiqueta de número
+    queue[qi] = null;                                        // libera la entrada (y lo leído) cuanto antes
     for (let i = 0; i < 2 && !parsed; i++) { try { parsed = parseOne(); } catch (e) { perr = e; if (i === 0) sleepSync(200); } }   // un reintento (SMB transitorio)
     if (!parsed && perr) { console.warn('  error leyendo', path.basename(file), perr.message); try { insSkip.run(file, 'error al leer: ' + (perr.code || perr.message)); } catch (x) {} }
     // Fichero de formato soportado cuya cabecera no se pudo reconocer (corrupto o mal nombrado): el parser
     // devuelve null sin lanzar. Antes desaparecía en silencio; ahora se registra para que se vea en "saltados".
     else if (!parsed) { try { insSkip.run(file, 'cabecera no reconocida (.' + ext + ')'); } catch (x) {} }
     if (!parsed) continue;
+    if (!TRACKNO.tagNumber(parsed.tags.TRACKNUMBER) && !deferredUntagged.has(file)) { deferredUntagged.add(file); queue.push({ file, parsed }); continue; }
     const fmtLabel = (ext === 'dsf' || ext === 'dff') ? dsdLabel(parsed.info.sampleRate) : ext.toUpperCase();
     const st = statRetry(file), t = parsed.tags, inf = parsed.info;
     const dir = path.dirname(file);
@@ -472,9 +543,13 @@ try {
     let artistName = t.ALBUMARTIST || _albumArtistBase(t.ARTIST) || fm.artist;   // sin ALBUMARTIST: base sin «feat.» (no partir el álbum)
     if (!artistName && !isComp) { const gp = path.dirname(albumDir); if (nrm(gp) !== nrm(ROOT) && path.basename(gp)) artistName = _clean(path.basename(gp)); }   // carpeta abuela del álbum = artista
     artistName = isComp ? 'Various Artists' : (artistName || 'Artista desconocido');
-    const title = t.TITLE || titleFromName(file, artistName);
-    const trackNo = parseInt(t.TRACKNUMBER, 10) || (ok + 1);
-    const discNo = parseInt(t.DISCNUMBER, 10) || discFolder || di.titleDisc || 1;   // tag > carpeta de disco > marcador del título > 1
+    // Número de pista: la etiqueta si es válida (≥ 1); si no, se deduce del nombre del fichero (y con él el
+    // disco y el título en «01 - 05 - Título» / «B2 - Título»). Antes, sin etiqueta, se usaba el contador global
+    // del escaneo: posiciones como 237516 que además cambiaban en cada escaneo. Ver placeUntagged().
+    const tagNo = TRACKNO.tagNumber(t.TRACKNUMBER);
+    const nm = tagNo ? null : nameInfo(file);
+    const title = t.TITLE || (nm && nm.rest ? titleFromName(file, artistName, nm.rest) : titleFromName(file, artistName));
+    const discNo = parseInt(t.DISCNUMBER, 10) || discFolder || di.titleDisc || (nm && nm.disc) || 1;   // tag > carpeta de disco > marcador del título > nombre del fichero > 1
     const identified = !!(t.ALBUM && (t.ARTIST || t.ALBUMARTIST) && t.TITLE);   // "identificado" POR ETIQUETAS (Inspector)
     const haveGraph = !!(album && title);                                        // crea el álbum/pista aunque falten tags
     // identificadores embebidos (convención Picard) + ISRC + AcoustID
@@ -502,13 +577,18 @@ try {
       const tcid = t.ARTIST ? ensureCredit(ensureArtist(t.ARTIST), t.ARTIST) : cid;
       recId = ensureRec(title, tcid, inf.durationMs);
       if (t.COMPOSER) ingestComposer(recId, title, t.COMPOSER);   // compositor desde el tag -> obra + crédito
-      let trackPos = trackNo, dupTrack = null;
-      if (isComp) {
-        dupTrack = S.trackByMedRec.get(med, recId);               // misma grabación ya en el disco (copia repetida) → reutiliza
-        if (!dupTrack && S.trackBy.get(med, trackPos)) trackPos = S.maxPosInMed.get(med).p + 1;   // posición ocupada por otra pista → al final
+      if (!tagNo) {
+        trackId = placeUntagged(file, med, nm ? nm.track : null, recId, title, tcid, inf.durationMs, isComp, late);
+        if (trackId === POSTPONE) { queue.push({ file, parsed, late: true }); continue; }   // se coloca en la segunda vuelta
+      } else {
+        let trackPos = tagNo, dupTrack = null;
+        if (isComp) {
+          dupTrack = S.trackByMedRec.get(med, recId);               // misma grabación ya en el disco (copia repetida) → reutiliza
+          if (!dupTrack && S.trackBy.get(med, trackPos)) trackPos = S.maxPosInMed.get(med).p + 1;   // posición ocupada por otra pista → al final
+        }
+        if (dupTrack) trackId = dupTrack.id;
+        else { const ex = S.trackBy.get(med, trackPos); trackId = ex ? ex.id : Number(S.insTrack.run(med, trackPos, recId, title, tcid, inf.durationMs).lastInsertRowid); }
       }
-      if (dupTrack) trackId = dupTrack.id;
-      else { const ex = S.trackBy.get(med, trackPos); trackId = ex ? ex.id : Number(S.insTrack.run(med, trackPos, recId, title, tcid, inf.durationMs).lastInsertRowid); }
       // propagar los MBID/ISRC del tag al grafo (solo si aún no los tiene)
       if (rgMbid) trySet(S.setRgMbid, rgMbid, rg);
       if (relMbid) trySet(S.setRelMbid, relMbid, rel);
@@ -605,6 +685,7 @@ const nMb = db.prepare("SELECT COUNT(*) n FROM local_file WHERE match_by='mb-tag
 const nFp = db.prepare('SELECT COUNT(*) n FROM local_file WHERE fingerprint IS NOT NULL').get().n;
 console.log(`Escaneados ${ok} ficheros (${ident} identificados por tags) -> ${DB_PATH}`);
 console.log(`  identificadores embebidos: ${nMb} con MBID · ${nIsrc} con ISRC · ${nFp} con huella Chromaprint`);
+if (relicMoved || namedNew) console.log(`  pistas sin etiqueta de número: ${relicMoved} recolocada(s) · ${namedNew} nueva(s), con la posición deducida del nombre del fichero`);
 if (moved || normed || cased) console.log(`  reconciliados por identidad: ${moved} movimiento(s)/renombrado(s) · ${normed} por normalización Unicode · ${cased} por cambio de mayúsculas (sin borrar+recrear)`);
 
 if (DEMO) {
