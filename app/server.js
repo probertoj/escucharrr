@@ -2754,6 +2754,8 @@ function isUnc(p) { return /^\\\\/.test(String(p)) || /^\/\//.test(String(p)); }
 // de Windows cambia de una pasada a otra (`Alabaster Deplume\Gold` falla en una y `Alabaster dePlume\Gold` en la
 // siguiente), así que por ruta exacta cada pasada encontraba ilegibles «nuevas» y nunca había baseline. Se dejan fuera
 // todas las variantes de esa ruta; fusionar el grupo en el NAS cambia los nombres de la carpeta madre y sí se detecta.
+// Al fusionarlo, sus carpetas dejan de colgar de un grupo: POLLSIG.quarantineReview las saca de cuarentena (o las olvida si
+// ya no existen), la pasada se repite con ellas dentro de la firma y el cambio dispara UN reescaneo.
 function _pollIgnoreSet(st) {
   const ign = new Set(); try { for (const r of db.prepare('SELECT dir FROM ignored_dir').all()) ign.add(r.dir); } catch (e) {}
   if (st && st.quarantine) for (const k of st.quarantine.keys()) ign.add(k);
@@ -2782,8 +2784,19 @@ async function _pollTick() {
       const now = Date.now();
       for (const f of r.failed) { const k = POLLSIG.nrm(f.dir); if (!st.quarantine.has(k)) st.quarantine.set(k, { dir: f.dir, code: f.code, at: now }); }
       st.collisions = r.collisions;   // lista completa de la última pasada (GET /api/library/case-collisions)
+      // Salida de la cuarentena: las carpetas que ya no cuelgan de ningún grupo de mayúsculas (el grupo se fusionó en el NAS)
+      // y vuelven a listarse dejan la cuarentena; las que ya no existen se olvidan. Solo con la lista de grupos completa.
+      let released = 0;
+      if (r.sig != null && st.quarantine.size && r.collisionCount === r.collisions.length) {
+        try {
+          const rev = await POLLSIG.quarantineReview([...st.quarantine.values()], r.collisions);
+          for (const q of rev.readable.concat(rev.gone)) st.quarantine.delete(POLLSIG.nrm(q.dir));
+          released = rev.readable.length;
+          if (rev.readable.length || rev.gone.length) console.log('  [poll] cuarentena en', root + ':', rev.readable.length, 'carpeta(s) vuelven a ser legibles' + (rev.readable.length ? ' (p. ej. ' + rev.readable[0].dir + ')' : '') + ' y', rev.gone.length, 'ya no existen; quedan', st.quarantine.size + (released ? ' — se repite la pasada para incluirlas en la firma' : ''));
+        } catch (e) {}
+      }
       const qs = [...st.quarantine.values()];
-      st.last = { at: now, ms: r.ms, dirs: r.dirs, files: r.files, complete: r.complete, failed: r.failedCount, quarantined: st.quarantine.size, collisions: r.collisionCount,
+      st.last = { at: now, ms: r.ms, dirs: r.dirs, files: r.files, complete: r.complete, failed: r.failedCount, released, quarantined: st.quarantine.size, collisions: r.collisionCount,
                   failedSample: qs.slice(0, 5).map(f => f.dir + ' (' + f.code + ')'), collisionSample: r.collisions.slice(0, 5).map(POLLSIG.collisionText) };
       if (r.collisionCount && !st.loggedCollisions) { st.loggedCollisions = true; console.log('  [poll] aviso:', r.collisionCount, 'grupo(s) de nombres que solo difieren en mayúsculas dentro de la misma carpeta en', root, '(el NAS distingue mayúsculas; Windows solo ve uno y el otro queda ilegible), p. ej.', POLLSIG.collisionText(r.collisions[0]), '— lista completa en Ajustes → Biblioteca'); }
       if (r.sig == null) continue;   // pasada abortada
@@ -2793,6 +2806,7 @@ async function _pollTick() {
         if (Date.now() - _pollIncompleteLogAt > 10 * 60 * 1000) { _pollIncompleteLogAt = Date.now(); console.log('  [poll] pasada incompleta en', root, '(' + r.failedCount + ' carpeta(s) ilegible(s) nueva(s), p. ej. ' + r.failed[0].dir + ' ' + r.failed[0].code + '): quedan en cuarentena (' + st.quarantine.size + ' en total) y se repite la pasada'); }
         continue;
       }
+      if (released) continue;   // carpetas recién salidas de cuarentena: esta firma aún no las incluye → no concluyente, se repite (un solo reescaneo al final)
       const prev = st.sig; st.sig = r.sig;
       if (prev == null) { console.log('  [poll] baseline', root + ':', r.dirs.toLocaleString('es-ES'), 'carpetas,', r.files.toLocaleString('es-ES'), 'audios en', (r.ms / 1000).toFixed(1), 's' + (st.quarantine.size ? ' (' + st.quarantine.size + ' carpeta(s) ilegible(s) en cuarentena, fuera de la firma)' : '')); continue; }   // fijar baseline sin disparar
       if (r.sig !== prev) { console.log('  [poll] cambio detectado en', root, '(pasada de ' + (r.ms / 1000).toFixed(1) + ' s)'); _ingSchedule('music'); }

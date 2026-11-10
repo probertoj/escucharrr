@@ -546,6 +546,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       const ago = _s(Date.now() - r.at);
       let t = `Sondeo de red: última pasada hace ${ago} (${_n(r.dirs)} carpetas, ${_n(r.files)} audios, ${_s(r.ms)})`;
       if (!r.complete) t += ` · ${_n(r.failed)} carpeta(s) ilegible(s) nueva(s): no concluyente, repite`;
+      if (r.released) t += ` · ${_n(r.released)} carpeta(s) vuelven a ser legibles: salen de cuarentena, repite`;
       if (r.quarantined) t += ` · ${_n(r.quarantined)} carpeta(s) ilegible(s) en cuarentena (fuera de la firma)`;
       if (r.collisions) t += ` · ${_n(r.collisions)} grupo(s) de nombres que solo difieren en mayúsculas (el NAS los distingue; Windows no)`;
       return t;

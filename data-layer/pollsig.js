@@ -21,6 +21,8 @@
 // La cuarentena NO distingue mayúsculas a propósito: con dos carpetas que solo difieren en la caja, qué
 // variante resuelve el cliente SMB de Windows cambia de una pasada a otra (medido en el NAS real), así
 // que se dejan fuera todas las variantes de la ruta que falló.
+// Salida de la cuarentena (quarantineReview): una carpeta deja la cuarentena cuando ya no cuelga de ningún grupo de
+// mayúsculas y vuelve a listarse (el grupo se fusionó en el NAS, o fue un fallo pasajero), o cuando ya no existe.
 // Colisiones de mayúsculas: nombres que solo difieren en mayúsculas dentro de la misma carpeta se
 // reportan (`collisions`, lista COMPLETA hasta MAX_LIST) porque son la causa típica de esas carpetas
 // ilegibles (un NAS Linux las distingue; el cliente SMB de Windows resuelve la ruta a una sola y la otra
@@ -108,18 +110,51 @@ function collisionText(c) { return path.join(c.dir, c.names[0].name) + c.names.s
  * Todo sin distinguir mayúsculas: no se señala CUÁL variante es la invisible porque desde Windows cambia de una vez a otra.
  */
 function healthReport({ root, at, collisions, quarantine }, nrm = nrmDefault) {
-  const members = new Map();   // nrm(ruta de un miembro carpeta) → índice de su grupo
-  const groups = (collisions || []).map((c, i) => {
-    for (const n of c.names) if (n.isDir) members.set(nrm(path.join(c.dir, n.name)), i);
-    return { dir: c.dir, names: c.names.map(n => ({ name: n.name, isDir: n.isDir })), unreadable: 0, code: null };
-  });
+  const members = memberIndex(collisions, nrm);
+  const groups = (collisions || []).map(c => ({ dir: c.dir, names: c.names.map(n => ({ name: n.name, isDir: n.isDir })), unreadable: 0, code: null }));
   const unreadable = (quarantine || []).map(f => {
-    let k = nrm(f.dir), hit = -1;
-    for (;;) { if (members.has(k)) { hit = members.get(k); break; } const up = path.dirname(k); if (up === k) break; k = up; }
+    const hit = coveringGroup(members, nrm(f.dir));
     if (hit >= 0) { groups[hit].unreadable++; if (!groups[hit].code) groups[hit].code = f.code; }
     return { dir: f.dir, code: f.code, collision: hit >= 0 };
   });
   return { root, at: at || null, collisions: groups, unreadable };
+}
+// nrm(ruta de un miembro CARPETA de un grupo) → índice de su grupo.
+function memberIndex(collisions, nrm) {
+  const members = new Map();
+  (collisions || []).forEach((c, i) => { for (const n of c.names) if (n.isDir) members.set(nrm(path.join(c.dir, n.name)), i); });
+  return members;
+}
+// Grupo que «cubre» una ruta normalizada: ella misma o su antecesor más cercano es miembro de un grupo (-1 si ninguno).
+function coveringGroup(members, k) {
+  for (;;) { if (members.has(k)) return members.get(k); const up = path.dirname(k); if (up === k) return -1; k = up; }
+}
+
+/**
+ * quarantineReview(quarantine, collisions, opts) → { readable:[entrada], gone:[entrada] }
+ * Revisa las carpetas en cuarentena que YA NO cuelgan de ningún grupo de mayúsculas (p. ej. el usuario fusionó el grupo en el NAS):
+ *   readable : vuelve a listarse → el llamador la saca de cuarentena y repite la pasada para que su contenido entre en la firma
+ *   gone     : ya no existe (su nombre no está en la carpeta madre, o la madre no existe) → se olvida sin más (no mueve la firma)
+ * Las que siguen colgando de un grupo NO se tocan: ahí que se lean o no cambia de una pasada a otra y soltarlas daría falsos
+ * «cambios». Las ilegibles sin grupo que siguen existiendo (permisos) se quedan en cuarentena. Coste: 1-2 readdir por carpeta
+ * SIN grupo (normalmente ninguna); con grupos intactos no hace IO.
+ * opts.fsp / opts.nrm inyectables como en dirSignature.
+ */
+async function quarantineReview(quarantine, collisions, opts = {}) {
+  const fsp = opts.fsp || require('fs').promises;
+  const nrm = opts.nrm || nrmDefault;
+  const members = memberIndex(collisions, nrm);
+  const readable = [], gone = [];
+  for (const q of quarantine || []) {
+    if (coveringGroup(members, nrm(q.dir)) >= 0) continue;
+    try { await fsp.readdir(q.dir); readable.push(q); continue; } catch (e) {}
+    try {
+      const base = path.basename(q.dir).toLowerCase();
+      const sib = await fsp.readdir(path.dirname(q.dir));
+      if (!sib.some(n => String(n).toLowerCase() === base)) gone.push(q);
+    } catch (e) { if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) gone.push(q); }   // otro error (red, permisos): no se decide ahora
+  }
+  return { readable, gone };
 }
 // Texto descargable (CRLF) de uno o varios healthReport.
 function healthText(roots) {
@@ -142,4 +177,4 @@ function healthText(roots) {
   return L.join('\r\n');
 }
 
-module.exports = { dirSignature, collisionText, healthReport, healthText, AUDIO_RE, nrm: nrmDefault, MAX_LIST };
+module.exports = { dirSignature, collisionText, healthReport, healthText, quarantineReview, AUDIO_RE, nrm: nrmDefault, MAX_LIST };
