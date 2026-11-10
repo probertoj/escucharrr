@@ -2918,7 +2918,37 @@ function isSelfWrite(f) {
   if (exp > Date.now()) return true;
   _selfWrites.delete(k); return false;
 }
-function stopWatching() { for (const w of _watchers) { try { w.close(); } catch (e) {} } _watchers = []; stopPolling(); }
+// Una nota solo «cambia» si cambia su contenido (fecha de modificación o tamaño). En Windows fs.watch avisa
+// también cuando alguien la LEE (se actualiza su hora de último acceso): el pase completo del vault lee todas
+// las notas, y cada lectura lanzaba una sincronización de esa nota — 520 procesos de golpe tras cada reescaneo,
+// todos fallando con «database is locked» porque ese mismo pase tenía la base ocupada.
+const _noteSig = new Map();   // ruta absoluta en minúsculas -> «mtimeMs|tamaño» conocido
+function _noteSeed(root) {    // firma de partida de las notas que ya existen, para no confundirlas con nuevas
+  try {
+    for (const f of fs.readdirSync(root, { recursive: true })) {
+      if (!/\.md$/i.test(String(f))) continue;
+      const abs = path.join(root, String(f));
+      try { const st = fs.statSync(abs); _noteSig.set(abs.toLowerCase(), st.mtimeMs + '|' + st.size); } catch (e) {}
+    }
+  } catch (e) {}
+}
+function _noteChanged(root, f) {
+  const abs = path.join(root, f), k = abs.toLowerCase();
+  let st; try { st = fs.statSync(abs); } catch (e) { return _noteSig.delete(k); }   // ya no está: solo es novedad si la conocíamos
+  const sig = st.mtimeMs + '|' + st.size, prev = _noteSig.get(k);
+  _noteSig.set(k, sig);
+  return prev !== sig;   // nueva (sin firma previa) o con contenido distinto
+}
+function _onNoteEvent(root) {
+  return (ev, f) => {
+    if (!f) return _ingSchedule('vault');
+    if (!/\.md$/i.test(f)) return;
+    const changed = _noteChanged(root, f);   // siempre, para que la firma quede al día aunque la escritura sea nuestra
+    if (isSelfWrite(f) || !changed) return;
+    _ingNote(f);
+  };
+}
+function stopWatching() { for (const w of _watchers) { try { w.close(); } catch (e) {} } _watchers = []; _noteSig.clear(); stopPolling(); }
 // Vigila una carpeta con fs.watch, pero CAPTURA el evento 'error' asíncrono: en rutas de red
 // (UNC/SMB, p. ej. un NAS) el watch recursivo lanza UNKNOWN de forma asíncrona y, sin este
 // handler, tumba el proceso. Si falla, se cierra ese watcher y se avisa — la carpeta SIGUE
@@ -2936,14 +2966,14 @@ function startWatching() {   // (re)aplica el watcher según la config actual; s
   const c = watchConfig();
   if (!c) { console.log('biblioteca en vivo: desactivada (crea app/watch.json a partir de watch.example.json, o configúrala en Ajustes)'); return; }
   for (const root of c.music) if (fs.existsSync(root)) { if (isUnc(root)) addPoll(root); else safeWatch(root, 'música', (ev, f) => { if (!f || _AUD.test(f)) _ingSchedule('music'); }); }
-  if (c.vault && fs.existsSync(c.vault)) { if (isUnc(c.vault)) addPoll(c.vault); else safeWatch(c.vault, 'vault', (ev, f) => { if (isSelfWrite(f)) return; if (f && /\.md$/i.test(f)) _ingNote(f); else if (!f) _ingSchedule('vault'); }); }
+  if (c.vault && fs.existsSync(c.vault)) { if (isUnc(c.vault)) addPoll(c.vault); else { _noteSeed(c.vault); safeWatch(c.vault, 'vault', _onNoteEvent(c.vault)); } }
   // Carpeta de BIOGRAFÍAS: puede estar FUERA del vault (p. ej. hermana «00. Índices»); si lo está,
   // se vigila aparte. Si está dentro del vault, el watcher del vault ya la cubre (no duplicar).
   const bfCfg = c.obs && (c.obs.artistsFolder || c.obs.biosFolder);
   if (bfCfg) {
     const biosDir = path.isAbsolute(bfCfg) ? path.resolve(bfCfg) : path.join(c.vault || '', bfCfg);
     const insideVault = c.vault && (path.resolve(biosDir) === path.resolve(c.vault) || path.resolve(biosDir).startsWith(path.resolve(c.vault) + path.sep));
-    if (biosDir && !insideVault && fs.existsSync(biosDir)) { if (isUnc(biosDir)) addPoll(biosDir); else safeWatch(biosDir, 'bios', (ev, f) => { if (isSelfWrite(f)) return; if (f && /\.md$/i.test(f)) _ingNote(f); else if (!f) _ingSchedule('vault'); }); }
+    if (biosDir && !insideVault && fs.existsSync(biosDir)) { if (isUnc(biosDir)) addPoll(biosDir); else { _noteSeed(biosDir); safeWatch(biosDir, 'bios', _onNoteEvent(biosDir)); } }
   }
 }
 async function rescanNow(kinds) {   // reescaneo manual inmediato
