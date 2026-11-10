@@ -9,7 +9,7 @@ const SEP = '[-–—]';   // guion, raya corta o larga
 // base: nombre del fichero (con o sin extensión). Devuelve null si no se deduce nada, o:
 //   { kind: 'disco-pista', disc, track, rest }   «01 - 05 - Título», «4-05 Título»
 //   { kind: 'inicial', track }                   «06 Título», «14. Título», «05-título»
-//   { kind: 'vinilo', side, n, rest }            «B1 Título», «A2 - Título»  (la posición sale de vinylOrder)
+//   { kind: 'vinilo', side, n, rest }            «B1 Título», «A2 - Título», caras A–L  (la posición sale de vinylOrder)
 //   { kind: 'intermedio', track }                «Artista - Álbum - 05 - Título», «Artista_Álbum_05_Título»
 // `rest` = el nombre sin la numeración, para deducir el título cuando tampoco hay etiqueta TITLE.
 function fromName(base) {
@@ -27,8 +27,8 @@ function fromName(base) {
   // solo el número: «06.mp3»
   if ((m = /^\s*(\d{1,3})\s*$/.exec(n)) && +m[1] <= 199)
     return { kind: 'inicial', track: +m[1] };
-  // vinilo: cara + número («A1», «b2»)
-  if ((m = new RegExp('^\\s*([A-Ha-h])(\\d{1,2})\\s*(?:[._)]|' + SEP + '|\\s)\\s*(\\S.*)$').exec(n)) && +m[2] >= 1 && +m[2] <= 30)
+  // vinilo: cara + número («A1», «b2»); hasta la cara L (cajas de 6 LP)
+  if ((m = new RegExp('^\\s*([A-La-l])(\\d{1,2})\\s*(?:[._)]|' + SEP + '|\\s)\\s*(\\S.*)$').exec(n)) && +m[2] >= 1 && +m[2] <= 30)
     return { kind: 'vinilo', side: m[1].toUpperCase(), n: +m[2], rest: m[3] };
   // número en medio, entre separadores: «… - 05 - Título», «…_05_Título»
   if ((m = new RegExp('(?:\\s' + SEP + '\\s|_)(\\d{1,3})(?:\\s' + SEP + '\\s|_)\\S').exec(n)) && +m[1] <= 199)
@@ -50,7 +50,8 @@ function vinylOrder(names) {
   return out;
 }
 
-// Etiqueta TRACKNUMBER válida = entero ≥ 1 («5», «05», «5/12»). «0», vacía o «A1» no lo son.
-function tagNumber(tag) { const k = parseInt(tag, 10); return Number.isFinite(k) && k >= 1 ? k : null; }
+// Etiqueta TRACKNUMBER válida = entero entre 1 y 999 («5», «05», «5/12»). «0», vacía, «A1» o un número
+// disparatado («143512», que algún gestor escribió en la etiqueta) no lo son.
+function tagNumber(tag) { const k = parseInt(tag, 10); return Number.isFinite(k) && k >= 1 && k <= 999 ? k : null; }
 
 module.exports = { fromName, vinylOrder, tagNumber };

@@ -169,7 +169,7 @@ function discInfo(dir, rawAlbum) {
 function titleFromName(file, artistName, rest) {
   let n = rest != null ? String(rest) : path.basename(file).replace(/\.[^.]+$/, '');
   if (rest == null) n = n.replace(/^\s*\d{1,3}\s*[-._)\s]\s*/, '');        // nº de pista inicial
-  n = n.replace(/[-_][a-z0-9]{5,8}$/i, '');              // hash de release al final (p. ej. -14ajwq)
+  n = n.replace(/[-_](?=[a-z0-9]*\d)(?=[a-z0-9]*[a-z])[a-z0-9]{5,8}$/i, '');   // hash de release al final (p. ej. -14ajwq): mezcla letras y cifras, para no comerse palabras («Drop Re-Recorded»)
   if (artistName && artistName !== 'Artista desconocido') { const re = new RegExp('^' + artistName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*[-–_\\s]+', 'i'); n = n.replace(re, ''); }   // quita "Artista-" si va delante
   return _clean(n) || path.basename(file);
 }
