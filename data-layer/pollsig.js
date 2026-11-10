@@ -30,6 +30,8 @@ const MAX_LIST = 20000;   // tope de entradas devueltas en failed/collisions (lo
 
 // Normalización IGUAL que scan.js/server.js nrm(): clave de ignored_dir (release.source_dir).
 function nrmDefault(p) { return path.resolve(p).replace(/[\\/]+/g, '\\').toLowerCase(); }
+// Ruta exacta (separadores normalizados, mayúsculas respetadas): clave de la cuarentena.
+function exact(p) { return path.resolve(p).replace(/[\\/]+/g, '\\'); }
 
 /**
  * dirSignature(root, opts) → { sig, complete, failed, failedCount, failedKey, collisions, collisionCount, dirs, files, ms }
@@ -38,8 +40,11 @@ function nrmDefault(p) { return path.resolve(p).replace(/[\\/]+/g, '\\').toLower
  *   failed     : [{dir, code}] carpetas ilegibles (hasta MAX_LIST); failedCount: total; failedKey: sha1 del conjunto (null si ninguna)
  *   collisions : [{dir, names:[{name, isDir}]}] grupos de nombres que solo difieren en mayúsculas en la misma carpeta (hasta MAX_LIST); collisionCount: total de grupos
  *   dirs/files : carpetas listadas / audios vistos; ms: duración
- * opts.ignore  : Set de carpetas normalizadas (nrm) a NO DESCENDER (copias quitadas por el usuario, carpetas en cuarentena);
+ * opts.ignore  : Set de carpetas normalizadas (nrm, sin distinguir mayúsculas) a NO DESCENDER (copias quitadas por el usuario);
  *                su nombre sigue contando en la carpeta madre
+ * opts.skip    : Set de rutas EXACTAS (exact(): mayúsculas respetadas) a NO DESCENDER: la cuarentena. Debe distinguir
+ *                mayúsculas porque la carpeta ilegible es justo la variante de caja que el NAS no resuelve; su hermana
+ *                `Songs And Instrumentals\Disc1` sí se lee y debe seguir dentro de la firma.
  * opts.nrm     : normalizador (por defecto el de scan.js)
  * opts.fsp     : fs.promises inyectable (tests / conteo de operaciones)
  * opts.audioRe : regex de audio (por defecto la de arriba)
@@ -49,6 +54,7 @@ async function dirSignature(root, opts = {}) {
   const fsp = opts.fsp || require('fs').promises;
   const nrm = opts.nrm || nrmDefault;
   const ignore = opts.ignore || null;
+  const skip = opts.skip && opts.skip.size ? opts.skip : null;
   const audioRe = opts.audioRe || AUDIO_RE;
   const h = crypto.createHash('sha1');
   const t0 = Date.now();
@@ -83,7 +89,8 @@ async function dirSignature(root, opts = {}) {
     for (const g of low.values()) if (g.length > 1) { collisionCount++; if (collisions.length < MAX_LIST) collisions.push({ dir, names: g }); }
     for (const name of subdirs) {
       const p = path.join(dir, name);
-      if (ignore && ignore.has(nrm(p))) continue;                      // copia quitada / cuarentena → no se desciende
+      if (ignore && ignore.has(nrm(p))) continue;                      // copia quitada → no se desciende
+      if (skip && skip.has(exact(p))) continue;                        // cuarentena (ruta exacta) → no se desciende
       await walk(p, rel + '/' + name);
     }
   }
@@ -96,4 +103,4 @@ async function dirSignature(root, opts = {}) {
 // Texto de un grupo de colisión para logs/UI: «…\carpeta\A ↔ a».
 function collisionText(c) { return path.join(c.dir, c.names[0].name) + c.names.slice(1).map(n => ' ↔ ' + n.name).join(''); }
 
-module.exports = { dirSignature, collisionText, AUDIO_RE, nrm: nrmDefault, MAX_LIST };
+module.exports = { dirSignature, collisionText, AUDIO_RE, nrm: nrmDefault, exact, MAX_LIST };
