@@ -445,6 +445,7 @@ const _trkS = {
   byRecSane: db.prepare('SELECT id FROM track WHERE medium_id=? AND recording_id=? AND position<' + RELIC_POS + ' LIMIT 1'),
   count: db.prepare('SELECT COUNT(*) n FROM track WHERE medium_id=?'),
   positions: db.prepare('SELECT position FROM track WHERE medium_id=?'),
+  posIds: db.prepare('SELECT id, position FROM track WHERE medium_id=?'),
   otherFiles: db.prepare('SELECT COUNT(*) n FROM local_file WHERE track_id=? AND path<>?'),
   move: db.prepare('UPDATE track SET medium_id=?, position=?, recording_id=?, title=?, artist_credit_id=?, length_ms=? WHERE id=?'),
   recUsed: db.prepare('SELECT 1 FROM track WHERE recording_id=? LIMIT 1'),
@@ -461,18 +462,48 @@ const firstFreePos = (med) => { const used = new Set(_trkS.positions.all(med).ma
 // `late` = segunda vuelta. En la primera solo se colocan las pistas cuyo sitio está libre (o ya es suyo); las
 // que no tienen número o encuentran su sitio ocupado por otra grabación devuelven POSTPONE y se colocan al final
 // del todo, en el primer hueco: así no le quitan el sitio a otra pista que sí lo tiene claro por su nombre.
-const POSTPONE = -1;
+//
+// Las pistas SIN NÚMERO (ni en la etiqueta ni en el nombre) se colocan las últimas de todas (POSTPONE_TAIL) y en
+// grupo: las de un mismo disco ocupan, por orden de nombre de fichero, los huecos que dejan las numeradas. Así su
+// posición depende solo de qué ficheros hay, no de dónde estaban ni del título: antes cada una iba «al primer
+// hueco» contando su propio sitio como ocupado, y bastaba que cambiase el título deducido (p. ej. al afinar la
+// limpieza de nombres) para que dos pistas se cambiasen el sitio y quedase un hueco en medio.
+const POSTPONE = -1, POSTPONE_TAIL = -2;
+const _unnum = new Map();      // disco -> ficheros sin número vistos en este escaneo
+const _unnumSlots = new Map(); // disco -> Map<fichero, posición>
+const _byFileName = (a, b) => path.basename(a).localeCompare(path.basename(b), 'en', { numeric: true, sensitivity: 'base' }) || (a < b ? -1 : a > b ? 1 : 0);
+function unnumSlot(med, file) {
+  let m = _unnumSlots.get(med);
+  if (!m) {
+    const group = (_unnum.get(med) || []).slice().sort(_byFileName);
+    const own = new Set();                                                         // pistas que son solo de ficheros del grupo: se van a recolocar, su sitio cuenta como libre
+    for (const f of group) { const p = _trkS.fileTrack.get(f); if (p && p.med === med && !_trkS.otherFiles.get(p.id, f).n) own.add(p.id); }
+    const used = new Set(); for (const r of _trkS.posIds.all(med)) if (!own.has(r.id)) used.add(r.position);
+    m = new Map(); let p = 0;
+    for (const f of group) { do p++; while (used.has(p)); m.set(f, p); }
+    _unnumSlots.set(med, m);
+  }
+  return m.get(file);
+}
 function placeUntagged(file, med, pos, recId, title, tcid, lenMs, isComp, late) {
   if (isComp) { const d = _trkS.byRecSane.get(med, recId); if (d) return d.id; }   // recopilatorio: misma grabación ya en el disco
   const prev = _trkS.fileTrack.get(file) || null;
-  const at = pos != null ? _trkS.at.get(med, pos) : null;
-  if (at && at.rec === recId) return at.id;                                        // ya está en su sitio
-  if (pos == null || (at && !(prev && at.id === prev.id))) {                       // sin número, o el sitio es de otra grabación
-    if (prev && prev.med === med && prev.rec === recId && prev.pos >= 1 && prev.pos <= _trkS.count.get(med).n) return prev.id;   // se queda donde estaba
-    if (!late) return POSTPONE;
-    pos = firstFreePos(med);                                                       // primer hueco (normalmente, detrás de la última)
+  const solo = () => prev && !_trkS.otherFiles.get(prev.id, file).n;               // la pista es solo de este fichero
+  if (pos == null) {                                                               // sin número: en grupo, al final del todo
+    if (!late) { const g = _unnum.get(med); if (g) g.push(file); else _unnum.set(med, [file]); return POSTPONE_TAIL; }
+    pos = unnumSlot(med, file) || firstFreePos(med);
+    if (prev && prev.med === med && prev.pos === pos && prev.rec === recId) return prev.id;   // ya está en su sitio
+  } else {
+    const at = _trkS.at.get(med, pos);
+    if (at && at.rec === recId) return at.id;                                      // ya está en su sitio
+    if (at && !(prev && at.id === prev.id)) {                                      // el sitio es de otra grabación
+      const stays = prev && prev.med === med && prev.pos >= 1 && prev.pos <= _trkS.count.get(med).n;
+      if (stays && prev.rec === recId) return prev.id;                             // se queda donde estaba
+      if (stays && solo()) pos = prev.pos;                                         // cambió el título: mismo sitio, grabación nueva
+      else { if (!late) return POSTPONE; pos = firstFreePos(med); }                // primer hueco (normalmente, detrás de la última)
+    }
   }
-  if (prev && !_trkS.otherFiles.get(prev.id, file).n) {                            // la pista es solo de este fichero → se recoloca
+  if (solo()) {                                                                    // la pista es solo de este fichero → se recoloca
     _trkS.move.run(med, pos, recId, title, tcid, lenMs, prev.id);
     if (prev.rec !== recId && !_trkS.recUsed.get(prev.rec)) { _trkS.playRec.run(recId, prev.rec); _trkS.listRec.run(recId, prev.rec); }   // la grabación vieja se queda sin pistas: su historial pasa a la buena
     relicMoved++;
@@ -501,7 +532,9 @@ try {
   // colocan, todas las pistas etiquetadas del escaneo ya ocupan su sitio y el resultado no depende del orden.
   const queue = files.map(f => ({ file: f, parsed: null }));
   const deferredUntagged = new Set();
-  for (let qi = 0; qi < queue.length; qi++) {
+  const tail = [];                                           // pistas sin número: tercera vuelta, cuando ya no queda nada más por colocar
+  const flushTail = () => { if (!tail.length) return false; for (const e of tail.splice(0)) queue.push(e); return true; };
+  for (let qi = 0; qi < queue.length || flushTail(); qi++) {
    const file = queue[qi].file;
    if (Date.now() - _batchAt >= BATCH_MS) { db.exec('COMMIT'); sleepSync(YIELD_MS); db.exec('BEGIN IMMEDIATE'); _batchAt = Date.now(); }
    try {
@@ -580,6 +613,7 @@ try {
       if (!tagNo) {
         trackId = placeUntagged(file, med, nm ? nm.track : null, recId, title, tcid, inf.durationMs, isComp, late);
         if (trackId === POSTPONE) { queue.push({ file, parsed, late: true }); continue; }   // se coloca en la segunda vuelta
+        if (trackId === POSTPONE_TAIL) { tail.push({ file, parsed, late: true }); continue; }   // sin número: en la última
       } else {
         let trackPos = tagNo, dupTrack = null;
         if (isComp) {
